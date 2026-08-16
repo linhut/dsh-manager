@@ -12,10 +12,11 @@
   "scripts": {
     "start": "electron .",
     "dev": "NODE_ENV=development electron .",
-    "build:win": "electron-builder --win",
-    "build:mac": "electron-builder --mac",
-    "build:linux": "electron-builder --linux",
-    "build:all": "electron-builder --win --mac --linux",
+    "build:win": "npm run generate-icons && electron-builder --win",
+    "build:mac": "npm run generate-icons && electron-builder --mac",
+    "build:linux": "npm run generate-icons && electron-builder --linux",
+    "build:all": "npm run generate-icons && electron-builder --win --mac --linux",
+    "generate-icons": "node scripts/generate-icons.js",
     "postinstall": "echo 'Skipping electron-builder install-app-deps'"
   },
   "build": {
@@ -37,7 +38,8 @@
           "target": "nsis",
           "arch": ["x64"]
         }
-      ]
+      ],
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
@@ -53,6 +55,7 @@
           "arch": ["x64", "arm64"]
         }
       ],
+      "icon": "build/icon.png",
       "category": "public.app-category.developer-tools"
     },
     "linux": {
@@ -62,6 +65,7 @@
           "arch": ["x64"]
         }
       ],
+      "icon": "build/icon.png",
       "category": "Development"
     },
     "extraResources": [

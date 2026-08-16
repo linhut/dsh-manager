@@ -1,6 +1,5 @@
 node_modules/
 dist/
-build/
 .cache/
 *.log
 .DS_Store
@@ -28,3 +27,9 @@ package-lock.json
 .env
 .env.local
 .env.*.local
+
+# Generated build artifacts (but keep source SVG)
+build/*.png
+build/*.ico
+build/*.icns
+build/png-temp/
