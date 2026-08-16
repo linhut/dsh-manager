@@ -35,21 +35,35 @@ export class PluginRegistry {
   async search(options = {}) {
     const { query, page = 1, perPage = 30, forceRefresh = false } = options;
 
-    // 尝试从缓存读取
+    let results;
+
+    // 尝试从缓存读取（仅首页且非强制刷新时）
     if (!forceRefresh && page === 1) {
       const cached = this._readCache('search');
-      if (cached) return cached;
+      if (cached) {
+        // 即使从缓存返回也要注入精选插件（确保 gongwen-skill 等始终可见）
+        return this._injectFeaturedPlugins(cached);
+      }
     }
 
-    let results;
     if (query) {
       // 扩展搜索：同时搜索多个关键词
-      results = await this.github.searchRepositories(
-        `dsh-plugin OR deepseek-harness-plugin ${query} sort:stars-desc`,
-        { page, perPage }
-      );
+      try {
+        results = await this.github.searchRepositories(
+          `dsh-plugin OR deepseek-harness-plugin ${query} sort:stars-desc`,
+          { page, perPage }
+        );
+      } catch (e) {
+        console.warn('GitHub API 搜索失败，返回精选插件:', e.message);
+        results = [];
+      }
     } else {
-      results = await this.github.searchPlugins({ page, perPage });
+      try {
+        results = await this.github.searchPlugins({ page, perPage });
+      } catch (e) {
+        console.warn('GitHub API 获取插件列表失败，返回精选插件:', e.message);
+        results = [];
+      }
     }
 
     // 补充信息：检查是否有 dsh-plugin 标签
@@ -59,10 +73,11 @@ export class PluginRegistry {
       r.topics.includes('deepseek-harness')
     );
 
-    // 写入缓存
+    // 注入精选插件（无论 API 是否有返回，gongwen-skill 等始终可见）
+    results = this._injectFeaturedPlugins(results);
+
+    // 写入缓存（首页才缓存）
     if (page === 1) {
-      // 注入精选插件到排名靠前位置（这些插件已在 GitHub 标记 dsh-plugin）
-      results = this._injectFeaturedPlugins(results);
       this._writeCache('search', results);
     }
 
