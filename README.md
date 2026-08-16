@@ -2,11 +2,14 @@
 
 > **DeepSeek Harness 桌面管理工具** — 像 ccswitch 一样，简单、直观、强大
 
+🌐 **官网**: [https://dsh.linhut.cn/](https://dsh.linhut.cn/)
+
 [![Build](https://github.com/linhut/dsh-manager/actions/workflows/build.yml/badge.svg)](https://github.com/linhut/dsh-manager/actions/workflows/build.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Windows](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/linhut/dsh-manager/releases)
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](https://github.com/linhut/dsh-manager/releases)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://github.com/linhut/dsh-manager/releases)
+[![Website](https://img.shields.io/badge/website-dsh.linhut.cn-4F46E5)](https://dsh.linhut.cn/)
 
 ---
 
