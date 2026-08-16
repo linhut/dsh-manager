@@ -1,0 +1,30 @@
+node_modules/
+dist/
+build/
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+
+# npm
+npm-debug.log*
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+*.dll
+*.dylib
+*.exe
+
+# DSH local
+.dsh/
+
+# Environment
+.env
+.env.local
+.env.*.local

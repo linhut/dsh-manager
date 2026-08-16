@@ -1,0 +1,18 @@
+{
+  "name": "dsh-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Manager - DeepSeek Harness 安装与管理工具",
+  "author": "DSH Manager Team",
+  "license": "MIT",
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev": "npm run dev --workspaces",
+    "clean": "npm run clean --workspaces"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/cli",
+    "packages/marketplace"
+  ]
+}

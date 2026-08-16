@@ -1,0 +1,19 @@
+{
+  "name": "@dsh-manager/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH Manager 核心库 - 管理 DSH 安装、配置、版本",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./installer": "./src/installer.js",
+    "./config": "./src/config.js",
+    "./dsh-utils": "./src/dsh-utils.js"
+  },
+  "dependencies": {
+    "execa": "^10.0.0",
+    "node-fetch": "^3.3.2",
+    "semver": "^7.6.0"
+  }
+}

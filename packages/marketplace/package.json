@@ -1,0 +1,17 @@
+{
+  "name": "@dsh-manager/marketplace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH 插件市场 - GitHub 插件发现与安装",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./registry": "./src/registry.js",
+    "./installer": "./src/installer.js"
+  },
+  "dependencies": {
+    "@dsh-manager/core": "*",
+    "node-fetch": "^3.3.2"
+  }
+}
