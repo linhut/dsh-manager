@@ -54,15 +54,13 @@ jobs:
           node-version: 20
 
       - name: Install dependencies
+        shell: bash
         run: |
           npm install --ignore-scripts
-          npm install -g @dsh-manager/core @dsh-manager/marketplace 2>/dev/null || true
 
       - name: Build packages
-        run: |
-          cd packages/core && npm install && cd ../..
-          cd packages/marketplace && npm install && cd ../..
-          npm install
+        shell: bash
+        run: npm install
 
       - name: Build ${{ matrix.platform }} installer
         run: ${{ matrix.build-cmd }}

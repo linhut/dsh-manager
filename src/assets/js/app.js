@@ -425,16 +425,19 @@ async function loadMarketplace(query) {
       <div class="card" style="cursor:default;">
         <div class="card-header" style="margin-bottom:8px;">
           <span class="card-title" style="font-size:13px;">${p.fullName}</span>
-          <span style="font-size:12px;color:var(--warning);">★ ${p.stars}</span>
+          <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ${p.stars}</span>
         </div>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${(p.description || '暂无描述').slice(0, 80)}</p>
         <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
           ${p.language ? `<span class="badge badge-gray">${p.language}</span>` : ''}
-          ${(p.topics || []).slice(0, 2).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
+          ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
         </div>
-        <button class="btn btn-sm btn-primary" onclick="installMarketPlugin('${p.fullName}')">
-          📥 安装
-        </button>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${p.stars + p.forks} 活跃</span>
+          <button class="btn btn-sm btn-primary" onclick="installMarketPlugin('${p.fullName}')">
+            📥 安装
+          </button>
+        </div>
       </div>
     `).join('');
   } catch (err) {

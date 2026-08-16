@@ -2,7 +2,10 @@
   "name": "dsh-manager",
   "version": "0.1.0",
   "description": "⚡ DeepSeek Harness 安装与管理工具 — 一键安装、插件市场、版本管理",
-  "author": "DSH Manager Team",
+  "author": {
+    "name": "DSH Manager Team",
+    "email": "dsh-manager@users.noreply.github.com"
+  },
   "license": "MIT",
   "type": "module",
   "main": "electron/main.js",
@@ -13,7 +16,7 @@
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
     "build:all": "electron-builder --win --mac --linux",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "echo 'Skipping electron-builder install-app-deps'"
   },
   "build": {
     "appId": "com.dshmanager.app",
