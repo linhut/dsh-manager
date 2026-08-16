@@ -242,6 +242,35 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await config.listLLMProviders();
   });
 
+  // ====== MCP 服务端管理 ======
+  ipcMain.handle('mcp:list', async (_, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile });
+    return mgr.list();
+  });
+
+  ipcMain.handle('mcp:get', async (_, serverName, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile });
+    return mgr.get(serverName);
+  });
+
+  ipcMain.handle('mcp:add', async (_, config) => {
+    const { MCPServerManager } = await loadCore();
+    // profile 作为独立参数传递，避免污染 config
+    const prof = config && config.__profile ? config.__profile : 'web';
+    const clean = { ...config };
+    delete clean.__profile;
+    const mgr = new MCPServerManager({ profile: prof });
+    return await mgr.add(clean);
+  });
+
+  ipcMain.handle('mcp:remove', async (_, serverName, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile });
+    return await mgr.remove(serverName);
+  });
+
   // ====== 系统 ======
   ipcMain.handle('shell:open-external', async (_, url) => {
     return shell.openExternal(url);

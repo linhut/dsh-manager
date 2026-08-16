@@ -8,6 +8,7 @@ export { DSHInstaller } from './installer.js';
 export { DSHConfig } from './config.js';
 export { DSHUtils, getDSHInfo } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
+export { MCPServerManager } from './mcp-manager.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 
 /**

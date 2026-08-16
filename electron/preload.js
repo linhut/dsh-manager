@@ -44,6 +44,12 @@ contextBridge.exposeInMainWorld('dshManager', {
   getAllConfig: () => ipcRenderer.invoke('config:get-all'),
   getLLMProviders: () => ipcRenderer.invoke('config:llm-providers'),
 
+  // ====== MCP 服务端管理 ======
+  mcpList: (profile) => ipcRenderer.invoke('mcp:list', profile),
+  mcpGet: (serverName, profile) => ipcRenderer.invoke('mcp:get', serverName, profile),
+  mcpAdd: (config) => ipcRenderer.invoke('mcp:add', config),
+  mcpRemove: (serverName, profile) => ipcRenderer.invoke('mcp:remove', serverName, profile),
+
   // ====== 导航 ======
   onNavigate: (callback) => {
     ipcRenderer.on('navigate', (_, page) => callback(page));

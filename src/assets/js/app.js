@@ -794,6 +794,23 @@ async function renderSettingsPage() {
         </div>
       </div>
     </div>
+    <!-- ====== MCP 服务端管理 ====== -->
+    <div class="card" style="margin-top:16px;">
+      <div class="card-header">
+        <span class="card-title">🔌 MCP 服务端</span>
+        <button class="btn btn-sm btn-primary" onclick="mcpAddDialog()">＋ 添加服务端</button>
+      </div>
+      <div class="card-body" id="mcpServerList">
+        <p style="color:var(--text-dim);">正在加载...</p>
+      </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <p style="font-size:12px;color:var(--text-dim);line-height:1.7;">
+          MCP (Model Context Protocol) 让 DSH Agent 可以连接外部工具和数据源。
+          配置保存在 <code>~/.dsh/profiles/web/cordis.patch.yml</code>，
+          保存后需重启 DSH 生效。
+        </p>
+      </div>
+    </div>
   `;
 
   // 加载 LLM 提供商
@@ -811,6 +828,204 @@ async function renderSettingsPage() {
       listEl.innerHTML = '<p style="color:var(--text-dim);">暂无配置的 LLM 提供商</p>';
     }
   } catch {}
+
+  // 加载 MCP 服务端列表
+  await mcpRenderList();
+}
+
+// ====== MCP 服务端管理 ======
+async function mcpRenderList() {
+  const el = document.getElementById('mcpServerList');
+  if (!el) return;
+
+  let servers = [];
+  try {
+    servers = await window.dshManager.mcpList('web');
+  } catch (err) {
+    el.innerHTML = `<p style="color:var(--error);">加载失败: ${err.message}</p>`;
+    return;
+  }
+
+  if (servers.length === 0) {
+    el.innerHTML = `
+      <div class="empty-state" style="padding:24px;">
+        <div class="empty-state-icon">🔌</div>
+        <div class="empty-state-title">暂无 MCP 服务端</div>
+        <div class="empty-state-desc">添加 MCP 服务端，让 DSH Agent 连接外部工具</div>
+        <button class="btn btn-primary" onclick="mcpAddDialog()">＋ 添加第一个服务端</button>
+      </div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>服务端名称</th>
+            <th>类型</th>
+            <th>配置</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${servers.map(s => `
+            <tr>
+              <td><strong>${s.serverName}</strong></td>
+              <td><span class="badge ${s.transport === 'stdio' ? 'badge-blue' : 'badge-green'}">${s.transport === 'stdio' ? 'stdio' : 'HTTP'}</span></td>
+              <td style="color:var(--text-dim);font-size:12px;">${s.pluginName}</td>
+              <td>
+                <button class="btn btn-sm btn-ghost" onclick="mcpEditDialog('${s.serverName}')">编辑</button>
+                <button class="btn btn-sm btn-ghost" style="color:var(--error);" onclick="mcpRemove('${s.serverName}')">删除</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+// ====== MCP 添加/编辑对话框 ======
+function mcpAddDialog() {
+  mcpDialog(null);
+}
+
+async function mcpEditDialog(serverName) {
+  try {
+    const server = await window.dshManager.mcpGet(serverName, 'web');
+    if (server) mcpDialog(server);
+  } catch (err) {
+    showToast('加载失败: ' + err.message, 'error');
+  }
+}
+
+function mcpDialog(existing) {
+  const transport = existing?.transport || 'stdio';
+  const html = `
+    <div class="modal-overlay active" id="mcpModal">
+      <div class="modal" style="min-width:520px;">
+        <h3 class="modal-title">${existing ? '编辑 MCP 服务端' : '添加 MCP 服务端'}</h3>
+        <div class="modal-body">
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">服务端名称 *</label>
+              <input class="input" id="mcpName" placeholder="如: filesystem" value="${existing?.serverName || ''}" ${existing ? 'disabled' : ''}>
+            </div>
+            <div>
+              <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">传输类型</label>
+              <div style="display:flex;gap:8px;">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="radio" name="mcpTransport" value="stdio" ${transport === 'stdio' ? 'checked' : ''} onchange="mcpToggleTransport()">
+                  <span style="font-size:13px;">stdio（本地命令）</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="radio" name="mcpTransport" value="streamable-http" ${transport === 'streamable-http' ? 'checked' : ''} onchange="mcpToggleTransport()">
+                  <span style="font-size:13px;">streamable-http（远程 URL）</span>
+                </label>
+              </div>
+            </div>
+            <div id="mcpStdioFields">
+              <div style="margin-bottom:12px;">
+                <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">命令 *</label>
+                <input class="input" id="mcpCommand" placeholder="如: npx" value="${existing?.command || ''}">
+              </div>
+              <div style="margin-bottom:12px;">
+                <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">参数（逗号分隔）</label>
+                <input class="input" id="mcpArgs" placeholder="如: -y, @modelcontextprotocol/server-filesystem, /home/user" value="${(existing?.args || []).join(', ')}">
+              </div>
+              <div>
+                <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">环境变量（KEY=VALUE，分号分隔）</label>
+                <input class="input" id="mcpEnv" placeholder="如: API_KEY=xxx;TOKEN=yyy" value="${Object.entries(existing?.env || {}).map(([k,v]) => `${k}=${v}`).join('; ')}">
+              </div>
+            </div>
+            <div id="mcpHttpFields" style="display:none;">
+              <div style="margin-bottom:12px;">
+                <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">URL *</label>
+                <input class="input" id="mcpUrl" placeholder="如: https://example.com/mcp" value="${existing?.url || ''}">
+              </div>
+              <div>
+                <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">请求头（KEY=VALUE，分号分隔）</label>
+                <input class="input" id="mcpHeaders" placeholder="如: Authorization=Bearer xxx" value="${Object.entries(existing?.headers || {}).map(([k,v]) => `${k}=${v}`).join('; ')}">
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="mcpDialogClose()">取消</button>
+          <button class="btn btn-primary" onclick="mcpSave()">保存</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const container = document.getElementById('toastContainer');
+  const modal = document.createElement('div');
+  modal.innerHTML = html;
+  document.body.appendChild(modal.firstElementChild);
+}
+
+function mcpToggleTransport() {
+  const stdio = document.getElementById('mcpStdioFields');
+  const http = document.getElementById('mcpHttpFields');
+  const val = document.querySelector('input[name="mcpTransport"]:checked').value;
+  if (stdio && http) {
+    stdio.style.display = val === 'stdio' ? 'block' : 'none';
+    http.style.display = val === 'streamable-http' ? 'block' : 'none';
+  }
+}
+
+function mcpDialogClose() {
+  const modal = document.getElementById('mcpModal');
+  if (modal) modal.remove();
+}
+
+async function mcpSave() {
+  try {
+    const transport = document.querySelector('input[name="mcpTransport"]:checked').value;
+    const serverName = document.getElementById('mcpName').value.trim();
+    if (!serverName) { showToast('服务端名称不能为空', 'error'); return; }
+
+    const config = { transport, serverName };
+
+    if (transport === 'stdio') {
+      const command = document.getElementById('mcpCommand').value.trim();
+      if (!command) { showToast('命令不能为空', 'error'); return; }
+      config.command = command;
+      config.args = (document.getElementById('mcpArgs').value || '').split(',').map(s => s.trim()).filter(Boolean);
+      config.env = {};
+      (document.getElementById('mcpEnv').value || '').split(';').forEach(pair => {
+        const idx = pair.indexOf('=');
+        if (idx > 0) config.env[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+      });
+    } else {
+      const url = document.getElementById('mcpUrl').value.trim();
+      if (!url) { showToast('URL 不能为空', 'error'); return; }
+      config.url = url;
+      config.headers = {};
+      (document.getElementById('mcpHeaders').value || '').split(';').forEach(pair => {
+        const idx = pair.indexOf('=');
+        if (idx > 0) config.headers[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
+      });
+    }
+
+    const result = await window.dshManager.mcpAdd(config);
+    showToast(`MCP 服务端 ${result.serverName} 已保存`, 'success');
+    mcpDialogClose();
+    mcpRenderList();
+  } catch (err) {
+    showToast('保存失败: ' + err.message, 'error');
+  }
+}
+
+async function mcpRemove(serverName) {
+  if (!confirm(`确定要删除 MCP 服务端 "${serverName}" 吗？`)) return;
+  try {
+    await window.dshManager.mcpRemove(serverName, 'web');
+    showToast(`MCP 服务端 ${serverName} 已删除`, 'success');
+    mcpRenderList();
+  } catch (err) {
+    showToast('删除失败: ' + err.message, 'error');
+  }
 }
 
 // ====== 关于页面 ======
