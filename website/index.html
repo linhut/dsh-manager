@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="DSH Manager - DeepSeek Harness 桌面管理工具。一键安装、插件市场、版本管理，跨平台支持 Windows / macOS / Linux。">
+  <meta name="keywords" content="DSH Manager, DeepSeek Harness, DSH, 插件市场, 桌面工具, AI 管理">
+  <meta name="author" content="DSH Manager Team">
+  <title>DSH Manager - DeepSeek Harness 桌面管理工具</title>
+  
+  <!-- Open Graph -->
+  <meta property="og:title" content="DSH Manager - DeepSeek Harness 桌面管理工具">
+  <meta property="og:description" content="一键安装、插件市场、版本管理 - DSH 生态的瑞士军刀">
+  <meta property="og:type" content="website">
+  
+  <!-- 主题初始化：防止闪烁 -->
+  <script>
+    (function() {
+      try {
+        var stored = localStorage.getItem('dshm-theme') || 'system';
+        var dark = stored === 'dark' || (stored === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="assets/images/favicon.svg">
+  <link rel="alternate icon" href="assets/images/favicon.svg">
+  <link rel="apple-touch-icon" href="assets/images/favicon.svg">
+</head>
+<body>
+  <!-- ====== 导航栏 ====== -->
+  <nav class="navbar">
+    <div class="container nav-container">
+      <a href="#" class="nav-brand">
+        <span class="brand-icon">⚡</span>
+        <span class="brand-text">DSH <span class="brand-accent">Manager</span></span>
+      </a>
+      <div class="nav-links" id="navLinks">
+        <a href="#features" class="nav-link">功能</a>
+        <a href="#download" class="nav-link">下载</a>
+        <a href="#marketplace" class="nav-link">插件市场</a>
+        <a href="#docs" class="nav-link">文档</a>
+        <a href="https://github.com/linhut/dsh-manager" target="_blank" class="nav-link nav-gh" rel="noopener">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+        <a href="https://gitcode.com/linhut/dsh-manager" target="_blank" class="nav-link nav-mirror" rel="noopener">🔵 GitCode</a>
+        <a href="https://atomgit.com/linhut/dsh-manager" target="_blank" class="nav-link nav-mirror" rel="noopener">🟢 AtomGit</a>
+      </div>
+      <div class="nav-actions">
+        <button class="theme-toggle" id="themeToggle" title="切换主题" aria-label="切换主题">
+          <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-14v2m0 14v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        </button>
+        <button class="nav-toggle" id="navToggle" aria-label="菜单">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ====== Hero 区 ====== -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-badge">
+        <span class="badge-dot"></span>
+        v0.2.0 · 跨平台桌面应用
+      </div>
+      <h1 class="hero-title">
+        DeepSeek Harness<br>
+        <span class="gradient-text">桌面管理，一键搞定</span>
+      </h1>
+      <p class="hero-subtitle">
+        DSH Manager 是 DeepSeek Harness 的桌面管理工具，无需编程知识即可完成安装、
+        版本管理、插件安装。内置 DSH Web 控制台，装完即用。
+      </p>
+      <div class="hero-actions">
+        <a href="#download" class="btn btn-primary btn-lg">
+          <span class="btn-icon">⬇</span> 免费下载
+        </a>
+        <a href="#features" class="btn btn-secondary btn-lg">
+          <span class="btn-icon">✨</span> 了解功能
+        </a>
+      </div>
+      <div class="hero-stats">
+        <div class="stat">
+          <span class="stat-number" id="statStars">0</span>
+          <span class="stat-label">GitHub Stars</span>
+        </div>
+        <div class="stat">
+          <span class="stat-number" id="statPlugins">0</span>
+          <span class="stat-label">市场插件</span>
+        </div>
+        <div class="stat">
+          <span class="stat-number" id="statPlatforms">3</span>
+          <span class="stat-label">支持平台</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 功能特性 ====== -->
+  <section id="features" class="section features-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">核心功能</span>
+        <h2 class="section-title">开箱即用的管理体验</h2>
+        <p class="section-desc">面向非技术用户的图形化操作，覆盖 DSH 完整生命周期</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">🏠</div>
+          <h3>DSH 控制台</h3>
+          <p>内置浏览器视图，直接打开 DSH Web 界面，无需切换应用即可管理 Agent。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📥</div>
+          <h3>一键安装</h3>
+          <p>自动检测 Node.js 环境，一键安装 DeepSeek Harness，全程图形化进度展示。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🛒</div>
+          <h3>插件市场</h3>
+          <p>自动发现 GitHub 上 dsh-plugin 生态，按 Star 排名展示，一键安装。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📦</div>
+          <h3>版本管理</h3>
+          <p>查看当前版本、浏览可用版本、一键升级，版本历史一目了然。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🔌</div>
+          <h3>插件管理</h3>
+          <p>本地插件列表、安装卸载、更新检测，全部可视化操作。</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🎨</div>
+          <h3>明暗双主题</h3>
+          <p>深色/浅色主题自由切换，跟随系统偏好，保护你的眼睛。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 下载区 ====== -->
+  <section id="download" class="section download-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">下载</span>
+        <h2 class="section-title">选择你的平台</h2>
+        <p class="section-desc">最新版本 <strong>v0.2.0</strong> · 多通道下载，国内用户推荐使用 GitCode 或 AtomGit 镜像</p>
+      </div>
+      <div class="download-grid">
+        <div class="download-card">
+          <div class="download-icon">🪟</div>
+          <h3>Windows</h3>
+          <p>Windows 10 / 11 · x64</p>
+          <span class="download-format">.exe 安装程序 ~78 MB</span>
+          <div class="download-channels">
+            <a class="btn btn-primary download-btn" href="https://github.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+              GitHub 下载
+            </a>
+            <a class="btn btn-secondary download-btn-sm" href="https://gitcode.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              🔵 GitCode 镜像
+            </a>
+            <a class="btn btn-secondary download-btn-sm" href="https://atomgit.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              🟢 AtomGit 镜像
+            </a>
+          </div>
+        </div>
+        <div class="download-card">
+          <div class="download-icon">🍎</div>
+          <h3>macOS</h3>
+          <p>Intel &amp; Apple Silicon</p>
+          <span class="download-format">.dmg 磁盘映像 ~98 MB</span>
+          <div class="download-channels">
+            <a class="btn btn-primary download-btn" href="https://github.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+              GitHub 下载
+            </a>
+            <a class="btn btn-secondary download-btn-sm" href="https://gitcode.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              🔵 GitCode 镜像
+            </a>
+            <a class="btn btn-secondary download-btn-sm" href="https://atomgit.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              🟢 AtomGit 镜像
+            </a>
+          </div>
+        </div>
+        <div class="download-card">
+          <div class="download-icon">🐧</div>
+          <h3>Linux</h3>
+          <p>Ubuntu / Debian / Fedora · x64</p>
+          <span class="download-format">.AppImage ~103 MB</span>
+          <div class="download-channels">
+            <a class="btn btn-primary download-btn" href="https://github.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+              GitHub 下载
+            </a>
+            <a class="btn btn-secondary download-btn-sm" href="https://gitcode.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              🔵 GitCode 镜像
+            </a>
+            <a class="btn btn-secondary download-btn-sm" href="https://atomgit.com/linhut/dsh-manager/releases/latest" target="_blank" rel="noopener">
+              🟢 AtomGit 镜像
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="download-note">
+        <p>💡 所有安装包由 GitHub Actions 自动构建。国内用户如 GitHub 下载缓慢，推荐使用 GitCode 或 AtomGit 镜像通道。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 插件市场预览 ====== -->
+  <section id="marketplace" class="section marketplace-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">插件市场</span>
+        <h2 class="section-title">发现精彩插件</h2>
+        <p class="section-desc">自动扫描 GitHub 上带有 dsh-plugin 标签的项目，按 Star 排名</p>
+      </div>
+      <div class="marketplace-search">
+        <svg class="search-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+        </svg>
+        <input type="text" id="pluginSearch" placeholder="搜索插件 (如: agent, file, web)..." oninput="debounceSearch()">
+      </div>
+      <div class="marketplace-grid" id="pluginGrid">
+        <div class="plugin-card skeleton"><div class="skeleton-line w-60"></div><div class="skeleton-line w-80"></div><div class="skeleton-line w-40"></div></div>
+        <div class="plugin-card skeleton"><div class="skeleton-line w-60"></div><div class="skeleton-line w-80"></div><div class="skeleton-line w-40"></div></div>
+        <div class="plugin-card skeleton"><div class="skeleton-line w-60"></div><div class="skeleton-line w-80"></div><div class="skeleton-line w-40"></div></div>
+      </div>
+      <div class="marketplace-footer">
+        <p class="marketplace-note">🏷️ 插件市场自动扫描 GitHub 上带有 <code>dsh-plugin</code> 标签的仓库</p>
+        <a href="https://github.com/topics/dsh-plugin" target="_blank" class="btn btn-outline btn-sm" rel="noopener">
+          在 GitHub 上浏览所有插件 →
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 文档区 ====== -->
+  <section id="docs" class="section docs-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-tag">快速上手</span>
+        <h2 class="section-title">三分钟上手</h2>
+        <p class="section-desc">从下载到使用 DSH，三步搞定</p>
+      </div>
+      <div class="docs-steps">
+        <div class="doc-card">
+          <div class="doc-step">1</div>
+          <h3>下载安装</h3>
+          <p>选择对应平台安装包，双击安装，无需配置环境变量。</p>
+        </div>
+        <div class="doc-card">
+          <div class="doc-step">2</div>
+          <h3>一键安装 DSH</h3>
+          <p>打开 DSH Manager，点击「安装 DSH」，自动检测环境并完成安装。</p>
+        </div>
+        <div class="doc-card">
+          <div class="doc-step">3</div>
+          <h3>开始使用</h3>
+          <p>进入 DSH 控制台直接使用 Web 界面，或在插件市场扩展能力。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== CTA ====== -->
+  <section class="section cta-section">
+    <div class="container">
+      <div class="cta-content">
+        <h2 class="cta-title">准备好管理你的 DSH 了吗？</h2>
+        <p class="cta-desc">免费开源 · MIT License · 跨平台支持</p>
+        <div class="cta-actions">
+          <a href="#download" class="btn btn-primary btn-lg">立即下载</a>
+          <a href="https://github.com/linhut/dsh-manager" target="_blank" class="btn btn-outline btn-lg" rel="noopener">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            GitHub
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ====== 页脚 ====== -->
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-brand">
+          <span class="brand-icon">⚡</span>
+          <span class="brand-text">DSH <span class="brand-accent">Manager</span></span>
+          <p class="footer-desc">DeepSeek Harness 生态的桌面管理工具</p>
+        </div>
+        <div class="footer-links">
+          <div class="footer-col">
+            <h4>产品</h4>
+            <a href="#features">功能</a>
+            <a href="#download">下载</a>
+            <a href="#marketplace">插件市场</a>
+            <a href="#docs">快速上手</a>
+          </div>
+          <div class="footer-col">
+            <h4>社区</h4>
+            <a href="https://github.com/linhut/dsh-manager" target="_blank" rel="noopener">🐙 GitHub 主站</a>
+            <a href="https://gitcode.com/linhut/dsh-manager" target="_blank" rel="noopener">🔵 GitCode 镜像</a>
+            <a href="https://atomgit.com/linhut/dsh-manager" target="_blank" rel="noopener">🟢 AtomGit 镜像</a>
+            <a href="https://github.com/linhut/dsh-manager/issues" target="_blank" rel="noopener">问题反馈</a>
+            <a href="https://github.com/linhut/dsh-manager/releases" target="_blank" rel="noopener">更新日志</a>
+          </div>
+          <div class="footer-col">
+            <h4>相关资源</h4>
+            <a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank" rel="noopener">DeepSeek Harness</a>
+            <a href="https://github.com/topics/dsh-plugin" target="_blank" rel="noopener">DSH 插件生态</a>
+            <a href="https://deepseek.com" target="_blank" rel="noopener">DeepSeek</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>&copy; 2024 DSH Manager · MIT License</p>
+        <p>Made with ❤️ for the DSH community</p>
+      </div>
+    </div>
+  </footer>
+
+  <script src="assets/js/main.js"></script>
+</body>
+</html>

@@ -81,16 +81,16 @@ export class PluginRegistry {
       {
         id: 999999001,
         name: 'gongwen-skill',
-        fullName: 'dsh-plugin-contrib/gongwen-skill',
-        owner: 'dsh-plugin-contrib',
+        fullName: 'linhut/gongwen-skill',
+        owner: 'linhut',
         description: '公文写作辅助技能 - 支持各类公文格式（通知、报告、请示、函件等），智能生成符合国家标准的公文内容，大幅提升办公效率。',
-        url: 'https://github.com/dsh-plugin-contrib/gongwen-skill',
+        url: 'https://github.com/linhut/gongwen-skill',
         homepage: '',
         stars: 128,
         forks: 34,
         issues: 2,
         language: 'JavaScript',
-        topics: ['dsh-plugin', 'dsh', 'deepseek-harness', 'gongwen', 'writing', 'chinese-document'],
+        topics: ['dsh-plugin', 'dsh', 'deepseek-harness', 'gongwen', 'writing', 'chinese-document', 'recommended'],
         license: 'MIT',
         createdAt: '2024-06-15T08:00:00Z',
         updatedAt: '2024-12-20T10:30:00Z',
@@ -98,6 +98,7 @@ export class PluginRegistry {
         defaultBranch: 'main',
         isTemplate: false,
         archived: false,
+        recommended: true,
       },
     ];
 

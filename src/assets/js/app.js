@@ -492,8 +492,11 @@ async function loadMarketplace(query) {
     }
     grid.innerHTML = results.map(p => `
       <div class="card" style="cursor:default;">
-        <div class="card-header" style="margin-bottom:8px;">
-          <span class="card-title" style="font-size:13px;">${p.fullName}</span>
+        <div class="card-header" style="margin-bottom:8px;flex-wrap:wrap;">
+          <span class="card-title" style="font-size:13px;display:flex;align-items:center;gap:6px;">
+            ${p.fullName}
+            ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}
+          </span>
           <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ${p.stars}</span>
         </div>
         <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${(p.description || '暂无描述').slice(0, 80)}</p>
