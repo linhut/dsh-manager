@@ -6,9 +6,12 @@
   "author": "DSH Manager Team",
   "license": "MIT",
   "scripts": {
-    "build": "npm run build --workspaces",
-    "dev": "npm run dev --workspaces",
-    "clean": "npm run clean --workspaces"
+    "postinstall": "npm install --workspaces",
+    "build": "echo 'No build step required for JS-only packages'",
+    "dev": "echo 'Run node packages/cli/src/bin.js to test'",
+    "clean": "rm -rf node_modules packages/*/node_modules",
+    "start": "node packages/cli/src/bin.js",
+    "dshm": "node packages/cli/src/bin.js"
   },
   "workspaces": [
     "packages/core",

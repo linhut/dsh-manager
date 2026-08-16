@@ -103,6 +103,18 @@
         <p class="section-desc">只需一行命令，即可完成安装</p>
       </div>
       <div class="install-cards">
+        <div class="install-card install-card-featured">
+          <div class="install-card-header">
+            <span class="install-icon">🪄</span>
+            <h3>一键安装（推荐）</h3>
+            <span class="badge badge-green">新手推荐</span>
+          </div>
+          <div class="code-block">
+            <button class="copy-btn" onclick="copyCode(this)">复制</button>
+            <pre><code class="language-powershell">powershell -c "iwr -useb https://raw.githubusercontent.com/linhut/dsh-manager/main/install.ps1 | iex"</code></pre>
+          </div>
+          <p class="install-desc">无需任何编程知识，自动安装 Node.js + DSH Manager + DSH，一行命令全搞定！</p>
+        </div>
         <div class="install-card">
           <div class="install-card-header">
             <span class="install-icon">📦</span>
@@ -123,7 +135,7 @@
             <button class="copy-btn" onclick="copyCode(this)">复制</button>
             <pre><code class="language-bash">dshm</code></pre>
           </div>
-          <p class="install-desc">运行 dshm 启动交互式管理界面</p>
+          <p class="install-desc">运行 <code>dshm</code> 启动交互式管理界面</p>
         </div>
         <div class="install-card">
           <div class="install-card-header">

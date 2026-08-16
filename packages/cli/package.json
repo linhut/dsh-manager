@@ -16,6 +16,6 @@
     "commander": "^15.0.0",
     "inquirer": "^9.2.0",
     "ora": "^8.0.0",
-    "columnify": "^1.6.0"
+    "cliui": "^8.0.1"
   }
 }

@@ -4,8 +4,7 @@
  * 搜索 dsh-plugin 主题仓库、获取仓库详情、README 等
  */
 
-import fetch from 'node-fetch';
-import { DSHError, DSHErrorCodes } from '../../core/src/errors.js';
+import { DSHError, DSHErrorCodes } from '@dsh-manager/core';
 
 const GITHUB_API = 'https://api.github.com';
 

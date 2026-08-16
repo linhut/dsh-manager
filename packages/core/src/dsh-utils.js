@@ -190,6 +190,18 @@ export async function isDSHInPath() {
  * @param {string} filePath
  * @returns {Promise<object|null>}
  */
+export const DSHUtils = {
+  DSH_PATHS,
+  isDSHInstalled,
+  getDSHVersion,
+  getDSHPath,
+  getDSHInfo,
+  listDSHVersions,
+  checkDSHIntegrity,
+  isDSHInPath,
+  readConfigFile,
+};
+
 export async function readConfigFile(filePath) {
   try {
     if (!existsSync(filePath)) return null;

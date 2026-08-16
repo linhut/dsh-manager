@@ -7,8 +7,7 @@
 import { execa } from 'execa';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DSHError, DSHErrorCodes } from '../../core/src/errors.js';
-import { DSH_PATHS } from '../../core/src/dsh-utils.js';
+import { DSHError, DSHErrorCodes } from '@dsh-manager/core';
 import { PluginRegistry } from './registry.js';
 
 export class PluginInstaller {

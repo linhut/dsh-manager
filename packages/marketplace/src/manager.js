@@ -4,7 +4,7 @@
  * 插件生命周期管理：启用/禁用、列表、状态检查
  */
 
-import { DSHError, DSHErrorCodes } from '../../core/src/errors.js';
+import { DSHError, DSHErrorCodes } from '@dsh-manager/core';
 import { PluginRegistry } from './registry.js';
 import { PluginInstaller } from './installer.js';
 
