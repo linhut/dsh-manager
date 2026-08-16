@@ -1,21 +1,95 @@
 {
   "name": "dsh-manager",
   "version": "0.1.0",
-  "private": true,
-  "description": "DSH Manager - DeepSeek Harness 安装与管理工具",
+  "description": "⚡ DeepSeek Harness 安装与管理工具 — 一键安装、插件市场、版本管理",
   "author": "DSH Manager Team",
   "license": "MIT",
+  "type": "module",
+  "main": "electron/main.js",
   "scripts": {
-    "postinstall": "npm install --workspaces",
-    "build": "echo 'No build step required for JS-only packages'",
-    "dev": "echo 'Run node packages/cli/src/bin.js to test'",
-    "clean": "rm -rf node_modules packages/*/node_modules",
-    "start": "node packages/cli/src/bin.js",
-    "dshm": "node packages/cli/src/bin.js"
+    "start": "electron .",
+    "dev": "NODE_ENV=development electron .",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "build:all": "electron-builder --win --mac --linux",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.dshmanager.app",
+    "productName": "DSH Manager",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "packages/**/*",
+      "package.json",
+      "!packages/cli"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DSH Manager",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "Development"
+    },
+    "extraResources": [
+      {
+        "from": "packages",
+        "to": "packages",
+        "filter": ["**/*"]
+      }
+    ]
+  },
+  "dependencies": {
+    "@dsh-manager/core": "*",
+    "@dsh-manager/marketplace": "*",
+    "execa": "^10.0.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
   },
   "workspaces": [
     "packages/core",
-    "packages/cli",
     "packages/marketplace"
   ]
 }

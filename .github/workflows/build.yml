@@ -1,0 +1,116 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Build platform'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+          - linux
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            build-cmd: npm run build:win
+            artifact-name: DSH-Manager-Windows
+            artifact-path: dist/*.exe
+          - os: macos-latest
+            platform: macos
+            build-cmd: npm run build:mac
+            artifact-name: DSH-Manager-macOS
+            artifact-path: dist/*.dmg
+          - os: ubuntu-latest
+            platform: linux
+            build-cmd: npm run build:linux
+            artifact-name: DSH-Manager-Linux
+            artifact-path: dist/*.AppImage
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm install --ignore-scripts
+          npm install -g @dsh-manager/core @dsh-manager/marketplace 2>/dev/null || true
+
+      - name: Build packages
+        run: |
+          cd packages/core && npm install && cd ../..
+          cd packages/marketplace && npm install && cd ../..
+          npm install
+
+      - name: Build ${{ matrix.platform }} installer
+        run: ${{ matrix.build-cmd }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: warn
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: DSH Manager ${{ github.ref_name }}
+          body: |
+            ## 🚀 DSH Manager ${{ github.ref_name }}
+
+            下载适用于你平台的安装包：
+
+            ### Windows
+            - `DSH-Manager-Windows/*.exe` - Windows 安装程序
+
+            ### macOS
+            - `DSH-Manager-macOS/*.dmg` - macOS 磁盘映像
+
+            ### Linux
+            - `DSH-Manager-Linux/*.AppImage` - Linux AppImage
+
+            ---
+            ### 安装说明
+
+            **Windows**: 双击运行 `.exe` 安装程序，按照向导完成安装
+            **macOS**: 打开 `.dmg`，将 DSH Manager 拖到 Applications 文件夹
+            **Linux**: 给 `.AppImage` 添加执行权限后运行
+          files: |
+            artifacts/**/*
+          generate_release_notes: true

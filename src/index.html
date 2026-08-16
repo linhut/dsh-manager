@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; frame-src *;">
+  <title>DSH Manager</title>
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <!-- 自定义标题栏 -->
+  <header class="titlebar">
+    <div class="titlebar-drag">
+      <div class="titlebar-brand">
+        <span class="titlebar-icon">⚡</span>
+        <span class="titlebar-text">DSH Manager</span>
+      </div>
+    </div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn" onclick="dshManager.minimize()" title="最小化">
+        <svg viewBox="0 0 12 12" width="12" height="12"><rect y="5" width="12" height="1.5" fill="currentColor"/></svg>
+      </button>
+      <button class="titlebar-btn" id="maxBtn" onclick="dshManager.maximize()" title="最大化">
+        <svg viewBox="0 0 12 12" width="12" height="12"><rect x="1" y="1" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+      </button>
+      <button class="titlebar-btn titlebar-close" onclick="dshManager.close()" title="关闭">
+        <svg viewBox="0 0 12 12" width="12" height="12"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 侧边栏 -->
+    <nav class="sidebar">
+      <div class="sidebar-logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">DSH Manager</span>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">主要</div>
+        <button class="nav-item active" data-page="dashboard" onclick="switchPage('dashboard')">
+          <span class="nav-icon">🏠</span>
+          <span class="nav-label">DSH 控制台</span>
+        </button>
+        <button class="nav-item" data-page="install" onclick="switchPage('install')">
+          <span class="nav-icon">📥</span>
+          <span class="nav-label">安装 / 升级</span>
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">管理</div>
+        <button class="nav-item" data-page="plugins" onclick="switchPage('plugins')">
+          <span class="nav-icon">🔌</span>
+          <span class="nav-label">插件管理</span>
+        </button>
+        <button class="nav-item" data-page="versions" onclick="switchPage('versions')">
+          <span class="nav-icon">📦</span>
+          <span class="nav-label">版本管理</span>
+        </button>
+        <button class="nav-item" data-page="settings" onclick="switchPage('settings')">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">设置</span>
+        </button>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="dsh-status" id="dshStatus">
+          <span class="status-dot status-unknown"></span>
+          <span class="status-text">检测中...</span>
+        </div>
+        <button class="nav-item" data-page="about" onclick="switchPage('about')">
+          <span class="nav-icon">ℹ️</span>
+          <span class="nav-label">关于</span>
+        </button>
+      </div>
+    </nav>
+
+    <!-- 主内容区 -->
+    <main class="main-content" id="mainContent">
+
+      <!-- ====== 页面: DSH 控制台 ====== -->
+      <div class="page active" id="page-dashboard">
+        <div class="webview-container" id="dshWebviewContainer">
+          <div class="webview-placeholder" id="dshPlaceholder">
+            <div class="placeholder-content">
+              <span class="placeholder-icon">⚡</span>
+              <h2>DeepSeek Harness</h2>
+              <p>DSH 未安装或未运行。请先安装 DSH。</p>
+              <button class="btn btn-primary btn-lg" onclick="switchPage('install')">
+                📥 安装 DSH
+              </button>
+            </div>
+          </div>
+          <webview id="dshWebview" class="dsh-webview" style="display:none;"></webview>
+        </div>
+      </div>
+
+      <!-- ====== 页面: 安装/升级 ====== -->
+      <div class="page" id="page-install">
+        <div class="page-header">
+          <h1 class="page-title">📥 DSH 安装</h1>
+          <p class="page-desc">一键安装 DeepSeek Harness</p>
+        </div>
+        <div id="installContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: 插件管理 ====== -->
+      <div class="page" id="page-plugins">
+        <div class="page-header">
+          <h1 class="page-title">🔌 插件管理</h1>
+          <p class="page-desc">管理已安装的插件，浏览插件市场</p>
+        </div>
+        <div id="pluginsContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: 版本管理 ====== -->
+      <div class="page" id="page-versions">
+        <div class="page-header">
+          <h1 class="page-title">📦 版本管理</h1>
+          <p class="page-desc">查看和切换 DSH 版本</p>
+        </div>
+        <div id="versionsContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: 设置 ====== -->
+      <div class="page" id="page-settings">
+        <div class="page-header">
+          <h1 class="page-title">⚙️ 设置</h1>
+          <p class="page-desc">DSH 配置管理</p>
+        </div>
+        <div id="settingsContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: 关于 ====== -->
+      <div class="page" id="page-about">
+        <div class="page-header">
+          <h1 class="page-title">ℹ️ 关于</h1>
+          <p class="page-desc">DSH Manager 版本信息</p>
+        </div>
+        <div id="aboutContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Toast 通知 -->
+  <div class="toast" id="toastContainer"></div>
+
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
