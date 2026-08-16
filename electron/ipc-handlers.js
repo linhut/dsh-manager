@@ -175,9 +175,15 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   // ====== 插件市场 ======
   ipcMain.handle('marketplace:search', async (_, query, page = 1) => {
-    const { PluginRegistry } = await loadMarketplace();
-    const registry = new PluginRegistry();
-    return await registry.search({ query, page, perPage: 30, forceRefresh: page === 1 });
+    try {
+      const { PluginRegistry } = await loadMarketplace();
+      const registry = new PluginRegistry();
+      return await registry.search({ query, page, perPage: 30, forceRefresh: page === 1 });
+    } catch (error) {
+      console.warn('插件市场搜索失败，返回精选插件降级:', error.message);
+      // 返回空数组，让渲染进程使用本地精选插件降级
+      return [];
+    }
   });
 
   ipcMain.handle('marketplace:plugin-details', async (_, fullName) => {

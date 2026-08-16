@@ -320,18 +320,16 @@ async function installDSH() {
   btn.disabled = true;
   btn.textContent = '⏳ 安装中...';
   progress.style.display = 'block';
+  fill.style.width = '0%';
+  text.textContent = '正在准备安装...';
 
   try {
-    // 模拟进度
-    let p = 0;
-    const interval = setInterval(() => {
-      p = Math.min(p + 5, 80);
-      fill.style.width = p + '%';
-      text.textContent = `正在安装 DSH... ${p}%`;
-    }, 500);
+    // 真实进度提示（不再使用模拟进度条卡在80%）
+    text.textContent = '正在安装 DSH（可能需要几分钟，请耐心等待）...';
+    fill.style.width = '30%';
 
     const result = await window.dshManager.installDSH(null, null);
-    clearInterval(interval);
+    
     fill.style.width = '100%';
     text.textContent = '✅ DSH 安装成功！';
 
@@ -340,8 +338,18 @@ async function installDSH() {
     renderInstallPage();
   } catch (err) {
     fill.style.width = '100%';
-    text.textContent = '❌ 安装失败: ' + err.message;
-    showToast('安装失败: ' + err.message, 'error');
+    const errMsg = err.message || '未知错误';
+    // 检测常见的权限错误
+    if (errMsg.includes('EACCES') || errMsg.includes('EPERM') || errMsg.includes('权限') || errMsg.includes('Access')) {
+      text.innerHTML = `❌ 安装失败：权限不足<br><span style="font-size:12px;color:var(--text-dim);">请右键点击 DSH Manager，选择「以管理员身份运行」后重试</span>`;
+      showToast('安装失败：权限不足，请以管理员身份运行', 'error');
+    } else if (errMsg.includes('timeout') || errMsg.includes('TIMEOUT') || errMsg.includes('网络')) {
+      text.innerHTML = `❌ 安装失败：网络超时<br><span style="font-size:12px;color:var(--text-dim);">请检查网络连接后重试，或使用镜像源安装</span>`;
+      showToast('安装失败：网络超时，请检查网络连接', 'error');
+    } else {
+      text.textContent = '❌ 安装失败: ' + errMsg;
+      showToast('安装失败: ' + errMsg, 'error');
+    }
   } finally {
     state.installing = false;
     btn.disabled = false;
@@ -484,37 +492,84 @@ function closeMarketplace() {
 async function loadMarketplace(query) {
   const grid = document.getElementById('marketplaceGrid');
   grid.innerHTML = '<div class="skeleton" style="height:120px;"></div><div class="skeleton" style="height:120px;"></div><div class="skeleton" style="height:120px;"></div>';
+
+  // 本地预置的精选插件（当 GitHub API 不可用时作为降级展示）
+  const FALLBACK_PLUGINS = [
+    {
+      fullName: 'linhut/gongwen-skill',
+      stars: 128,
+      forks: 34,
+      description: '公文写作辅助技能 - 支持各类公文格式（通知、报告、请示、函件等），智能生成符合国家标准的公文内容，大幅提升办公效率。',
+      language: 'JavaScript',
+      topics: ['dsh-plugin', 'gongwen', 'writing', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'deepseek-ai/deepseek-harness',
+      stars: 0,
+      forks: 0,
+      description: 'DeepSeek Harness - AI 应用开发框架，支持插件化扩展。',
+      language: 'TypeScript',
+      topics: ['dsh', 'deepseek-harness', 'ai'],
+      recommended: false,
+    },
+  ];
+
   try {
-    const results = await window.dshManager.searchPlugins(query, 1);
+    let results;
+    try {
+      results = await window.dshManager.searchPlugins(query, 1);
+    } catch (e) {
+      console.warn('插件市场 API 请求失败，使用精选插件降级:', e.message);
+      results = null;
+    }
+
+    // 如果 API 返回为空或失败，使用精选插件
     if (!results || results.length === 0) {
-      grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">🔍</div><div class="empty-state-title">未找到插件</div></div>';
+      const fallback = query
+        ? FALLBACK_PLUGINS.filter(p => p.fullName.toLowerCase().includes(query.toLowerCase()))
+        : FALLBACK_PLUGINS;
+
+      if (fallback.length === 0) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">🔍</div><div class="empty-state-title">未找到匹配的插件</div><div class="empty-state-desc">请更换关键词搜索，或检查网络连接后刷新</div></div>';
+        return;
+      }
+
+      grid.innerHTML = fallback.map(p => renderPluginCard(p)).join('');
+      // 添加提示
+      grid.innerHTML += '<div style="grid-column:1/-1;text-align:center;padding:12px;color:var(--text-dim);font-size:12px;border-top:1px solid var(--border);margin-top:8px;">⚠️ 无法连接到 GitHub API，以上为精选插件推荐。请检查网络后 <a href="javascript:void(0)" onclick="showMarketplace()" style="color:var(--primary-light);">刷新重试</a></div>';
       return;
     }
-    grid.innerHTML = results.map(p => `
-      <div class="card" style="cursor:default;">
-        <div class="card-header" style="margin-bottom:8px;flex-wrap:wrap;">
-          <span class="card-title" style="font-size:13px;display:flex;align-items:center;gap:6px;">
-            ${p.fullName}
-            ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}
-          </span>
-          <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ${p.stars}</span>
-        </div>
-        <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${(p.description || '暂无描述').slice(0, 80)}</p>
-        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
-          ${p.language ? `<span class="badge badge-gray">${p.language}</span>` : ''}
-          ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
-        </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${p.stars + p.forks} 活跃</span>
-          <button class="btn btn-sm btn-primary" onclick="installMarketPlugin('${p.fullName}')">
-            📥 安装
-          </button>
-        </div>
-      </div>
-    `).join('');
+
+    grid.innerHTML = results.map(p => renderPluginCard(p)).join('');
   } catch (err) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">加载失败</div><div class="empty-state-desc">${err.message}</div></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">加载失败</div><div class="empty-state-desc">${err.message || '请检查网络连接后刷新'}</div></div>`;
   }
+}
+
+function renderPluginCard(p) {
+  return `
+    <div class="card" style="cursor:default;">
+      <div class="card-header" style="margin-bottom:8px;flex-wrap:wrap;">
+        <span class="card-title" style="font-size:13px;display:flex;align-items:center;gap:6px;">
+          ${p.fullName}
+          ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}
+        </span>
+        <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ${p.stars}</span>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${(p.description || '暂无描述').slice(0, 80)}</p>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
+        ${p.language ? `<span class="badge badge-gray">${p.language}</span>` : ''}
+        ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${(p.stars || 0) + (p.forks || 0)} 活跃</span>
+        <button class="btn btn-sm btn-primary" onclick="installMarketPlugin('${p.fullName}')">
+          📥 安装
+        </button>
+      </div>
+    </div>
+  `;
 }
 
 async function searchPlugins(query) {
