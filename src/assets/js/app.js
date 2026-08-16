@@ -15,8 +15,66 @@ const state = {
   installing: false,
 };
 
+// ====== 主题系统 ======
+const THEME_KEY = 'dshm-theme';
+
+function getCurrentTheme() {
+  const stored = localStorage.getItem(THEME_KEY) || 'system';
+  if (stored === 'system') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return stored;
+}
+
+function applyTheme() {
+  const theme = getCurrentTheme();
+  document.documentElement.setAttribute('data-theme', theme);
+  // 更新主题切换按钮图标
+  const toggleBtn = document.getElementById('themeToggle');
+  if (toggleBtn) {
+    toggleBtn.innerHTML = theme === 'dark'
+      ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-14v2m0 14v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
+  }
+}
+
+function setThemeChoice(choice) {
+  localStorage.setItem(THEME_KEY, choice);
+  applyTheme();
+  // 更新设置页的主题选项高亮
+  document.querySelectorAll('.theme-option').forEach(btn => {
+    btn.classList.toggle('theme-option-active', btn.dataset.themeChoice === choice);
+  });
+}
+
+function selectThemeOption(choice) {
+  setThemeChoice(choice);
+  showToast(`主题已切换为: ${choice === 'light' ? '浅色' : choice === 'dark' ? '深色' : '跟随系统'}`, 'success');
+}
+
 // ====== 初始化 ======
 document.addEventListener('DOMContentLoaded', async () => {
+  // 应用主题（在渲染页面之前）
+  applyTheme();
+
+  // 监听系统主题变化（system 模式下自动切换）
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  mq.addEventListener('change', () => {
+    if ((localStorage.getItem(THEME_KEY) || 'system') === 'system') {
+      applyTheme();
+    }
+  });
+
+  // 主题切换按钮
+  const themeToggle = document.getElementById('themeToggle');
+  if (themeToggle) {
+    themeToggle.addEventListener('click', () => {
+      const current = getCurrentTheme();
+      // 切换后固定为用户选择（不再跟随系统）
+      setThemeChoice(current === 'dark' ? 'light' : 'dark');
+    });
+  }
+
   // 窗口最大化监听
   if (window.dshManager) {
     window.dshManager.onMaximizeChange((isMax) => {
@@ -24,6 +82,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? '<svg viewBox="0 0 12 12" width="12" height="12"><rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>'
         : '<svg viewBox="0 0 12 12" width="12" height="12"><rect x="1" y="1" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
     });
+    // 初始化最大化按钮状态
+    try {
+      const isMax = await window.dshManager.isMaximized();
+      document.getElementById('maxBtn').innerHTML = isMax
+        ? '<svg viewBox="0 0 12 12" width="12" height="12"><rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>'
+        : '<svg viewBox="0 0 12 12" width="12" height="12"><rect x="1" y="1" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
+    } catch {}
   }
 
   // 检测 DSH 状态
@@ -137,9 +202,13 @@ async function tryLoadDSHWeb() {
 async function tryStartDSH() {
   showToast('正在尝试启动 DSH...', 'info');
   try {
-    // 通过 IPC 尝试启动 DSH
-    const { execa } = await import('execa');
-    execa('dsh', ['web'], { detached: true, stdio: 'ignore' }).unref();
+    // 通过 IPC 让主进程启动 DSH（渲染进程无法直接访问 execa）
+    const result = await window.dshManager.startDSH();
+    
+    if (!result.success) {
+      showToast('启动失败: ' + (result.error || '未知错误'), 'error');
+      return;
+    }
     
     showToast('DSH 启动命令已发送，请稍候...', 'info');
     
@@ -446,7 +515,75 @@ async function loadMarketplace(query) {
 }
 
 async function searchPlugins(query) {
-  // 在本地插件列表中搜索
+  // 过滤本地插件列表
+  const listEl = document.getElementById('pluginList');
+  if (!listEl) return;
+
+  let localPlugins = [];
+  try {
+    localPlugins = await window.dshManager.getLocalPlugins();
+  } catch {}
+
+  const q = (query || '').trim().toLowerCase();
+  const filtered = q
+    ? localPlugins.filter(p =>
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.id || '').toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q) ||
+        (p.source || '').toLowerCase().includes(q)
+      )
+    : localPlugins;
+
+  if (q && filtered.length === 0) {
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">🔍</div>
+        <div class="empty-state-title">未找到匹配 "{{ESCAPED}}" 的插件</div>
+        <div class="empty-state-desc">换个关键词试试</div>
+      </div>`.replace('{{ESCAPED}}', query);
+    return;
+  }
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-state-icon">🔌</div>
+        <div class="empty-state-title">暂无已安装的插件</div>
+        <div class="empty-state-desc">浏览插件市场，发现并安装你需要的插件</div>
+        <button class="btn btn-primary" onclick="showMarketplace()">🛒 浏览插件市场</button>
+      </div>`;
+    return;
+  }
+
+  listEl.innerHTML = `
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>插件名称</th>
+            <th>版本</th>
+            <th>来源</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(p => `
+            <tr>
+              <td><strong>${p.name || p.id}</strong></td>
+              <td><span class="badge badge-blue">${p.version}</span></td>
+              <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : 'npm'}</td>
+              <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
+              <td>
+                <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${p.id}')">卸载</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+    ${q ? `<p style="margin-top:12px;color:var(--text-dim);font-size:13px;">找到 ${filtered.length} 个匹配插件</p>` : ''}
+  `;
 }
 
 async function installMarketPlugin(fullName) {
@@ -574,6 +711,20 @@ async function renderSettingsPage() {
       </div>
       <div class="card-body">
         <div style="display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <p style="margin-bottom:8px;color:var(--text-secondary);font-size:13px;font-weight:600;">🎨 界面主题</p>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-sm theme-option ${(localStorage.getItem(THEME_KEY) || 'system') === 'light' ? 'theme-option-active' : ''}" data-theme-choice="light" onclick="selectThemeOption('light')">
+                ☀️ 浅色
+              </button>
+              <button class="btn btn-sm theme-option ${(localStorage.getItem(THEME_KEY) || 'system') === 'dark' ? 'theme-option-active' : ''}" data-theme-choice="dark" onclick="selectThemeOption('dark')">
+                🌙 深色
+              </button>
+              <button class="btn btn-sm theme-option ${(localStorage.getItem(THEME_KEY) || 'system') === 'system' ? 'theme-option-active' : ''}" data-theme-choice="system" onclick="selectThemeOption('system')">
+                🖥️ 跟随系统
+              </button>
+            </div>
+          </div>
           <label style="display:flex;align-items:center;gap:12px;cursor:pointer;">
             <input type="checkbox" id="autoStartDSH" checked>
             <span>启动时自动打开 DSH 控制台</span>

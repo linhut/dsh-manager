@@ -5,7 +5,7 @@
  * 功能：版本管理、插件管理、配置管理
  */
 
-import { app, BrowserWindow, ipcMain, shell, Menu, dialog, session } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Menu, dialog, session, nativeTheme } from 'electron';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -18,6 +18,13 @@ const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('-
 
 let mainWindow = null;
 let dshWebView = null;
+
+/**
+ * 获取当前主题对应的窗口背景色
+ */
+function getWindowBackground() {
+  return nativeTheme.shouldUseDarkColors ? '#0B0D17' : '#F8FAFC';
+}
 
 /**
  * 创建主窗口
@@ -38,8 +45,15 @@ function createMainWindow() {
       webviewTag: true,  // 允许使用 webview 加载 DSH 页面
     },
     frame: false,
-    backgroundColor: '#0B0D17',
+    backgroundColor: getWindowBackground(),
     show: false,
+  });
+
+  // 系统主题变化时同步窗口背景色（避免白/黑闪烁）
+  nativeTheme.on('updated', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setBackgroundColor(getWindowBackground());
+    }
   });
 
   // 加载管理界面

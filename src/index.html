@@ -5,6 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; frame-src *;">
   <title>DSH Manager</title>
+  <!-- 主题初始化：在页面渲染前应用主题，避免闪烁 -->
+  <script>
+    (function() {
+      try {
+        var stored = localStorage.getItem('dshm-theme') || 'system';
+        var dark = stored === 'dark' || (stored === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="assets/css/style.css">
 </head>
 <body>
@@ -17,6 +29,9 @@
       </div>
     </div>
     <div class="titlebar-controls">
+      <button class="titlebar-btn" id="themeToggle" title="切换主题">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
       <button class="titlebar-btn" onclick="dshManager.minimize()" title="最小化">
         <svg viewBox="0 0 12 12" width="12" height="12"><rect y="5" width="12" height="1.5" fill="currentColor"/></svg>
       </button>

@@ -12,19 +12,19 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// 动态导入核心模块
+// 动态导入核心模块（使用相对路径，确保打包后可用）
 let core, marketplace;
 
 async function loadCore() {
   if (!core) {
-    core = await import('@dsh-manager/core');
+    core = await import('../packages/core/src/index.js');
   }
   return core;
 }
 
 async function loadMarketplace() {
   if (!marketplace) {
-    marketplace = await import('@dsh-manager/marketplace');
+    marketplace = await import('../packages/marketplace/src/index.js');
   }
   return marketplace;
 }
@@ -85,6 +85,34 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await vm.checkForUpdate();
   });
 
+  ipcMain.handle('dsh:start', async () => {
+    try {
+      const { execa } = await import('execa');
+      // 分离启动 DSH Web 服务（不阻塞主进程）
+      const child = execa('dsh', ['web'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        env: { ...process.env, NO_COLOR: '1' },
+      });
+      child.unref();
+      return { success: true, message: 'DSH 启动命令已发送' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('dsh:stop', async () => {
+    try {
+      const { execa } = await import('execa');
+      // 通过 dsh CLI 停止 / 或直接结束进程（这里尝试优雅停止）
+      const result = await execa('dsh', ['stop'], { reject: false, timeout: 10000 });
+      return { success: result.exitCode === 0, message: result.stdout || '已停止' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
   ipcMain.handle('dsh:get-versions', async () => {
     const { DSHVersionManager } = await loadCore();
     const vm = new DSHVersionManager();
@@ -98,7 +126,6 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:doctor', async () => {
     const { execa } = await import('execa');
     const { isDSHInstalled, getDSHVersion, DSH_PATHS } = await loadCore();
-    const { existsSync } = await import('node:fs');
 
     const results = [];
 

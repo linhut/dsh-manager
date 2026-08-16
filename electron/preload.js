@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('dshManager', {
   checkDSHUpdate: () => ipcRenderer.invoke('dsh:check-update'),
   getDSHVersions: () => ipcRenderer.invoke('dsh:get-versions'),
   doctorCheck: () => ipcRenderer.invoke('dsh:doctor'),
+  startDSH: () => ipcRenderer.invoke('dsh:start'),
+  stopDSH: () => ipcRenderer.invoke('dsh:stop'),
 
   // ====== 插件市场 ======
   searchPlugins: (query, page) => ipcRenderer.invoke('marketplace:search', query, page),
