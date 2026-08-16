@@ -10,6 +10,16 @@
 [![macOS](https://img.shields.io/badge/platform-macOS-lightgrey)](https://github.com/linhut/dsh-manager/releases)
 [![Linux](https://img.shields.io/badge/platform-Linux-orange)](https://github.com/linhut/dsh-manager/releases)
 [![Website](https://img.shields.io/badge/website-dsh.linhut.cn-4F46E5)](https://dsh.linhut.cn/)
+[![GitCode](https://img.shields.io/badge/GitCode-repo-4F46E5)](https://gitcode.com/linhut/dsh-manager)
+[![AtomGit](https://img.shields.io/badge/AtomGit-repo-4F46E5)](https://atomgit.com/linhut/dsh-manager)
+
+### 📦 镜像仓库
+
+| 平台 | 地址 |
+|------|------|
+| 🐙 **GitHub** | [github.com/linhut/dsh-manager](https://github.com/linhut/dsh-manager) |
+| 🔵 **GitCode** | [gitcode.com/linhut/dsh-manager](https://gitcode.com/linhut/dsh-manager) |
+| 🟢 **AtomGit** | [atomgit.com/linhut/dsh-manager](https://atomgit.com/linhut/dsh-manager) |
 
 ---
 
