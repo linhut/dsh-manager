@@ -142,7 +142,7 @@ Write-Step 3 "安装 DSH Manager"
 Write-Host "  正在通过 npm 安装..." -ForegroundColor Yellow
 
 try {
-    $npmOutput = npm install -g @dsh-manager/cli 2>&1
+    $npmOutput = https://github.com/linhut/dsh-manager/releases 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Success "DSH Manager 安装成功"
     } else {
@@ -194,7 +194,7 @@ try {
         Write-Success "DeepSeek Harness 安装成功"
     } else {
         # 直接通过 npm 安装
-        npm install -g @deepseek-ai/dsh 2>&1
+        https://github.com/linhut/dsh-manager/releases (下载最新 EXE 安装包)
         Write-Success "DeepSeek Harness 安装成功（npm 模式）"
     }
 } catch {
