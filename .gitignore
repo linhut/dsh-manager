@@ -37,3 +37,6 @@ build/png-temp/
 website/
 DEPLOY.md
 DEPLOY.md
+
+# Old preload (renamed to .cjs)
+electron/preload.js

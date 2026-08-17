@@ -38,7 +38,7 @@ function createMainWindow() {
     title: 'DSH Manager',
     icon: join(__dirname, '../build/icon.png'),
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
+      preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
