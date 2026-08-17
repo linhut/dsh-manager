@@ -46,32 +46,72 @@ export class PluginRegistry {
       }
     }
 
+    // ----- 多源搜索策略 -----
+    // ① 优先尝试 GitHub API
+    // ② 如果 GitHub 不可用，尝试 npm registry（国内通常可访问）
+    // ③ 都失败则返回空数组，由渲染进程用预置列表降级
+
+    let githubResults = [];
+    let npmResults = [];
+    let githubError = null;
+
     if (query) {
-      // 扩展搜索：同时搜索多个关键词
       try {
-        results = await this.github.searchRepositories(
+        githubResults = await this.github.searchRepositories(
           `dsh-plugin OR deepseek-harness-plugin ${query} sort:stars-desc`,
           { page, perPage }
         );
       } catch (e) {
-        console.warn('GitHub API 搜索失败，返回精选插件:', e.message);
-        results = [];
+        githubError = e.message;
+        console.warn('GitHub API 搜索失败，尝试 npm registry:', e.message);
       }
     } else {
       try {
-        results = await this.github.searchPlugins({ page, perPage });
+        githubResults = await this.github.searchPlugins({ page, perPage });
       } catch (e) {
-        console.warn('GitHub API 获取插件列表失败，返回精选插件:', e.message);
-        results = [];
+        githubError = e.message;
+        console.warn('GitHub API 获取插件列表失败，尝试 npm registry:', e.message);
       }
     }
 
-    // 补充信息：检查是否有 dsh-plugin 标签
-    results = results.filter(r => 
-      r.topics.includes('dsh-plugin') || 
-      r.topics.includes('dsh') ||
-      r.topics.includes('deepseek-harness')
-    );
+    // GitHub 失败时，从 npm registry 获取数据
+    if (githubResults.length === 0 && githubError && page === 1) {
+      try {
+        npmResults = await this.github.searchNpm({ size: perPage });
+        // 如果有搜索关键词，过滤 npm 结果
+        if (query) {
+          const q = query.toLowerCase();
+          npmResults = npmResults.filter(p =>
+            (p.name || '').toLowerCase().includes(q) ||
+            (p.description || '').toLowerCase().includes(q) ||
+            (p.topics || []).some(t => t.toLowerCase().includes(q))
+          );
+        }
+      } catch (e) {
+        console.warn('npm registry 搜索也失败，使用预置列表:', e.message);
+      }
+    }
+
+    // 合并 GitHub + npm 结果（去重）
+    const seenNames = new Set();
+    results = [...githubResults, ...npmResults].filter(item => {
+      const key = item.fullName || item.name;
+      if (seenNames.has(key)) return false;
+      seenNames.add(key);
+      return true;
+    });
+
+    // 补充信息：检查是否有 dsh-plugin 标签（仅对 GitHub 来源）
+    // npm 来源的插件可能没有 dsh-plugin 标签，但因为是 keywords 匹配的，保留
+    results = results.filter(r => {
+      if (r._source === 'npm') return true; // npm 来源保留
+      // GitHub 来源需要匹配标签
+      return r.topics && (
+        r.topics.includes('dsh-plugin') ||
+        r.topics.includes('dsh') ||
+        r.topics.includes('deepseek-harness')
+      );
+    });
 
     // 注入精选插件（无论 API 是否有返回，gongwen-skill 等始终可见）
     results = this._injectFeaturedPlugins(results);

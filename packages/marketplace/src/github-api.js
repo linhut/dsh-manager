@@ -7,6 +7,7 @@
 import { DSHError, DSHErrorCodes } from '../../core/src/index.js';
 
 const GITHUB_API = 'https://api.github.com';
+const NPM_REGISTRY = 'https://registry.npmjs.org';
 /** 每次请求超时（毫秒） */
 const FETCH_TIMEOUT = 15_000;
 /** 最大重试次数 */
@@ -95,6 +96,74 @@ export class GitHubAPI {
       throw new DSHError(
         DSHErrorCodes.NETWORK_ERROR,
         `网络请求失败: ${error.message}`
+      );
+    }
+  }
+
+  /**
+   * 从 npm registry 搜索 dsh-plugin 相关包（作为 GitHub API 的备用源）
+   * npm 在国内通常可访问，且 DSH 插件都是 npm 包
+   * @param {object} [options]
+   * @param {number} [options.size=30]
+   * @returns {Promise<Array<object>>}
+   */
+  async searchNpm(options = {}) {
+    const { size = 30 } = options;
+    // 搜索 keywords 包含 dsh-plugin 的 npm 包
+    const url = `${NPM_REGISTRY}/-/v1/search?text=keywords:dsh-plugin&size=${Math.min(size, 100)}`;
+
+    try {
+      const response = await this._fetchWithRetry(url, {
+        headers: { 'Accept': 'application/json' },
+      });
+
+      if (!response.ok) {
+        throw new DSHError(
+          DSHErrorCodes.NETWORK_ERROR,
+          `npm registry 错误: ${response.status}`
+        );
+      }
+
+      const data = await response.json();
+      const objects = data.objects || [];
+
+      return objects.map((item, idx) => {
+        const pkg = item.package || {};
+        const score = item.score || {};
+        // 从 repository URL 提取仓库信息
+        const repoUrl = pkg.links?.repository || pkg.links?.homepage || '';
+        const repoMatch = repoUrl.match(/github\.com\/([^/]+)\/([^/.#?]+)/);
+        const owner = repoMatch ? repoMatch[1] : 'npm';
+        const repo = repoMatch ? repoMatch[2] : pkg.name.replace(/^@/, '').replace(/\//, '-');
+
+        return {
+          id: `npm-${pkg.name}-${idx}`,
+          name: repo,
+          fullName: repoMatch ? `${owner}/${repo}` : pkg.name,
+          owner,
+          description: pkg.description || '暂无描述',
+          url: pkg.links?.homepage || repoUrl || `https://www.npmjs.com/package/${pkg.name}`,
+          homepage: pkg.links?.homepage || '',
+          stars: Math.round((score.final || 0) * 100), // 用评分作为 Star 数的近似值
+          forks: 0,
+          issues: 0,
+          language: 'JavaScript',
+          topics: (pkg.keywords || []).filter(k => typeof k === 'string'),
+          license: null,
+          createdAt: pkg.date || new Date().toISOString(),
+          updatedAt: pkg.date || new Date().toISOString(),
+          pushedAt: pkg.date || new Date().toISOString(),
+          defaultBranch: 'main',
+          isTemplate: false,
+          archived: false,
+          _source: 'npm', // 标记来源为 npm
+        };
+      });
+    } catch (error) {
+      if (error instanceof DSHError) throw error;
+      throw new DSHError(
+        DSHErrorCodes.NETWORK_ERROR,
+        `npm 搜索失败: ${error.message}`
       );
     }
   }
