@@ -24,7 +24,7 @@ export class GitHubAPI {
     this.token = options.token || process.env.GITHUB_TOKEN || null;
     this.headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'dsh-manager/0.4.0',
+      'User-Agent': 'dsh-manager/0.5.0',
       ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
     };
   }

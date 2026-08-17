@@ -18,6 +18,9 @@ const state = {
   pnpmInstallGuide: '',
   dshInfo: null,
   marketResults: [],
+  marketCategory: 'all',
+  marketSort: 'top',
+  localPlugins: [],
 };
 
 // ====== 主题系统 ======
@@ -746,11 +749,26 @@ async function renderPluginsPage() {
           <button class="btn btn-sm btn-ghost" onclick="closeMarketplace()">✕ 关闭</button>
         </div>
         <div class="card-body">
-          <div class="search-box" style="max-width:100%;margin-bottom:16px;">
+          <div class="search-box" style="max-width:100%;margin-bottom:12px;">
             <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
             </svg>
             <input type="text" id="marketplaceSearch" placeholder="搜索插件 (如: agent, file, web)..." onkeydown="if(event.key==='Enter')loadMarketplace(this.value)">
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+            <span style="font-size:12px;color:var(--text-dim);">分类:</span>
+            <button class="btn btn-sm market-cat ${state.marketCategory === 'all' ? 'btn-primary' : 'btn-secondary'}" data-cat="all" onclick="setMarketCategory('all')">全部</button>
+            <button class="btn btn-sm market-cat ${state.marketCategory === 'recommended' ? 'btn-primary' : 'btn-secondary'}" data-cat="recommended" onclick="setMarketCategory('recommended')">⭐ 推荐</button>
+            <button class="btn btn-sm market-cat ${state.marketCategory === 'ui' ? 'btn-primary' : 'btn-secondary'}" data-cat="ui" onclick="setMarketCategory('ui')">🖥️ UI 皮肤</button>
+            <button class="btn btn-sm market-cat ${state.marketCategory === 'tool' ? 'btn-primary' : 'btn-secondary'}" data-cat="tool" onclick="setMarketCategory('tool')">🔧 工具</button>
+            <button class="btn btn-sm market-cat ${state.marketCategory === 'writing' ? 'btn-primary' : 'btn-secondary'}" data-cat="writing" onclick="setMarketCategory('writing')">📝 写作</button>
+            <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">
+              <span style="font-size:12px;color:var(--text-dim);">排序:</span>
+              <select class="input" id="marketSort" style="width:auto;padding:4px 8px;" onchange="setMarketSort(this.value)">
+                <option value="top">⭐ 热门优先</option>
+                <option value="new">🆕 最新优先</option>
+              </select>
+            </span>
           </div>
           <div id="marketplaceGrid" class="grid-3">
             <div class="skeleton" style="height:120px;"></div>
@@ -767,11 +785,72 @@ async function renderPluginsPage() {
 async function showMarketplace() {
   const section = document.getElementById('marketplaceSection');
   section.style.display = 'block';
+  // 加载本地插件列表，用于市场卡片"已安装"标记
+  try {
+    state.localPlugins = await window.dshManager.getLocalPlugins();
+  } catch {
+    state.localPlugins = [];
+  }
   await loadMarketplace('');
 }
 
 function closeMarketplace() {
   document.getElementById('marketplaceSection').style.display = 'none';
+}
+
+// ====== 市场分类/排序 ======
+function setMarketCategory(cat) {
+  state.marketCategory = cat;
+  document.querySelectorAll('.market-cat').forEach(b => {
+    b.className = `btn btn-sm market-cat ${b.dataset.cat === cat ? 'btn-primary' : 'btn-secondary'}`;
+  });
+  renderMarketplaceGrid();
+}
+
+function setMarketSort(sort) {
+  state.marketSort = sort;
+  renderMarketplaceGrid();
+}
+
+function renderMarketplaceGrid() {
+  const grid = document.getElementById('marketplaceGrid');
+  if (!grid) return;
+  const results = state.marketResults || [];
+  const query = (document.getElementById('marketplaceSearch')?.value || '').trim().toLowerCase();
+
+  // 关键词过滤
+  let filtered = query
+    ? results.filter(p =>
+        (p.fullName || '').toLowerCase().includes(query) ||
+        (p.description || '').toLowerCase().includes(query) ||
+        (p.topics || []).some(t => t.toLowerCase().includes(query)))
+    : [...results];
+
+  // 分类过滤
+  if (state.marketCategory !== 'all') {
+    filtered = filtered.filter(p => {
+      if (state.marketCategory === 'recommended') return p.recommended;
+      if (state.marketCategory === 'ui') return (p.topics || []).some(t => /web-ui|skin|theme|ui/i.test(t));
+      if (state.marketCategory === 'tool') return (p.topics || []).some(t => /tool|util|helper|cli|ssh/i.test(t));
+      if (state.marketCategory === 'writing') return (p.topics || []).some(t => /writ|gongwen|doc|article|report/i.test(t));
+      return true;
+    });
+  }
+
+  // 排序
+  if (state.marketSort === 'new') {
+    filtered.sort((a, b) => (b.pushedAt || b.createdAt || '').localeCompare(a.pushedAt || a.createdAt || ''));
+  } else {
+    filtered.sort((a, b) => (b.stars || 0) - (a.stars || 0));
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">🔍</div><div class="empty-state-title">没有符合条件的插件</div><div class="empty-state-desc">试试切换分类或调整搜索关键词</div></div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map(p => renderPluginCard(p)).join('') +
+    `<div style="grid-column:1/-1;text-align:center;padding:10px;color:var(--text-dim);font-size:12px;border-top:1px solid var(--border);margin-top:8px;">共 ${filtered.length} 个插件</div>`;
 }
 
 async function loadMarketplace(query) {
@@ -821,20 +900,28 @@ async function loadMarketplace(query) {
       }
       state.marketResults = fallback;
 
-      grid.innerHTML = fallback.map(p => renderPluginCard(p)).join('');
+      renderMarketplaceGrid();
       // 添加提示
       grid.innerHTML += '<div style="grid-column:1/-1;text-align:center;padding:12px;color:var(--text-dim);font-size:12px;border-top:1px solid var(--border);margin-top:8px;">⚠️ 无法连接到 GitHub API，以上为精选插件推荐。请检查网络后 <a href="javascript:void(0)" onclick="showMarketplace()" style="color:var(--primary-light);">刷新重试</a></div>';
       return;
     }
 
     state.marketResults = results;
-    grid.innerHTML = results.map(p => renderPluginCard(p)).join('');
+    renderMarketplaceGrid();
   } catch (err) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">加载失败</div><div class="empty-state-desc">${err.message || '请检查网络连接后刷新'}</div></div>`;
   }
 }
 
 function renderPluginCard(p) {
+  const isInstalled = (state.localPlugins || []).some(l => {
+    const lName = (l.fullName || l.source || '').toLowerCase();
+    const pName = (p.fullName || '').toLowerCase();
+    return lName.includes(pName) || pName.includes(lName) || (l.id && pName.includes(l.id.toLowerCase()));
+  });
+  const updated = p.pushedAt || p.updatedAt || p.createdAt;
+  const updatedStr = updated ? new Date(updated).toLocaleDateString() : '';
+  const npmVersion = p._source === 'npm' && p.version ? p.version : '';
   return `
     <div class="card" style="cursor:pointer;" onclick="showPluginDetails('${p.fullName}')">
       <div class="card-header" style="margin-bottom:8px;flex-wrap:wrap;">
@@ -842,20 +929,22 @@ function renderPluginCard(p) {
           ${p.fullName}
           ${p._source === 'npm' ? '<span class="badge badge-gray" title="来源：npm registry">📦 npm</span>' : ''}
           ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}
+          ${isInstalled ? '<span class="badge badge-green">✓ 已安装</span>' : ''}
         </span>
         <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ${p.stars}</span>
       </div>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${(p.description || '暂无描述').slice(0, 80)}</p>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
         ${p.language ? `<span class="badge badge-gray">${p.language}</span>` : ''}
+        ${npmVersion ? `<span class="badge badge-blue" title="npm 版本">v${npmVersion}</span>` : ''}
         ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${(p.stars || 0) + (p.forks || 0)} 活跃</span>
+        <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${(p.stars || 0) + (p.forks || 0)} 活跃${updatedStr ? `  · 更新 ${updatedStr}` : ''}</span>
         <span style="display:flex;gap:6px;">
           <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();showPluginDetails('${p.fullName}')">👁 详情</button>
-          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();installMarketPlugin('${p.fullName}')">
-            📥 安装
+          <button class="btn btn-sm ${isInstalled ? 'btn-secondary' : 'btn-primary'}" onclick="event.stopPropagation();installMarketPlugin('${p.fullName}')">
+            ${isInstalled ? '✓ 已装' : '📥 安装'}
           </button>
         </span>
       </div>
@@ -887,6 +976,11 @@ async function showPluginDetails(fullName) {
           ${p.license ? `<span>📄 ${p.license}</span>` : ''}
           ${p.issues ? `<span>🐞 ${p.issues}</span>` : ''}
         </div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:12px;color:var(--text-dim);">
+          ${p.createdAt ? `<span>🗓️ 创建 ${new Date(p.createdAt).toLocaleDateString()}</span>` : ''}
+          ${p.pushedAt ? `<span>🔄 更新 ${new Date(p.pushedAt).toLocaleDateString()}</span>` : ''}
+          ${p.homepage ? `<span>🏠 <a href="javascript:void(0)" onclick="window.dshManager.openExternal('${p.homepage}')" style="color:var(--primary-light);">主页</a></span>` : ''}
+        </div>
         <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px;">${p.description || '暂无描述'}</p>
         <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
           ${(p.topics || []).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
@@ -914,9 +1008,21 @@ async function showPluginDetails(fullName) {
     if (info.packageJson && Object.keys(info.packageJson).length > 0) {
       html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">📦 ${info.packageJson.npmPackage || ''}${info.packageJson.version ? ` @ ${info.packageJson.version}` : ''}${info.packageJson.dshPlugin ? ' · dsh-plugin' : ''}${info.packageJson.cordisPlugin ? ' · cordis' : ''}</div>`;
     }
-    // README 预览（最多 600 字）
+    // README 图片预览（AppStore 风格截图展示，最多 3 张）
     if (info.readme) {
-      const plain = info.readme.replace(/```[\s\S]*?```/g, '').replace(/[#>*_`~\[\]()!-]/g, '').replace(/\s+/g, ' ').trim();
+      const imgMatches = [...info.readme.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m => m[1]).filter(u => /\.(png|jpe?g|gif|webp)(\?|$)/i.test(u)).slice(0, 3);
+      if (imgMatches.length > 0) {
+        html += `<div style="margin-bottom:12px;">
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:6px;"><strong>🖼️ 预览</strong></p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            ${imgMatches.map(u => {
+              const src = u.startsWith('http') ? u : `https://raw.githubusercontent.com/${fullName}/main/${u.replace(/^\.?\//, '')}`;
+              return `<img src="${src}" style="max-width:100%;max-height:160px;border-radius:var(--radius-sm);border:1px solid var(--border);" loading="lazy" onerror="this.style.display='none'">`;
+            }).join('')}
+          </div>
+        </div>`;
+      }
+      const plain = info.readme.replace(/```[\s\S]*?```/g, '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/[#>*_`~\[\]()!-]/g, '').replace(/\s+/g, ' ').trim();
       html += `<div style="font-size:12px;color:var(--text-muted);line-height:1.7;background:var(--bg-primary);padding:12px;border-radius:var(--radius-sm);max-height:240px;overflow-y:auto;margin-bottom:12px;">${plain.slice(0, 600)}${plain.length > 600 ? '...' : ''}</div>`;
     }
     // 最近版本

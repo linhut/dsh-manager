@@ -393,7 +393,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       );
       return pkg.version;
     } catch {
-      return '0.4.0';
+      return '0.5.0';
     }
   });
 
