@@ -33,3 +33,7 @@ build/*.png
 build/*.ico
 build/*.icns
 build/png-temp/
+# Website (local deployment only, not synced to GitHub)
+website/
+DEPLOY.md
+DEPLOY.md
