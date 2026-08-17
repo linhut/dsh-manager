@@ -26,12 +26,24 @@ contextBridge.exposeInMainWorld('dshManager', {
   getDSHInfo: () => ipcRenderer.invoke('dsh:get-info'),
   installDSH: (version, registry, tool) => ipcRenderer.invoke('dsh:install', version, registry, tool),
   uninstallDSH: () => ipcRenderer.invoke('dsh:uninstall'),
-  upgradeDSH: () => ipcRenderer.invoke('dsh:upgrade'),
   checkDSHUpdate: () => ipcRenderer.invoke('dsh:check-update'),
   getDSHVersions: () => ipcRenderer.invoke('dsh:get-versions'),
+  switchDSHVersion: (version) => ipcRenderer.invoke('dsh:switch-version', version),
   doctorCheck: () => ipcRenderer.invoke('dsh:doctor'),
   startDSH: () => ipcRenderer.invoke('dsh:start'),
   stopDSH: () => ipcRenderer.invoke('dsh:stop'),
+
+  // ====== 数据管理 ======
+  getDSHStorageInfo: () => ipcRenderer.invoke('dsh:storage-info'),
+  cleanDSHData: (opts) => ipcRenderer.invoke('dsh:clean-data', opts),
+
+  // ====== 进程管理 ======
+  getDSHProcessInfo: () => ipcRenderer.invoke('dsh:process-info'),
+
+  // ====== Profile 管理 ======
+  listProfiles: () => ipcRenderer.invoke('dsh:list-profiles'),
+  createProfile: (name) => ipcRenderer.invoke('dsh:create-profile', name),
+  backupProfile: (name) => ipcRenderer.invoke('dsh:backup-profile', name),
 
   // ====== 插件市场 ======
   searchPlugins: (query, page) => ipcRenderer.invoke('marketplace:search', query, page),
@@ -40,10 +52,15 @@ contextBridge.exposeInMainWorld('dshManager', {
   uninstallPlugin: (pluginId) => ipcRenderer.invoke('marketplace:uninstall-plugin', pluginId),
   getLocalPlugins: () => ipcRenderer.invoke('marketplace:local-plugins'),
   checkPluginUpdates: () => ipcRenderer.invoke('marketplace:check-updates'),
+  enablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:enable-plugin', pluginId),
+  disablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:disable-plugin', pluginId),
+  batchInstallPlugins: (sources) => ipcRenderer.invoke('marketplace:batch-install', sources),
+  pickPluginDir: () => ipcRenderer.invoke('marketplace:pick-plugin-dir'),
 
   // ====== 配置管理 ======
   getConfig: (key) => ipcRenderer.invoke('config:get', key),
   setConfig: (key, value) => ipcRenderer.invoke('config:set', key, value),
+  deleteConfig: (key) => ipcRenderer.invoke('config:delete', key),
   getAllConfig: () => ipcRenderer.invoke('config:get-all'),
   getLLMProviders: () => ipcRenderer.invoke('config:llm-providers'),
 
@@ -53,16 +70,11 @@ contextBridge.exposeInMainWorld('dshManager', {
   mcpAdd: (config) => ipcRenderer.invoke('mcp:add', config),
   mcpRemove: (serverName, profile) => ipcRenderer.invoke('mcp:remove', serverName, profile),
 
-  // ====== 导航 ======
-  onNavigate: (callback) => {
-    ipcRenderer.on('navigate', (_, page) => callback(page));
-  },
-
   // ====== 系统 ======
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
-  getPlatform: () => process.platform,
   checkPnpm: () => ipcRenderer.invoke('app:check-pnpm'),
+  installPnpm: () => ipcRenderer.invoke('app:install-pnpm'),
 
   // ====== 事件监听 ======
   onInstallProgress: (callback) => {

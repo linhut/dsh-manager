@@ -464,6 +464,12 @@ body, .sidebar, .main-content, .card, .titlebar, .nav-item, .btn, .input, .badge
 }
 
 /* ====== Webview ====== */
+.dash-toolbar {
+  align-items: center;
+  gap: 12px;
+  padding: 8px 4px;
+  margin-bottom: 8px;
+}
 .webview-container {
   display: flex;
   flex-direction: column;

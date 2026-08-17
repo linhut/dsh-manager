@@ -88,6 +88,17 @@ export class DSHConfig {
   }
 
   /**
+   * 删除配置项
+   * @param {string} key - 点号分隔的键路径
+   */
+  async delete(key) {
+    const { settings } = await this.read();
+    if (this._deleteNested(settings, key)) {
+      await this.write(settings);
+    }
+  }
+
+  /**
    * 列出所有已配置的 LLM 提供商
    * @returns {Promise<Array<{name: string, provider: string, model: string}>>}
    */
@@ -149,6 +160,22 @@ export class DSHConfig {
       current = current[keys[i]];
     }
     current[keys[keys.length - 1]] = value;
+  }
+
+  /** @private */
+  _deleteNested(obj, path) {
+    const keys = path.split('.');
+    let current = obj;
+    for (let i = 0; i < keys.length - 1; i++) {
+      if (!current[keys[i]] || typeof current[keys[i]] !== 'object') return false;
+      current = current[keys[i]];
+    }
+    const last = keys[keys.length - 1];
+    if (current && last in current) {
+      delete current[last];
+      return true;
+    }
+    return false;
   }
 
   /**

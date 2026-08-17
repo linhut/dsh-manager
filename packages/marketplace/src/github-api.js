@@ -169,6 +169,75 @@ export class GitHubAPI {
   }
 
   /**
+   * 按包名直接查询 npm 包信息
+   * 
+   * 用于处理 owner/repo 形式的查询在 GitHub 上不存在时回退到 npm 包
+   * （例如 linxin666/dsh-web-ui-all → npm 包 @linxin666/dsh-web-ui-all）
+   * @param {string} packageName - npm 包名，如 @linxin666/dsh-web-ui-all
+   * @returns {Promise<object|null>} 与 _formatRepo 兼容的结构
+   */
+  async getNpmPackage(packageName) {
+    // 仅编码斜杠，保留 @，如 @linxin666%2Fdsh-web-ui-all
+    const encoded = packageName.replace(/\//g, '%2F');
+    const url = `${NPM_REGISTRY}/${encoded}`;
+
+    try {
+      const response = await this._fetchWithRetry(url, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      const latest = data['dist-tags']?.latest;
+      const meta = latest ? data.versions?.[latest] : data;
+
+      // 从 repository 字段提取 GitHub 信息
+      let owner = '';
+      let repo = packageName.replace(/^@[^/]+\//, '');
+      const repoUrl = typeof meta?.repository === 'string'
+        ? meta.repository
+        : meta?.repository?.url || '';
+      const repoMatch = repoUrl.match(/github\.com\/([^/]+)\/([^/.#?]+)/);
+      if (repoMatch) {
+        owner = repoMatch[1];
+        repo = repoMatch[2];
+      } else if (packageName.startsWith('@')) {
+        owner = packageName.slice(1).split('/')[0];
+      }
+
+      const license = typeof meta?.license === 'string'
+        ? meta.license
+        : meta?.license?.spdx_id || null;
+
+      return {
+        id: `npm-${packageName}`,
+        name: repo,
+        fullName: packageName,
+        owner,
+        description: meta?.description || data.description || '暂无描述',
+        url: repoUrl || `https://www.npmjs.com/package/${packageName}`,
+        homepage: meta?.homepage || '',
+        stars: 0,
+        forks: 0,
+        issues: 0,
+        language: meta?.language || 'JavaScript',
+        topics: Array.isArray(meta?.keywords) ? meta.keywords : [],
+        license,
+        createdAt: data.time?.created || new Date().toISOString(),
+        updatedAt: data.time?.modified || new Date().toISOString(),
+        pushedAt: data.time?.modified || new Date().toISOString(),
+        defaultBranch: 'main',
+        isTemplate: false,
+        archived: false,
+        version: latest || meta?.version || null,
+        _source: 'npm', // 标记来源为 npm
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
    * 获取仓库详细信息
    * @param {string} owner - 仓库所有者
    * @param {string} repo - 仓库名称

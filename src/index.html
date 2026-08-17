@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; frame-src *;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://127.0.0.1:3080 https://api.github.com https://raw.githubusercontent.com; frame-src *;">
   <title>DSH Manager</title>
   <!-- 主题初始化：在页面渲染前应用主题，避免闪烁 -->
   <script>
@@ -101,6 +101,8 @@
 
       <!-- ====== 页面: DSH 控制台 ====== -->
       <div class="page active" id="page-dashboard">
+        <div class="dash-toolbar" id="dashToolbar" style="display:none;"></div>
+        <div id="dashInfo" style="display:none;"></div>
         <div class="webview-container" id="dshWebviewContainer">
           <div class="webview-placeholder" id="dshPlaceholder">
             <div class="placeholder-content">

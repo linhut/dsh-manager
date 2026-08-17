@@ -4,10 +4,15 @@
  * 插件发现、安装、管理一站式解决方案
  */
 
-export { PluginRegistry } from './registry.js';
-export { PluginInstaller } from './installer.js';
-export { PluginManager } from './manager.js';
-export { GitHubAPI } from './github-api.js';
+import { PluginRegistry } from './registry.js';
+import { PluginInstaller } from './installer.js';
+import { PluginManager } from './manager.js';
+import { GitHubAPI } from './github-api.js';
+
+export { PluginRegistry };
+export { PluginInstaller };
+export { PluginManager };
+export { GitHubAPI };
 
 /**
  * 创建插件市场实例

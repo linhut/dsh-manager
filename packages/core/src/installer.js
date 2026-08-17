@@ -62,7 +62,7 @@ export class DSHInstaller {
 
     // 尝试的安装工具列表
     let tools = [];
-    if (tool === 'auto') tools = ['npm', 'pnpm'];
+    if (tool === 'auto') tools = ['npm', 'pnpm', 'corepack'];
     else if (tool === 'mirror') tools = ['npm-mirror', 'pnpm'];
     else tools = [tool];
 
@@ -107,6 +107,36 @@ export class DSHInstaller {
       });
     } else if (tool === 'pnpm') {
       // pnpm 全局安装
+      const args = ['add', '-g', packageName];
+      if (this.options.registry) {
+        args.push('--registry', this.options.registry);
+      }
+      this._log(`执行: pnpm ${args.join(' ')}`);
+      await execa('pnpm', args, {
+        timeout: this.options.npmInstallTimeout,
+        stdio: this.options.verbose ? 'inherit' : 'pipe',
+      });
+    } else if (tool === 'corepack') {
+      // corepack 引导 + pnpm 安装组合：
+      // corepack 只能分发 yarn/pnpm 等包管理器，故先用 corepack enable 启用 pnpm，再走 pnpm 全局安装
+      this._log('执行: corepack enable（启用 Node 内置包管理器）');
+      try {
+        await execa('corepack', ['enable'], {
+          timeout: 60_000,
+          stdio: this.options.verbose ? 'inherit' : 'pipe',
+        });
+      } catch (error) {
+        this._log('corepack 不可用，尝试安装 corepack...', 'warn');
+        await execa('npm', ['install', '-g', 'corepack'], {
+          timeout: 120_000,
+          stdio: this.options.verbose ? 'inherit' : 'pipe',
+        });
+        await execa('corepack', ['enable'], {
+          timeout: 60_000,
+          stdio: this.options.verbose ? 'inherit' : 'pipe',
+        });
+      }
+      // 复用 pnpm 安装逻辑
       const args = ['add', '-g', packageName];
       if (this.options.registry) {
         args.push('--registry', this.options.registry);

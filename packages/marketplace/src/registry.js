@@ -56,14 +56,34 @@ export class PluginRegistry {
     let githubError = null;
 
     if (query) {
-      try {
-        githubResults = await this.github.searchRepositories(
-          `dsh-plugin OR deepseek-harness-plugin ${query} sort:stars-desc`,
-          { page, perPage }
-        );
-      } catch (e) {
-        githubError = e.message;
-        console.warn('GitHub API 搜索失败，尝试 npm registry:', e.message);
+      // ① 形如 owner/repo 的查询：优先直接获取 GitHub 仓库详情（如 zhu1090093659/dsh-web-ui）
+      const repoMatch = query.trim().match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+      if (repoMatch) {
+        try {
+          const repo = await this.github.getRepoDetails(repoMatch[1], repoMatch[2]);
+          if (repo) githubResults.push(repo);
+        } catch (e) {
+          console.warn(`直接查询仓库 ${query} 失败:`, e.message);
+          // GitHub 仓库不存在时，回退到 npm 包查询（如 linxin666/dsh-web-ui-all → @linxin666/dsh-web-ui-all）
+          try {
+            const pkg = await this.github.getNpmPackage(`@${repoMatch[1]}/${repoMatch[2]}`);
+            if (pkg) githubResults.push(pkg);
+          } catch {}
+        }
+      }
+      // ② 标签相关搜索 + 宽泛关键词搜索（保证未打 dsh-plugin 标签的插件也能被找到）
+      const queries = [
+        `dsh-plugin OR deepseek-harness-plugin ${query} sort:stars-desc`,
+        `${query} in:name,description,readme sort:stars-desc`,
+      ];
+      for (const q of queries) {
+        try {
+          const hits = await this.github.searchRepositories(q, { page, perPage });
+          githubResults.push(...hits);
+        } catch (e) {
+          githubError = e.message;
+          console.warn('GitHub API 搜索失败，尝试 npm registry:', e.message);
+        }
       }
     } else {
       try {
@@ -106,11 +126,20 @@ export class PluginRegistry {
     results = results.filter(r => {
       if (r._source === 'npm') return true; // npm 来源保留
       // GitHub 来源需要匹配标签
-      return r.topics && (
+      const hasTopic = r.topics && (
         r.topics.includes('dsh-plugin') ||
         r.topics.includes('dsh') ||
         r.topics.includes('deepseek-harness')
       );
+      if (hasTopic) return true;
+      // 无标签但名称/描述/完整名匹配搜索关键词的仓库也保留
+      // （例如 linxin666/dsh-web-ui-all 这类未打 dsh-plugin 标签的插件）
+      if (query) {
+        const q = query.toLowerCase();
+        const hay = `${r.name || ''} ${r.fullName || ''} ${r.description || ''}`.toLowerCase();
+        if (hay.includes(q)) return true;
+      }
+      return false;
     });
 
     // 注入精选插件（无论 API 是否有返回，gongwen-skill 等始终可见）
@@ -154,6 +183,30 @@ export class PluginRegistry {
         isTemplate: false,
         archived: false,
         recommended: true,
+      },
+      {
+        id: 999999002,
+        name: 'dsh-web-ui-all',
+        fullName: '@linxin666/dsh-web-ui-all',
+        owner: 'linxin666',
+        description: 'DSH Web UI 全家桶聚合插件 - 一键安装全部功能插件（task-board / git-graph / pet / remote-web-ui / live-stats / web-ui-settings）+ 皮肤全家桶（dsh-skins）。',
+        url: 'https://github.com/zhu1090093659/dsh-web-ui',
+        homepage: 'https://gallery.dsh-market.com',
+        stars: 4023,
+        forks: 244,
+        issues: 44,
+        language: 'TypeScript',
+        topics: ['dsh-web-ui', 'dsh-plugin', 'deepseek-harness', 'web-ui', 'skins', 'recommended'],
+        license: 'Apache-2.0',
+        createdAt: '2026-08-12T05:15:20Z',
+        updatedAt: '2026-08-17T14:07:39Z',
+        pushedAt: '2026-08-17T10:28:34Z',
+        defaultBranch: 'main',
+        isTemplate: false,
+        archived: false,
+        recommended: true,
+        _source: 'npm', // npm 包（@linxin666/dsh-web-ui-all）
+        version: '0.1.20',
       },
     ];
 
