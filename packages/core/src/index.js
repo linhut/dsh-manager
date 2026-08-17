@@ -9,6 +9,7 @@ export { DSHConfig } from './config.js';
 export { DSHUtils, getDSHInfo } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
 export { MCPServerManager } from './mcp-manager.js';
+export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 
 /**

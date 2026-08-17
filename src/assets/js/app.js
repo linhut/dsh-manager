@@ -13,6 +13,9 @@ const state = {
   dshUrl: 'http://127.0.0.1:3080',
   plugins: [],
   installing: false,
+  pnpmAvailable: null,
+  pnpmVersion: null,
+  pnpmInstallGuide: '',
 };
 
 // ====== 主题系统 ======
@@ -94,6 +97,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 检测 DSH 状态
   await checkDSHStatus();
 
+  // 检测 pnpm 状态
+  await checkPnpmStatus();
+
   // 如果已安装，尝试加载 DSH Web
   if (state.dshInstalled) {
     tryLoadDSHWeb();
@@ -155,6 +161,41 @@ async function checkDSHStatus() {
     }
   } catch (err) {
     console.error('状态检测失败:', err);
+  }
+}
+
+// ====== pnpm 状态检测 ======
+async function checkPnpmStatus() {
+  const statusEl = document.getElementById('pnpmStatus');
+  if (!statusEl) return;
+
+  try {
+    const result = await window.dshManager.checkPnpm();
+    state.pnpmAvailable = result.installed;
+    state.pnpmVersion = result.version;
+    state.pnpmInstallGuide = result.installGuide || 'corepack enable';
+
+    const dot = statusEl.querySelector('.status-dot');
+    const text = statusEl.querySelector('.status-text');
+
+    if (result.installed) {
+      dot.className = 'status-dot status-ok';
+      text.textContent = `pnpm ${result.version}`;
+    } else {
+      dot.className = 'status-dot status-error';
+      text.textContent = 'pnpm 未安装';
+      // 点击显示安装提示
+      statusEl.style.cursor = 'pointer';
+      statusEl.title = '点击查看安装方法';
+      statusEl.onclick = () => {
+        showToast(
+          `pnpm 未安装，插件管理功能不可用。安装命令: ${state.pnpmInstallGuide}`,
+          'warning'
+        );
+      };
+    }
+  } catch (err) {
+    console.error('pnpm 检测失败:', err);
   }
 }
 
@@ -276,6 +317,14 @@ function renderInstallPage() {
           <span class="card-title">快速启动</span>
         </div>
         <div class="card-body" style="display:flex;flex-direction:column;gap:12px;">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm);font-size:12px;">
+            <span>📦 pnpm:</span>
+            ${state.pnpmAvailable
+              ? `<span class="badge badge-green">${state.pnpmVersion}</span>`
+              : `<span class="badge badge-red" style="cursor:pointer;" onclick="showToast('安装命令: ${state.pnpmInstallGuide}','warning')">未安装</span>`
+            }
+            ${!state.pnpmAvailable ? `<span style="color:var(--text-dim);">插件管理需要 pnpm</span>` : ''}
+          </div>
           <button class="btn btn-primary btn-lg" onclick="switchPage('dashboard')" ${!state.dshInstalled ? 'disabled' : ''}>
             🚀 打开 DSH 控制台
           </button>

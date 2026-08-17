@@ -7,7 +7,7 @@
 import { execa } from 'execa';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DSHError, DSHErrorCodes } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, requirePnpm } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
 
 export class PluginInstaller {
@@ -70,6 +70,9 @@ export class PluginInstaller {
     this._log(`卸载插件: ${pluginId} from ${profile}`);
 
     try {
+      // 检查 pnpm 是否已安装（dsh plugin 命令依赖 pnpm）
+      await requirePnpm('卸载插件');
+
       // 从本地注册表移除
       this.registry.unregisterLocalPlugin(pluginId);
 
@@ -128,6 +131,9 @@ export class PluginInstaller {
     this._log(`通过 npm 安装: ${packageName}`);
 
     try {
+      // 检查 pnpm 是否已安装（dsh plugin 命令依赖 pnpm）
+      await requirePnpm('安装插件');
+
       const { stdout, stderr } = await execa('dsh', [
         'plugin', '--profile', profile, 'add', packageName,
       ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });

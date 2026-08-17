@@ -286,4 +286,13 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       return '0.1.0';
     }
   });
+
+  ipcMain.handle('app:check-pnpm', async () => {
+    const { checkPnpm, getPnpmInstallGuide } = await loadCore();
+    const result = await checkPnpm();
+    return {
+      ...result,
+      installGuide: getPnpmInstallGuide(),
+    };
+  });
 }

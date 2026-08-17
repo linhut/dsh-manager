@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   getPlatform: () => process.platform,
+  checkPnpm: () => ipcRenderer.invoke('app:check-pnpm'),
 
   // ====== 事件监听 ======
   onInstallProgress: (callback) => {
