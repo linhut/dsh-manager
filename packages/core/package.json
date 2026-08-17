@@ -1,6 +1,6 @@
 {
   "name": "@dsh-manager/core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "DSH Manager 核心库 - 管理 DSH 安装、配置、版本",
   "type": "module",
