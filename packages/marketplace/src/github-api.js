@@ -7,6 +7,12 @@
 import { DSHError, DSHErrorCodes } from '../../core/src/index.js';
 
 const GITHUB_API = 'https://api.github.com';
+/** 每次请求超时（毫秒） */
+const FETCH_TIMEOUT = 15_000;
+/** 最大重试次数 */
+const MAX_RETRIES = 2;
+/** 重试间隔（毫秒） */
+const RETRY_DELAY = 2_000;
 
 export class GitHubAPI {
   /**
@@ -17,9 +23,44 @@ export class GitHubAPI {
     this.token = options.token || process.env.GITHUB_TOKEN || null;
     this.headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'dsh-manager/0.2.0',
+      'User-Agent': 'dsh-manager/0.3.0',
       ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
     };
+  }
+
+  /**
+   * 带超时和重试的 fetch 封装
+   * @param {string} url - 请求 URL
+   * @param {object} [options] - fetch 选项
+   * @param {number} [attempt=1] - 当前重试次数
+   * @returns {Promise<Response>}
+   * @private
+   */
+  async _fetchWithRetry(url, options = {}, attempt = 1) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+        headers: { ...this.headers, ...options.headers },
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error) {
+      // 超时或网络错误时重试
+      if (error.name === 'AbortError' || error.type === 'system' || error.code === 'ERR_NETWORK') {
+        if (attempt <= MAX_RETRIES) {
+          await new Promise(r => setTimeout(r, RETRY_DELAY * attempt));
+          return this._fetchWithRetry(url, options, attempt + 1);
+        }
+        throw new DSHError(
+          DSHErrorCodes.NETWORK_ERROR,
+          `网络请求超时，已重试 ${MAX_RETRIES} 次，请检查网络连接`
+        );
+      }
+      throw error;
+    }
   }
 
   /**
@@ -36,7 +77,7 @@ export class GitHubAPI {
     const url = `${GITHUB_API}/search/repositories?q=${encodeURIComponent(query)}&page=${page}&per_page=${Math.min(perPage, 100)}`;
 
     try {
-      const response = await fetch(url, { headers: this.headers });
+      const response = await this._fetchWithRetry(url);
       
       if (!response.ok) {
         throw new DSHError(
@@ -184,7 +225,7 @@ export class GitHubAPI {
     const url = `${GITHUB_API}/search/repositories?q=${encodeURIComponent(query)}&page=${page}&per_page=${Math.min(perPage, 100)}&sort=stars&order=desc`;
 
     try {
-      const response = await fetch(url, { headers: this.headers });
+      const response = await this._fetchWithRetry(url);
       
       if (!response.ok) {
         throw new DSHError(
