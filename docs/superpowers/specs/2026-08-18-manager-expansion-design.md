@@ -119,9 +119,10 @@ Electron 层仅加 IPC 薄封装，渲染层按现有模式加 UI 与按钮。
 
 **core 改动**（`packages/core/src/installer.js` `_installWithTool`）：
 
-- 新增分支 `tool === 'corepack'`：
-  - 执行 `corepack prepare @deepseek-ai/dsh@<version> --activate`（或 `corepack use`，依版本兼容）
-  - 失败时回退提示安装 corepack（`npm install -g corepack`）
+- 新增分支 `tool === 'corepack'`，语义为「corepack 引导 + pnpm 安装」组合：
+  - 先执行 `corepack enable`（启用 Node 内置包管理器分发），失败则提示 `npm install -g corepack`
+  - 再走既有 pnpm 全局安装分支（`pnpm add -g @deepseek-ai/dsh@<version>`）
+  - 说明：corepack 只能分发 yarn/pnpm 等包管理器、不能直接安装任意 npm 包，故核心安装仍由 pnpm 完成，corepack 仅负责兜底启用 pnpm
 - `install()` 的 `tools` 列表在 `tool === 'auto'` 时加入 `'corepack'`（放在 pnpm 之后作最后兜底）
 
 **UI**：安装方式按钮组新增「📦 corepack」
@@ -155,7 +156,7 @@ Electron 层仅加 IPC 薄封装，渲染层按现有模式加 UI 与按钮。
 
 **marketplace 改动**：
 
-- `_parseSource` 支持 `file:C:/path/to/plugin` 或纯本地绝对路径 → `{ type: 'file', path }`
+- `_parseSource` 新增分支：`file:<绝对路径>` 前缀 → `{ type: 'file', path }`（**仅 `file:` 前缀**识别，避免与 npm 分支的裸路径歧义）
 - 新增 `_installFromFile(dir, profile)`：
   - 校验目录存在且含 `package.json`
   - 复制到 `pluginCache/<name>`（`fs.cpSync` 递归）
