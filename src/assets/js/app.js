@@ -296,7 +296,7 @@ function renderInstallPage() {
         </div>
         <div style="margin-top:16px;display:flex;gap:8px;">
           ${!state.dshInstalled
-            ? `<button class="btn btn-primary btn-lg" onclick="installDSH()" id="installBtn">
+            ? `<button class="btn btn-primary btn-lg" onclick="installDSH('auto')" id="installBtn">
                  📥 安装 DSH
                </button>`
             : `<button class="btn btn-success" onclick="upgradeDSH()" id="upgradeBtn">
@@ -307,6 +307,15 @@ function renderInstallPage() {
                </button>`
           }
         </div>
+        ${!state.dshInstalled ? `
+        <div style="margin-top:12px;">
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">安装方式（npm 失败自动切换 pnpm/镜像）：</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-sm btn-secondary" onclick="installDSH('auto')">🔄 自动</button>
+            <button class="btn btn-sm btn-secondary" onclick="installDSH('mirror')">🇨🇳 镜像源</button>
+            <button class="btn btn-sm btn-secondary" onclick="installDSH('pnpm')">📦 pnpm</button>
+          </div>
+        </div>` : ''}
         <div id="installProgress" style="display:none;margin-top:16px;">
           <div class="progress-bar"><div class="progress-bar-fill" id="progressFill" style="width:0%"></div></div>
           <p id="progressText" style="margin-top:8px;font-size:13px;color:var(--text-muted);"></p>
@@ -358,7 +367,7 @@ function renderInstallPage() {
 }
 
 // ====== 安装 DSH ======
-async function installDSH() {
+async function installDSH(tool = 'auto') {
   const btn = document.getElementById('installBtn');
   const progress = document.getElementById('installProgress');
   const fill = document.getElementById('progressFill');
@@ -374,13 +383,14 @@ async function installDSH() {
 
   try {
     // 真实进度提示（不再使用模拟进度条卡在80%）
-    text.textContent = '正在安装 DSH（可能需要几分钟，请耐心等待）...';
+    const toolLabel = tool === 'pnpm' ? 'pnpm' : tool === 'mirror' ? '镜像源' : '自动';
+    text.textContent = `正在通过 ${toolLabel} 安装 DSH（可能需要几分钟，请耐心等待）...`;
     fill.style.width = '30%';
 
-    const result = await window.dshManager.installDSH(null, null);
+    const result = await window.dshManager.installDSH(null, null, tool);
     
     fill.style.width = '100%';
-    text.textContent = '✅ DSH 安装成功！';
+    text.textContent = `✅ DSH 安装成功！（通过 ${toolLabel}）`;
 
     showToast(`DSH ${result.version} 安装成功！`, 'success');
     await checkDSHStatus();
@@ -393,8 +403,8 @@ async function installDSH() {
       text.innerHTML = `❌ 安装失败：权限不足<br><span style="font-size:12px;color:var(--text-dim);">请右键点击 DSH Manager，选择「以管理员身份运行」后重试</span>`;
       showToast('安装失败：权限不足，请以管理员身份运行', 'error');
     } else if (errMsg.includes('timeout') || errMsg.includes('TIMEOUT') || errMsg.includes('网络')) {
-      text.innerHTML = `❌ 安装失败：网络超时<br><span style="font-size:12px;color:var(--text-dim);">请检查网络连接后重试，或使用镜像源安装</span>`;
-      showToast('安装失败：网络超时，请检查网络连接', 'error');
+      text.innerHTML = `❌ 安装失败：网络超时<br><span style="font-size:12px;color:var(--text-dim);">请检查网络连接后重试，或选择「镜像源」安装</span>`;
+      showToast('安装失败：网络超时，可尝试镜像源或 pnpm 安装', 'error');
     } else {
       text.textContent = '❌ 安装失败: ' + errMsg;
       showToast('安装失败: ' + errMsg, 'error');

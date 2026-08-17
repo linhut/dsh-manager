@@ -61,10 +61,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await getDSHInfo();
   });
 
-  ipcMain.handle('dsh:install', async (_, version, registry) => {
+  ipcMain.handle('dsh:install', async (_, version, registry, tool = 'auto') => {
     const { DSHInstaller } = await loadCore();
     const installer = new DSHInstaller({ registry });
-    return await installer.install(version);
+    return await installer.install(version, { tool });
   });
 
   ipcMain.handle('dsh:uninstall', async () => {

@@ -45,10 +45,11 @@ export class DSHInstaller {
    * @param {string} [version] - 指定版本，默认最新
    * @param {object} [opts]
    * @param {boolean} [opts.global] - 全局安装
-   * @returns {Promise<{success: boolean, version: string, path: string}>}
+   * @param {string} [opts.tool] - 安装工具 'auto' | 'npm' | 'pnpm' | 'mirror'（默认 auto：npm 失败自动切 pnpm）
+   * @returns {Promise<{success: boolean, version: string, path: string, tool: string}>}
    */
   async install(version, opts = {}) {
-    const { global = true } = opts;
+    const { global = true, tool = 'auto' } = opts;
     
     this._log('开始安装 DSH...');
     
@@ -59,57 +60,81 @@ export class DSHInstaller {
       this._log(`DSH ${currentVersion} 已安装`);
     }
 
-    // 构建 npm 安装参数
-    const packageName = version 
+    // 尝试的安装工具列表
+    let tools = [];
+    if (tool === 'auto') tools = ['npm', 'pnpm'];
+    else if (tool === 'mirror') tools = ['npm-mirror', 'pnpm'];
+    else tools = [tool];
+
+    let lastError = null;
+    for (const t of tools) {
+      try {
+        const result = await this._installWithTool(version, t);
+        return { ...result, tool: t };
+      } catch (error) {
+        lastError = error;
+        this._log(`${t} 安装尝试失败: ${error.message}`, 'warn');
+      }
+    }
+
+    if (lastError) throw lastError;
+    throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, 'DSH 安装失败: 无可用安装方式');
+  }
+
+  /**
+   * 使用指定工具安装 DSH
+   * @private
+   */
+  async _installWithTool(version, tool) {
+    // 构建包名
+    const packageName = version
       ? `@deepseek-ai/dsh@${version}`
       : '@deepseek-ai/dsh';
 
-    const args = ['install', '-g', packageName];
-    
-    // 如果指定了镜像 registry
-    if (this.options.registry && this.options.registry !== INSTALL_OPTIONS.defaultRegistry) {
-      args.push('--registry', this.options.registry);
-    }
+    this._ensureDSHHome();
 
-    this._log(`执行: npm ${args.join(' ')}`);
-
-    try {
-      // 先创建 DSH_HOME 目录结构
-      this._ensureDSHHome();
-
-      const { stdout, stderr } = await execa('npm', args, {
+    if (tool === 'npm' || tool === 'npm-mirror') {
+      const args = ['install', '-g', packageName];
+      if (tool === 'npm-mirror') {
+        args.push('--registry', INSTALL_OPTIONS.mirrors.npmmirror);
+      } else if (this.options.registry && this.options.registry !== INSTALL_OPTIONS.defaultRegistry) {
+        args.push('--registry', this.options.registry);
+      }
+      this._log(`执行: npm ${args.join(' ')}`);
+      await execa('npm', args, {
         timeout: this.options.npmInstallTimeout,
         stdio: this.options.verbose ? 'inherit' : 'pipe',
       });
-
-      this._log(stdout || '');
-      if (stderr) this._log(stderr, 'warn');
-
-      // 验证安装
-      const installed = await isDSHInstalled();
-      if (!installed) {
-        throw new DSHError(
-          DSHErrorCodes.DSH_INSTALL_FAILED,
-          'DSH 安装验证失败，dsh 命令不可用'
-        );
+    } else if (tool === 'pnpm') {
+      // pnpm 全局安装
+      const args = ['add', '-g', packageName];
+      if (this.options.registry) {
+        args.push('--registry', this.options.registry);
       }
+      this._log(`执行: pnpm ${args.join(' ')}`);
+      await execa('pnpm', args, {
+        timeout: this.options.npmInstallTimeout,
+        stdio: this.options.verbose ? 'inherit' : 'pipe',
+      });
+    }
 
-      const newVersion = await getDSHVersion();
-      this._log(`DSH ${newVersion} 安装成功！`);
-
-      return {
-        success: true,
-        version: newVersion,
-        path: await this._getDSHPath(),
-      };
-    } catch (error) {
-      if (error instanceof DSHError) throw error;
+    // 验证安装
+    const installed = await isDSHInstalled();
+    if (!installed) {
       throw new DSHError(
         DSHErrorCodes.DSH_INSTALL_FAILED,
-        `DSH 安装失败: ${error.message}`,
-        { originalError: error.message }
+        'DSH 安装验证失败，dsh 命令不可用'
       );
     }
+
+    const newVersion = await getDSHVersion();
+    this._log(`DSH ${newVersion} 安装成功！`);
+
+    return {
+      success: true,
+      version: newVersion,
+      path: await this._getDSHPath(),
+    };
   }
 
   /**
