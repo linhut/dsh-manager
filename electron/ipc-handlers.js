@@ -105,6 +105,17 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await cleanDSHData(opts);
   });
 
+  // ====== 回复语言 ======
+  ipcMain.handle('dsh:set-reply-language', async (_, lang) => {
+    const { setReplyLanguage } = await loadCore();
+    return await setReplyLanguage(lang);
+  });
+
+  ipcMain.handle('dsh:get-reply-language', async () => {
+    const { getReplyLanguage } = await loadCore();
+    return await getReplyLanguage();
+  });
+
   // ====== 进程管理 ======
   ipcMain.handle('dsh:process-info', async () => {
     const { getDSHProcessInfo } = await loadCore();
@@ -393,6 +404,40 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await config.listLLMProviders();
   });
 
+  ipcMain.handle('config:write', async (_, configData) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    await config.write(configData);
+    return { success: true };
+  });
+
+  ipcMain.handle('config:agent-presets', async () => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.listAgentPresets();
+  });
+
+  ipcMain.handle('config:update-llm-provider', async (_, name, providerConfig) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    const { settings } = await config.read();
+    if (!settings.llm) settings.llm = {};
+    settings.llm[name] = providerConfig;
+    await config.write(settings);
+    return { success: true };
+  });
+
+  ipcMain.handle('config:delete-llm-provider', async (_, name) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    const { settings } = await config.read();
+    if (settings.llm && settings.llm[name]) {
+      delete settings.llm[name];
+      await config.write(settings);
+    }
+    return { success: true };
+  });
+
   // ====== MCP 服务端管理 ======
   ipcMain.handle('mcp:list', async (_, profile) => {
     const { MCPServerManager } = await loadCore();
@@ -492,12 +537,13 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   // ====== 基础环境检测（空白环境部署支持） ======
   ipcMain.handle('app:check-env', async () => {
-    const { checkEnvironment, getNodeInstallGuide, getPnpmInstallGuide } = await loadCore();
+    const { checkEnvironment, getNodeInstallGuide, getPnpmInstallGuide, getGitInstallGuide } = await loadCore();
     const env = await checkEnvironment();
     return {
       ...env,
       nodeInstallGuide: getNodeInstallGuide(),
       pnpmInstallGuide: getPnpmInstallGuide(),
+      gitInstallGuide: getGitInstallGuide(),
     };
   });
 
@@ -506,34 +552,22 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const { execa } = await import('execa');
       const platform = process.platform;
       const win = getMainWindow();
-
-      // 将安装过程输出实时推送到渲染进程（回显状态）
       const pushProgress = (data) => {
         if (win && !win.isDestroyed()) {
           win.webContents.send('env-install-progress', data);
         }
       };
-
       pushProgress({ level: 'info', message: `开始安装 Node.js（平台: ${platform}）...` });
 
       const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'] };
       let child;
-
       if (platform === 'win32') {
-        // Windows: winget 安装 Node.js LTS（静默）
-        child = execa('winget', [
-          'install', '--id', 'OpenJS.NodeJS.LTS',
-          '--silent', '--accept-source-agreements', '--accept-package-agreements',
-        ], cmdOptions);
+        child = execa('winget', ['install', '--id', 'OpenJS.NodeJS.LTS', '--silent', '--accept-source-agreements', '--accept-package-agreements'], cmdOptions);
       } else if (platform === 'darwin') {
-        // macOS: 尝试 brew，缺失则提示
         child = execa('brew', ['install', 'node'], cmdOptions);
       } else {
-        // Linux: 尝试 apt
         child = execa('sudo', ['apt-get', 'install', '-y', 'nodejs', 'npm'], cmdOptions);
       }
-
-      // 流式转发 stdout/stderr
       child.stdout?.on('data', (chunk) => {
         const text = String(chunk).trim();
         if (text) pushProgress({ level: 'info', message: text });
@@ -542,10 +576,8 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         const text = String(chunk).trim();
         if (text) pushProgress({ level: 'warn', message: text });
       });
-
       const result = await child;
 
-      // 安装后验证
       const { checkNode, checkNpm } = await loadCore();
       const [node, npm] = await Promise.all([checkNode(), checkNpm()]);
       if (node.installed) {
@@ -554,6 +586,52 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       return {
         success: false,
         message: '安装命令执行完成，但 Node.js 仍不可用（可能需要重启终端使 PATH 生效）',
+        detail: result.stderr || result.stdout || '',
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('app:install-git', async () => {
+    try {
+      const { execa } = await import('execa');
+      const platform = process.platform;
+      const win = getMainWindow();
+      const pushProgress = (data) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('env-install-progress', data);
+        }
+      };
+      pushProgress({ level: 'info', message: `开始安装 git（平台: ${platform}）...` });
+
+      const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'] };
+      let child;
+      if (platform === 'win32') {
+        child = execa('winget', ['install', '--id', 'Git.Git', '--silent', '--accept-source-agreements', '--accept-package-agreements'], cmdOptions);
+      } else if (platform === 'darwin') {
+        child = execa('brew', ['install', 'git'], cmdOptions);
+      } else {
+        child = execa('sudo', ['apt-get', 'install', '-y', 'git'], cmdOptions);
+      }
+      child.stdout?.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) pushProgress({ level: 'info', message: text });
+      });
+      child.stderr?.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) pushProgress({ level: 'warn', message: text });
+      });
+      const result = await child;
+
+      const { checkGit } = await loadCore();
+      const git = await checkGit();
+      if (git.installed) {
+        return { success: true, version: git.version, message: `git ${git.version} 安装成功` };
+      }
+      return {
+        success: false,
+        message: '安装命令执行完成，但 git 仍不可用（可能需要重启终端使 PATH 生效）',
         detail: result.stderr || result.stdout || '',
       };
     } catch (error) {

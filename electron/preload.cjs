@@ -62,7 +62,13 @@ contextBridge.exposeInMainWorld('dshManager', {
   setConfig: (key, value) => ipcRenderer.invoke('config:set', key, value),
   deleteConfig: (key) => ipcRenderer.invoke('config:delete', key),
   getAllConfig: () => ipcRenderer.invoke('config:get-all'),
+  writeConfig: (config) => ipcRenderer.invoke('config:write', config),
   getLLMProviders: () => ipcRenderer.invoke('config:llm-providers'),
+  setReplyLanguage: (lang) => ipcRenderer.invoke('dsh:set-reply-language', lang),
+  getReplyLanguage: () => ipcRenderer.invoke('dsh:get-reply-language'),
+  getAgentPresets: () => ipcRenderer.invoke('config:agent-presets'),
+  updateLLMProvider: (name, providerConfig) => ipcRenderer.invoke('config:update-llm-provider', name, providerConfig),
+  deleteLLMProvider: (name) => ipcRenderer.invoke('config:delete-llm-provider', name),
 
   // ====== MCP 服务端管理 ======
   mcpList: (profile) => ipcRenderer.invoke('mcp:list', profile),
@@ -77,6 +83,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   installPnpm: () => ipcRenderer.invoke('app:install-pnpm'),
   checkEnvironment: () => ipcRenderer.invoke('app:check-env'),
   installNodejs: () => ipcRenderer.invoke('app:install-nodejs'),
+  installGit: () => ipcRenderer.invoke('app:install-git'),
 
   // ====== 事件监听 ======
   onInstallProgress: (callback) => {

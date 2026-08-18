@@ -1981,3 +1981,492 @@ function showToast(message, type = 'info') {
   setTimeout(() => { item.style.opacity = '0'; item.style.transform = 'translateX(100px)'; item.style.transition = 'all 0.3s'; }, 3000);
   setTimeout(() => item.remove(), 3500);
 }
+
+// ====== 设置页面 - 辅助函数 ======
+function openSettingsTab(tab) {
+  const el = document.getElementById('settingsContent');
+  if (!el) return;
+  el.querySelectorAll('.btn').forEach(b => {
+    b.classList.remove('btn-primary', 'settings-tab-active');
+    b.classList.add('btn-secondary');
+  });
+  const tabEl = document.getElementById('settingsTabs');
+  if (!tabEl) return;
+
+  switch (tab) {
+    case 'manager':
+      Promise.all([
+        window.dshManager.getConfig('manager.auto-start-dsh'),
+        window.dshManager.getConfig('manager.check-updates'),
+        window.dshManager.getReplyLanguage()
+      ]).then(([autoStart, checkUpdates, replyLang]) => {
+        tabEl.innerHTML = renderSettingsManagerTab(autoStart !== false, checkUpdates !== false, replyLang || 'default');
+      }).catch(() => {
+        tabEl.innerHTML = renderSettingsManagerTab(true, true, 'default');
+      });
+      break;
+    case 'llm':
+      renderLLMProvidersTab().then(html => { tabEl.innerHTML = html; });
+      break;
+    case 'yaml':
+      renderYAMLEditorTab().then(html => { tabEl.innerHTML = html; });
+      break;
+    case 'presets':
+      renderPresetsTab().then(html => { tabEl.innerHTML = html; });
+      break;
+  }
+
+  el.querySelectorAll('[onclick*="' + tab + '"]').forEach(b => {
+    b.classList.remove('btn-secondary');
+    b.classList.add('btn-primary', 'settings-tab-active');
+  });
+}
+
+function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default') {
+  const theme = localStorage.getItem('dshm-theme') || 'system';
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">⚙️ Manager 设置</span>
+      </div>
+      <div class="card-body">
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>自动打开 DSH 控制台</strong>
+            <p class="setting-desc">启动时自动加载 DSH Web 界面</p>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" ${autoStart ? 'checked' : ''} onchange="setManagerSetting('manager.auto-start-dsh', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>启动时检查更新</strong>
+            <p class="setting-desc">启动时静默检查 DSH 是否有新版本</p>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" ${checkUpdates ? 'checked' : ''} onchange="setManagerSetting('manager.check-updates', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>回复语言</strong>
+            <p class="setting-desc">控制 DSH 回复与思考使用的语言；改动需新开会话或重启 DSH 生效，且为引导级指令</p>
+          </div>
+          <select class="setting-select" onchange="setReplyLanguage(this.value)">
+            <option value="zh-CN" ${replyLang === 'zh-CN' ? 'selected' : ''}>简体中文</option>
+            <option value="en" ${replyLang === 'en' ? 'selected' : ''}>English</option>
+            <option value="default" ${replyLang === 'default' ? 'selected' : ''}>跟随默认</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>主题选择</strong>
+            <p class="setting-desc">选择界面主题</p>
+          </div>
+          <div class="theme-selector">
+            <button class="btn btn-sm theme-option ${theme === 'system' ? 'theme-option-active' : ''}" data-theme-choice="system" onclick="selectThemeOption('system')">🌓 跟随系统</button>
+            <button class="btn btn-sm theme-option ${theme === 'light' ? 'theme-option-active' : ''}" data-theme-choice="light" onclick="selectThemeOption('light')">☀️ 浅色</button>
+            <button class="btn btn-sm theme-option ${theme === 'dark' ? 'theme-option-active' : ''}" data-theme-choice="dark" onclick="selectThemeOption('dark')">🌙 深色</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function renderLLMProvidersTab() {
+  let providers = [];
+  try { providers = await window.dshManager.getLLMProviders(); } catch {}
+  const config = await window.dshManager.getAllConfig();
+  const llm = config.settings?.llm || {};
+  const providerEntries = Object.entries(llm);
+  if (providerEntries.length === 0) {
+    return `
+      <div class="card">
+        <div class="card-header"><span class="card-title">🤖 LLM 提供商</span><button class="btn btn-sm btn-primary" onclick="showLLMProviderForm()">＋ 添加</button></div>
+        <div class="card-body">
+          <div class="empty-state">
+            <div class="empty-state-icon">🤖</div>
+            <div class="empty-state-title">暂无 LLM 提供商</div>
+            <div class="empty-state-desc">添加一个 LLM 提供商来开始使用 AI 模型</div>
+            <button class="btn btn-primary" onclick="showLLMProviderForm()">＋ 添加提供商</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">🤖 LLM 提供商（${providerEntries.length}）</span>
+        <button class="btn btn-sm btn-primary" onclick="showLLMProviderForm()">＋ 添加</button>
+      </div>
+      <div class="card-body">
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>名称</th><th>提供商</th><th>模型</th><th>API Key</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${providerEntries.map(([name, conf]) => `
+                <tr>
+                  <td><strong>${name}</strong></td>
+                  <td><span class="badge badge-blue">${conf.provider || 'unknown'}</span></td>
+                  <td><code>${conf.model || '-'}</code></td>
+                  <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : '<span style="color:var(--warning);">未设置</span>'}</td>
+                  <td>
+                    <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${name}')">✏️ 编辑</button>
+                    <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${name}')">🗑️ 删除</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">📖 支持的提供商类型</span></div>
+      <div class="card-body" style="font-size:12px;color:var(--text-muted);">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;">
+          <div><strong>openai</strong> — OpenAI GPT 系列</div>
+          <div><strong>deepseek</strong> — DeepSeek 系列</div>
+          <div><strong>anthropic</strong> — Claude 系列</div>
+          <div><strong>google</strong> — Gemini 系列</div>
+          <div><strong>azure</strong> — Azure OpenAI</div>
+          <div><strong>ollama</strong> — 本地 Ollama 模型</div>
+          <div><strong>openai-compatible</strong> — 兼容 OpenAI 接口</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function renderYAMLEditorTab() {
+  let config = { settings: {}, credentials: {} };
+  try { config = await window.dshManager.getAllConfig(); } catch {}
+  const settings = config.settings || {};
+  const yamlStr = objToYAMLStr(settings);
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📝 settings.yaml 编辑器</span>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm btn-primary" onclick="saveYAMLConfig()">💾 保存</button>
+          <button class="btn btn-sm btn-secondary" onclick="refreshYAMLEditor()">🔄 刷新</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">📁 ~/.dsh/settings.yaml — 编辑 YAML 配置后点击保存</p>
+        <textarea id="yamlEditor" class="yaml-editor" spellcheck="false">${yamlStr.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+        <div id="yamlEditorStatus" style="margin-top:8px;font-size:12px;"></div>
+      </div>
+    </div>
+  `;
+}
+
+async function renderPresetsTab() {
+  const config = await window.dshManager.getAllConfig();
+  const agentPresets = config.settings?.['agent-presets'] || {};
+  const entries = Object.entries(agentPresets);
+  return `
+    <div class="card">
+      <div class="card-header"><span class="card-title">🧠 Agent Presets（${entries.length}）</span></div>
+      <div class="card-body">
+        ${entries.length === 0
+          ? '<p style="color:var(--text-dim);">暂无 Agent Presets 配置</p>'
+          : `
+            <div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>名称</th><th>路径</th></tr></thead><tbody>
+              ${entries.map(([id, conf]) => `
+                <tr><td><code>${id}</code></td><td><strong>${conf.name || id}</strong></td><td style="font-size:12px;color:var(--text-dim);">${conf.path || '-'}</td></tr>
+              `).join('')}
+            </tbody></table></div>
+          `}
+      </div>
+    </div>
+  `;
+}
+
+async function setManagerSetting(key, value) {
+  try { await window.dshManager.setConfig(key, value); showToast('设置已保存', 'success'); }
+  catch (err) { showToast('保存失败: ' + err.message, 'error'); }
+}
+
+async function setReplyLanguage(lang) {
+  try {
+    await window.dshManager.setReplyLanguage(lang);
+    showToast('已保存，新会话生效', 'success');
+  } catch (err) {
+    showToast('保存失败: ' + err.message, 'error');
+  }
+}
+
+async function showLLMProviderForm(editName) {
+  let name = '', provider = 'openai', model = '', apiKey = '', baseUrl = '';
+  if (editName) {
+    try {
+      const config = await window.dshManager.getAllConfig();
+      const conf = config.settings?.llm?.[editName];
+      if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; }
+    } catch {}
+  }
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal" style="min-width:480px;max-width:560px;">
+      <h3 class="modal-title">${editName ? '✏️ 编辑 LLM 提供商' : '➕ 添加 LLM 提供商'}</h3>
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">名称 *</label><input class="input" id="llm-name" value="${name}" placeholder="例如: default, my-gpt4" ${editName ? 'readonly' : ''}></div>
+        <div class="form-group">
+          <label class="form-label">提供商类型 *</label>
+          <select class="input" id="llm-provider" onchange="updateLLMProviderModelHints(this.value)">
+            <option value="openai" ${provider === 'openai' ? 'selected' : ''}>OpenAI</option>
+            <option value="deepseek" ${provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
+            <option value="anthropic" ${provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+            <option value="google" ${provider === 'google' ? 'selected' : ''}>Google Gemini</option>
+            <option value="azure" ${provider === 'azure' ? 'selected' : ''}>Azure OpenAI</option>
+            <option value="ollama" ${provider === 'ollama' ? 'selected' : ''}>Ollama (本地)</option>
+            <option value="openai-compatible" ${provider === 'openai-compatible' ? 'selected' : ''}>OpenAI 兼容接口</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">模型名称 *</label><input class="input" id="llm-model" value="${model}" placeholder="例如: gpt-4o, deepseek-chat"><p class="form-hint" id="modelHint">不同提供商支持的模型名称不同</p></div>
+        <div class="form-group">
+          <label class="form-label">API Key</label>
+          <div style="display:flex;gap:8px;"><input class="input" id="llm-apikey" type="password" value="${apiKey}" placeholder="sk-..." style="flex:1;"><button class="btn btn-sm btn-ghost" onclick="toggleApiKeyVisibility()" title="显示/隐藏">👁</button></div>
+        </div>
+        <div class="form-group"><label class="form-label">API Base URL（可选）</label><input class="input" id="llm-baseurl" value="${baseUrl}" placeholder="例如: https://api.openai.com/v1"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="btn btn-primary" onclick="saveLLMProvider()">💾 保存</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function saveLLMProvider() {
+  const name = document.getElementById('llm-name')?.value?.trim();
+  const provider = document.getElementById('llm-provider')?.value;
+  const model = document.getElementById('llm-model')?.value?.trim();
+  const apiKey = document.getElementById('llm-apikey')?.value?.trim();
+  const baseUrl = document.getElementById('llm-baseurl')?.value?.trim();
+  if (!name) { showToast('请输入提供商名称', 'error'); return; }
+  if (!model) { showToast('请输入模型名称', 'error'); return; }
+  const providerConfig = { provider, model };
+  if (apiKey) providerConfig.apiKey = apiKey;
+  if (baseUrl) providerConfig.baseUrl = baseUrl;
+  try {
+    await window.dshManager.updateLLMProvider(name, providerConfig);
+    showToast(`✅ LLM 提供商 "${name}" 已保存`, 'success');
+    document.querySelector('.modal-overlay.active')?.remove();
+    openSettingsTab('llm');
+  } catch (err) { showToast('保存失败: ' + err.message, 'error'); }
+}
+
+async function deleteLLMProvider(name) {
+  if (!confirm(`确定删除 LLM 提供商 "${name}"？`)) return;
+  try { await window.dshManager.deleteLLMProvider(name); showToast(`🗑️ 已删除 "${name}"`, 'success'); openSettingsTab('llm'); }
+  catch (err) { showToast('删除失败: ' + err.message, 'error'); }
+}
+
+function toggleApiKeyVisibility() {
+  const input = document.getElementById('llm-apikey');
+  if (input) input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+async function saveYAMLConfig() {
+  const editor = document.getElementById('yamlEditor');
+  const status = document.getElementById('yamlEditorStatus');
+  if (!editor) return;
+  const yamlText = editor.value;
+  status.textContent = '正在解析和保存...'; status.style.color = 'var(--text-muted)';
+  try {
+    const parsed = parseSimpleYAML(yamlText);
+    await window.dshManager.writeConfig(parsed);
+    status.textContent = '✅ 配置已保存成功！'; status.style.color = 'var(--success)';
+    showToast('✅ 配置已保存', 'success');
+  } catch (err) {
+    status.textContent = '❌ ' + (err.message || '保存失败，请检查 YAML 格式'); status.style.color = 'var(--error)';
+    showToast('❌ 保存失败: ' + (err.message || 'YAML 格式错误'), 'error');
+  }
+}
+
+async function refreshYAMLEditor() {
+  try {
+    const config = await window.dshManager.getAllConfig();
+    const yamlStr = objToYAMLStr(config.settings || {});
+    const editor = document.getElementById('yamlEditor');
+    if (editor) editor.value = yamlStr;
+    const status = document.getElementById('yamlEditorStatus');
+    if (status) { status.textContent = '🔄 已刷新'; status.style.color = 'var(--text-muted)'; }
+  } catch (err) { showToast('刷新失败: ' + err.message, 'error'); }
+}
+
+function objToYAMLStr(obj, indent) {
+  if (indent === undefined) indent = 0;
+  const prefix = '  '.repeat(indent);
+  let result = '';
+  for (const [key, value] of Object.entries(obj)) {
+    if (key.startsWith('_')) continue;
+    if (value === null || value === undefined) { result += prefix + key + ': null\n'; }
+    else if (typeof value === 'object' && !Array.isArray(value)) {
+      if (Object.keys(value).length === 0) { result += prefix + key + ': {}\n'; }
+      else { result += prefix + key + ':\n' + objToYAMLStr(value, indent + 1); }
+    } else if (Array.isArray(value)) {
+      result += prefix + key + ':\n';
+      for (const item of value) {
+        if (typeof item === 'object') { result += prefix + '  - ' + objToYAMLStr(item, indent + 2).trimStart(); }
+        else { result += prefix + '  - ' + formatYAMLVal(item) + '\n'; }
+      }
+    } else { result += prefix + key + ': ' + formatYAMLVal(value) + '\n'; }
+  }
+  return result;
+}
+
+function formatYAMLVal(value) {
+  if (typeof value === 'string') {
+    if (value.includes(':') || value.includes('#') || value.includes("'") || value.includes('\n')) return JSON.stringify(value);
+    return value;
+  }
+  return String(value);
+}
+
+function parseSimpleYAML(yaml) {
+  const result = {};
+  const lines = yaml.split('\n');
+  const stack = [{ indent: -1, obj: result }];
+  for (const line of lines) {
+    const trimmed = line.trimEnd();
+    if (!trimmed.trim() || trimmed.trim().startsWith('#')) continue;
+    const indent = line.search(/\S/);
+    const content = trimmed.trim();
+    while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
+    const parent = stack[stack.length - 1].obj;
+    if (content.endsWith(':')) { const key = content.slice(0, -1).trim(); parent[key] = {}; stack.push({ indent, obj: parent[key] }); }
+    else if (content.includes(':')) { const colonIdx = content.indexOf(':'); const key = content.slice(0, colonIdx).trim(); let value = content.slice(colonIdx + 1).trim(); parent[key] = value === '' ? null : parseSimpleYAMLValue(value); }
+    else if (content.startsWith('- ')) { const item = content.slice(2).trim(); if (!Array.isArray(parent._items)) parent._items = []; parent._items.push(parseSimpleYAMLValue(item)); }
+  }
+  function convertItems(obj) { for (const [key, value] of Object.entries(obj)) { if (value && typeof value === 'object') { if (value._items) obj[key] = value._items; convertItems(value); } } }
+  convertItems(result);
+  return result;
+}
+
+function parseSimpleYAMLValue(value) {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (value === 'null' || value === '~') return null;
+  const num = Number(value);
+  if (!isNaN(num) && value !== '') return num;
+  if ((value.startsWith("'") && value.endsWith("'")) || (value.startsWith('"') && value.endsWith('"'))) return value.slice(1, -1);
+  return value;
+}
+
+function updateLLMProviderModelHints(provider) {
+  const hint = document.getElementById('modelHint'); if (!hint) return;
+  const hints = {
+    openai: '💡 常用: gpt-4o, gpt-4-turbo, gpt-3.5-turbo, o1-preview, o1-mini',
+    deepseek: '💡 常用: deepseek-chat, deepseek-reasoner, deepseek-coder',
+    anthropic: '💡 常用: claude-3-opus, claude-3-sonnet, claude-3-haiku, claude-2.1',
+    google: '💡 常用: gemini-1.5-pro, gemini-1.5-flash, gemini-1.0-pro',
+    azure: '💡 需要填写部署名称作为模型名称，以及 Azure endpoint 作为 Base URL',
+    ollama: '💡 模型名称对应本地拉取的模型名，如 llama3, mistral, qwen2，Base URL 默认为 http://localhost:11434/v1',
+    'openai-compatible': '💡 任意兼容 OpenAI API 格式的服务，填写其 Base URL 和 API Key',
+  };
+  hint.textContent = hints[provider] || '💡 输入你使用的模型名称';
+}
+
+// ====== 版本管理 - 辅助函数 ======
+async function refreshVersions() {
+  const listEl = document.getElementById('versionsList');
+  const availEl = document.getElementById('availableVersionsList');
+  if (!listEl || !availEl) return;
+  try {
+    const data = await window.dshManager.getDSHVersions();
+    const { versions = [], installed = [] } = data;
+    if (installed.length === 0) {
+      listEl.innerHTML = '<div class="empty-state" style="padding:20px;"><div class="empty-state-icon">📦</div><div class="empty-state-title">暂无已安装版本</div><div class="empty-state-desc">当前 DSH 版本由 npm 全局管理</div></div>';
+    } else {
+      listEl.innerHTML = `
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>版本</th><th>安装时间</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${installed.map(v => `
+                <tr>
+                  <td><strong>${v.version}</strong> ${v.current ? '<span class="badge badge-green">当前</span>' : ''}</td>
+                  <td style="color:var(--text-dim);font-size:12px;">${v.installedAt ? new Date(v.installedAt).toLocaleString() : '-'}</td>
+                  <td>
+                    ${!v.current ? `<button class="btn btn-sm btn-primary" onclick="switchVersion('${v.version}')">切换</button>` : ''}
+                    ${!v.current ? `<button class="btn btn-sm btn-ghost" onclick="removeVersion('${v.version}')">删除</button>` : ''}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+    if (versions.length === 0) {
+      availEl.innerHTML = '<p style="color:var(--text-dim);">无法获取可用版本列表，请检查网络连接</p>';
+    } else {
+      availEl.innerHTML = `
+        <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr><th>版本</th><th>发布日期</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${versions.slice(0, 20).map(v => `
+                <tr>
+                  <td><strong>${v}</strong></td>
+                  <td style="color:var(--text-dim);font-size:12px;">-</td>
+                  <td>
+                    <button class="btn btn-sm btn-primary" onclick="installVersion('${v}')">安装</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${versions.length > 20 ? `<p style="margin-top:8px;color:var(--text-dim);font-size:12px;">显示前 20 个版本，共 ${versions.length} 个</p>` : ''}
+      `;
+    }
+  } catch (err) {
+    listEl.innerHTML = `<p style="color:var(--error);">${err.message || '加载失败'}</p>`;
+    availEl.innerHTML = `<p style="color:var(--error);">${err.message || '加载失败'}</p>`;
+  }
+}
+
+async function switchVersion(version) {
+  if (!confirm(`是否确定要切换到 DSH ${version}？\n将先卸载当前版本，再安装目标版本。`)) return;
+  showToast(`正在切换到 DSH ${version}...`, 'info');
+  try {
+    const result = await window.dshManager.switchDSHVersion(version);
+    if (result.success) {
+      showToast(`已切换到 DSH ${result.newVersion}`, 'success');
+      await checkDSHStatus();
+      renderVersionsPage();
+      renderInstallPage();
+    } else { showToast('切换失败', 'error'); }
+  } catch (err) { showToast('切换失败: ' + err.message, 'error'); }
+}
+
+async function installVersion(version) {
+  showToast(`正在安装 DSH ${version}...`, 'info');
+  try {
+    await window.dshManager.installDSH(version, null, 'auto');
+    showToast(`✅ DSH ${version} 安装成功`, 'success');
+    await refreshVersions();
+  } catch (err) { showToast('安装失败: ' + err.message, 'error'); }
+}
+
+async function removeVersion(version) {
+  if (!confirm(`确定删除 DSH ${version} 版本？`)) return;
+  showToast('版本删除功能需要手动操作 npm', 'warning');
+}

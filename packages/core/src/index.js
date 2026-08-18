@@ -13,11 +13,12 @@ export { DSHUtils, getDSHInfo, DSH_PATHS } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
 export { MCPServerManager } from './mcp-manager.js';
 export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';
-export { checkNode, checkNpm, checkEnvironment, getNodeInstallGuide, requireNodeAndNpm } from './env-check.js';
+export { checkNode, checkNpm, checkGit, checkEnvironment, getNodeInstallGuide, getGitInstallGuide, requireNodeAndNpm } from './env-check.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
 export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT } from './process-manager.js';
 export { DSHProfileManager } from './profile-manager.js';
+export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 
 /**
  * 获取 DSH Manager 版本信息（从 package.json 读取，避免硬编码漂移）
