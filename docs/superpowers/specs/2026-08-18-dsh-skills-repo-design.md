@@ -45,12 +45,17 @@ dsh-skills/
 ├── cordis.patch.yml         # 插件补丁：登记技能根
 ├── index.js                 # ctx.skills.register() 逐个注册 skills/
 ├── README.md                # 安装与使用说明（中英双语）
-└── LICENSE                  # MIT（superpowers 衍生技能保留版权声明）
+├── LICENSE                  # MIT（仓库整体许可）
+└── LICENSE.superpowers      # 衍生自 obra/superpowers 的技能版权声明（MIT © Jesse Vincent）
 ```
 
 ### 3.2 SKILL.md frontmatter 规范
 
-每个 skill 目录内 `SKILL.md` 采用 DSH 规范：
+**技能内容来源**：以当前环境已安装的对应技能为内容基础——
+- `brainstorming`、`using-superpowers`、`finishing-a-development-branch`、`writing-skills` 源自 obra/superpowers 生态
+- `github-actions-docs`、`how-it-works` 为独立技能
+
+导出时转换为 DSH 规范格式：
 
 ```yaml
 ---
@@ -77,7 +82,7 @@ user-invocable: true             # 可选，默认 true
 | 路径 | 命令/操作 | 适用场景 |
 |---|---|---|
 | 纯目录 | 克隆后 `cp -r skills/* ~/.dsh/skills/` 或配置 `customSkillDirs` 指向 `skills/` | 不想用插件体系、想直接编辑技能 |
-| 插件 | `dsh plugin --profile web add github:<owner>/dsh-skills` | 一键安装、进插件市场、随 profile 管理 |
+| 插件 | `dsh plugin --profile web add github:<owner>/dsh-skills`（`<owner>` 为发布时的 GitHub 账号，用户发布时确定） | 一键安装、进插件市场、随 profile 管理 |
 
 ### 3.5 与 dsh-manager 的联动
 
