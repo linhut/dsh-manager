@@ -1,0 +1,5 @@
+# dsh-skills 组合包补丁层
+# 登记技能 bundle 根，供 loader 挂载（与 dsh-superpowers 同模式）
+- insert:
+    - id: dsh-skills
+      name: 'dsh-skills'
