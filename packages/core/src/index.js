@@ -13,6 +13,7 @@ export { DSHUtils, getDSHInfo, DSH_PATHS } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
 export { MCPServerManager } from './mcp-manager.js';
 export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';
+export { checkNode, checkNpm, checkEnvironment, getNodeInstallGuide, requireNodeAndNpm } from './env-check.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
 export { getDSHProcessInfo, DSH_WEB_PORT } from './process-manager.js';

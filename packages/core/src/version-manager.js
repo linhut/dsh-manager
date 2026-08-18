@@ -86,7 +86,7 @@ export class DSHVersionManager {
       const timeoutId = setTimeout(() => controller.abort(), 15_000);
       const response = await fetch(
         'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest',
-        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/1.0.0' } }
+        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/1.1.0' } }
       );
       clearTimeout(timeoutId);
 

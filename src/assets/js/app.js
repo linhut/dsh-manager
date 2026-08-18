@@ -417,6 +417,14 @@ function renderInstallPage() {
   if (!el) return;
 
   el.innerHTML = `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">🧪 基础环境检测</span>
+      </div>
+      <div class="card-body" id="envStatus">
+        <p style="color:var(--text-dim);">检测中...</p>
+      </div>
+    </div>
     <div class="grid-2" style="margin-bottom:24px;">
       <div class="card">
         <div class="card-header">
@@ -518,9 +526,74 @@ function renderInstallPage() {
       </div>
     </div>
   `;
+
+  // 基础环境检测（空白环境部署支持）
+  renderEnvStatus();
 }
 
-// ====== 安装 DSH ======
+// ====== 基础环境检测 ======
+async function renderEnvStatus() {
+  const el = document.getElementById('envStatus');
+  if (!el) return;
+  let env = null;
+  try { env = await window.dshManager.checkEnvironment(); } catch {}
+  if (!env) {
+    el.innerHTML = '<p style="color:var(--error);font-size:13px;">⚠️ 环境检测失败</p>';
+    return;
+  }
+
+  const { node, npm, pnpm } = env;
+  const row = (icon, label, info) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      <span>${icon}</span>
+      <span style="min-width:110px;">${label}</span>
+      <span>${info}</span>
+    </div>`;
+
+  const nodeRow = node.installed
+    ? row('✅', 'Node.js', `<strong>${node.version}</strong>`)
+    : row('❌', 'Node.js', '<span style="color:var(--error);">未安装（DSH 依赖 Node.js 18+）</span>');
+  const npmRow = npm.installed
+    ? row('✅', 'npm', `<strong>${npm.version}</strong>`)
+    : row('❌', 'npm', '<span style="color:var(--error);">未安装（随 Node.js 一起提供）</span>');
+  const pnpmRow = pnpm.installed
+    ? row('✅', 'pnpm', `<strong>${pnpm.version}</strong>`)
+    : row('⚠️', 'pnpm', '<span style="color:var(--warning);">未安装（插件管理需要，可一键安装）</span>');
+
+  const missingNode = !node.installed;
+  const missingNpm = !npm.installed;
+  el.innerHTML = `
+    ${nodeRow}${npmRow}${pnpmRow}
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+      ${(missingNode || missingNpm) ? `
+        <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
+        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://nodejs.org')">🌐 官网下载</button>` : ''}
+      ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">⚡ 一键安装 pnpm</button>` : ''}
+      <span style="font-size:12px;color:var(--text-dim);align-self:center;">${env.nodeInstallGuide ? '' : ''}</span>
+    </div>
+    ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
+  `;
+}
+
+// ====== 一键安装 Node.js ======
+async function installNodejs() {
+  const btn = document.getElementById('installNodeBtn');
+  showToast('正在通过系统包管理器安装 Node.js，请稍候（可能需要几分钟）...', 'info');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 安装中...'; }
+  try {
+    const result = await window.dshManager.installNodejs();
+    if (result.success) {
+      showToast(`✅ ${result.message || 'Node.js 安装成功'}`, 'success');
+    } else {
+      showToast(`❌ Node.js 安装失败: ${result.message || result.error || '未知错误'}`, 'error');
+    }
+    await renderEnvStatus();
+    await checkDSHStatus();
+  } catch (err) {
+    showToast('❌ Node.js 安装失败: ' + err.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '⬇️ 一键安装 Node.js'; }
+  }
+}
 async function installDSH(tool = 'auto') {
   const btn = document.getElementById('installBtn');
   const progress = document.getElementById('installProgress');

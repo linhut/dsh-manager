@@ -73,7 +73,13 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         }
       },
     });
-    return await installer.install(version, { tool });
+    try {
+      return await installer.install(version, { tool });
+    } catch (error) {
+      // 透传 execa 的 stderr 细节，避免渲染层只见 "Error invoking remote method" 无法排查
+      const detail = error?.stderr ? `\n${String(error.stderr).trim().slice(0, 800)}` : '';
+      throw new Error(`${error?.message || '安装失败'}${detail}`);
+    }
   });
 
   ipcMain.handle('dsh:uninstall', async () => {
@@ -393,7 +399,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       );
       return pkg.version;
     } catch {
-      return '1.0.0';
+      return '1.1.0';
     }
   });
 
@@ -426,6 +432,56 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         success: false,
         message: '安装命令执行完成，但 pnpm 仍不可用',
         detail: child.stderr || child.stdout || '',
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  // ====== 基础环境检测（空白环境部署支持） ======
+  ipcMain.handle('app:check-env', async () => {
+    const { checkEnvironment, getNodeInstallGuide, getPnpmInstallGuide } = await loadCore();
+    const env = await checkEnvironment();
+    return {
+      ...env,
+      nodeInstallGuide: getNodeInstallGuide(),
+      pnpmInstallGuide: getPnpmInstallGuide(),
+    };
+  });
+
+  ipcMain.handle('app:install-nodejs', async () => {
+    try {
+      const { execa } = await import('execa');
+      const platform = process.platform;
+      let result;
+
+      if (platform === 'win32') {
+        // Windows: winget 安装 Node.js LTS（静默）
+        const child = await execa('winget', [
+          'install', '--id', 'OpenJS.NodeJS.LTS',
+          '--silent', '--accept-source-agreements', '--accept-package-agreements',
+        ], { timeout: 300_000, reject: false, stdio: 'pipe' });
+        result = child;
+      } else if (platform === 'darwin') {
+        // macOS: 尝试 brew，缺失则提示
+        const child = await execa('brew', ['install', 'node'], { timeout: 300_000, reject: false, stdio: 'pipe' });
+        result = child;
+      } else {
+        // Linux: 尝试 apt
+        const child = await execa('sudo', ['apt-get', 'install', '-y', 'nodejs', 'npm'], { timeout: 300_000, reject: false, stdio: 'pipe' });
+        result = child;
+      }
+
+      // 安装后验证
+      const { checkNode, checkNpm } = await loadCore();
+      const [node, npm] = await Promise.all([checkNode(), checkNpm()]);
+      if (node.installed) {
+        return { success: true, nodeVersion: node.version, npmVersion: npm.version, message: `Node.js ${node.version} 安装成功${npm.version ? `（npm ${npm.version}）` : ''}` };
+      }
+      return {
+        success: false,
+        message: '安装命令执行完成，但 Node.js 仍不可用（可能需要重启终端使 PATH 生效）',
+        detail: result.stderr || result.stdout || '',
       };
     } catch (error) {
       return { success: false, error: error.message };

@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld('dshManager', {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   checkPnpm: () => ipcRenderer.invoke('app:check-pnpm'),
   installPnpm: () => ipcRenderer.invoke('app:install-pnpm'),
+  checkEnvironment: () => ipcRenderer.invoke('app:check-env'),
+  installNodejs: () => ipcRenderer.invoke('app:install-nodejs'),
 
   // ====== 事件监听 ======
   onInstallProgress: (callback) => {

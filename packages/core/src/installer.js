@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS, isDSHInstalled, getDSHVersion } from './dsh-utils.js';
+import { requireNodeAndNpm } from './env-check.js';
 
 /**
  * 安装器配置
@@ -52,7 +53,14 @@ export class DSHInstaller {
     const { global = true, tool = 'auto' } = opts;
     
     this._log('开始安装 DSH...');
-    
+
+    // 基础环境检测：npm 未安装时给出 Node.js 安装引导，而非 ENOENT 报错
+    try {
+      await requireNodeAndNpm('安装 DSH');
+    } catch (error) {
+      throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, error.message);
+    }
+
     // 检查是否已安装
     const alreadyInstalled = await isDSHInstalled();
     if (alreadyInstalled) {
@@ -66,19 +74,23 @@ export class DSHInstaller {
     else if (tool === 'mirror') tools = ['npm-mirror', 'pnpm'];
     else tools = [tool];
 
-    let lastError = null;
+    let errors = [];
     for (const t of tools) {
       try {
         const result = await this._installWithTool(version, t);
         return { ...result, tool: t };
       } catch (error) {
-        lastError = error;
+        errors.push({ tool: t, message: error.message });
         this._log(`${t} 安装尝试失败: ${error.message}`, 'warn');
       }
     }
 
-    if (lastError) throw lastError;
-    throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, 'DSH 安装失败: 无可用安装方式');
+    // 汇总所有工具的失败原因，便于用户排查
+    const summary = errors.map(e => `  - ${e.tool}: ${e.message}`).join('\n');
+    throw new DSHError(
+      DSHErrorCodes.DSH_INSTALL_FAILED,
+      `DSH 安装失败（已尝试 ${tools.join(' / ')}）:\n${summary}\n\n请检查网络连接、npm 全局安装权限，或更换镜像源后重试。`
+    );
   }
 
   /**
@@ -126,15 +138,11 @@ export class DSHInstaller {
           stdio: this.options.verbose ? 'inherit' : 'pipe',
         });
       } catch (error) {
-        this._log('corepack 不可用，尝试安装 corepack...', 'warn');
-        await execa('npm', ['install', '-g', 'corepack'], {
-          timeout: 120_000,
-          stdio: this.options.verbose ? 'inherit' : 'pipe',
-        });
-        await execa('corepack', ['enable'], {
-          timeout: 60_000,
-          stdio: this.options.verbose ? 'inherit' : 'pipe',
-        });
+        // Node.js 16.9+ 自带 corepack，失败多为 PATH/权限问题，给出明确提示而非再次尝试安装
+        throw new DSHError(
+          DSHErrorCodes.DSH_INSTALL_FAILED,
+          `corepack 不可用: ${error.shortMessage || error.message}\nNode.js 16.9+ 已内置 corepack，请确认 Node 版本与 PATH 配置，或改用 npm/pnpm 安装。`
+        );
       }
       // 复用 pnpm 安装逻辑
       const args = ['add', '-g', packageName];
