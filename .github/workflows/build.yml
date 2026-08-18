@@ -20,10 +20,35 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # ===== 版本校验：确保 package.json 版本与 tag 一致 =====
+  check-version:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "❌ tag v$TAG 与 package.json 版本 $PKG 不一致，终止构建"
+            exit 1
+          fi
+          echo "✅ tag v$TAG 与 package.json 版本 $PKG 一致"
+
+  # ===== 三平台构建（矩阵） =====
   build:
     name: Build ${{ matrix.platform }}
+    needs: check-version
+    if: ${{ !cancelled() }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -52,22 +77,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
 
+      # 依赖一次装齐（含图标生成所需 sharp，不写入 package.json）
       - name: Install dependencies
         shell: bash
         run: |
-          npm install --ignore-scripts
+          npm install --no-audit --no-fund
+          npm install --no-save sharp --no-audit --no-fund
 
-      - name: Build packages
-        shell: bash
-        run: npm install
-
-      - name: Generate application icons
-        shell: bash
-        run: |
-          npm install --no-save sharp
-          npm run generate-icons
-
+      # 注：generate-icons 已内置于 build:* 脚本（npm run generate-icons && electron-builder）
       - name: Build ${{ matrix.platform }} installer
         run: ${{ matrix.build-cmd }}
         env:
@@ -78,8 +97,9 @@ jobs:
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.artifact-path }}
-          if-no-files-found: warn
+          if-no-files-found: error
 
+  # ===== 创建 GitHub Release 并上传全部产物 =====
   create-release:
     needs: build
     runs-on: ubuntu-latest
@@ -101,13 +121,14 @@ jobs:
             下载适用于你平台的安装包：
 
             ### Windows
-            - `DSH-Manager-Windows/*.exe` - Windows 安装程序
+            - `DSH.Manager.Setup.${{ github.ref_name }}.exe` - Windows NSIS 安装程序
 
             ### macOS
-            - `DSH-Manager-macOS/*.dmg` - macOS 磁盘映像
+            - `DSH.Manager-${{ github.ref_name }}.dmg` - macOS 磁盘映像（Intel）
+            - `DSH.Manager-${{ github.ref_name }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
             ### Linux
-            - `DSH-Manager-Linux/*.AppImage` - Linux AppImage
+            - `DSH.Manager-${{ github.ref_name }}.AppImage` - Linux AppImage
 
             ---
             ### 安装说明
@@ -115,6 +136,10 @@ jobs:
             **Windows**: 双击运行 `.exe` 安装程序，按照向导完成安装
             **macOS**: 打开 `.dmg`，将 DSH Manager 拖到 Applications 文件夹
             **Linux**: 给 `.AppImage` 添加执行权限后运行
+
+            > 详细发布流程见 [RELEASE.md](https://github.com/linhut/dsh-manager/blob/main/RELEASE.md)
           files: |
             artifacts/**/*
           generate_release_notes: true
+          draft: false
+          prerelease: false
