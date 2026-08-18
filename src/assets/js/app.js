@@ -1001,6 +1001,15 @@ async function loadMarketplace(query) {
       topics: ['agent-skills', 'dsh-plugin', 'deepseek-harness', 'dsh', 'skills', 'superpowers', 'tdd', 'code-review', 'recommended'],
       recommended: true,
     },
+    {
+      fullName: 'linhut/dsh-skills',
+      stars: 1,
+      forks: 0,
+      description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能，模型可通过 skill 工具按需加载。',
+      language: 'JavaScript',
+      topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'recommended'],
+      recommended: true,
+    },
   ];
 
   try {

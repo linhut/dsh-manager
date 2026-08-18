@@ -232,6 +232,28 @@ export class PluginRegistry {
         archived: false,
         recommended: true,
       },
+      {
+        id: 999999004,
+        name: 'dsh-skills',
+        fullName: 'linhut/dsh-skills',
+        owner: 'linhut',
+        description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能，模型可通过 skill 工具按需加载。',
+        url: 'https://github.com/linhut/dsh-skills',
+        homepage: '',
+        stars: 1,
+        forks: 0,
+        issues: 0,
+        language: 'JavaScript',
+        topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'recommended'],
+        license: 'MIT',
+        createdAt: '2026-08-18T00:00:00Z',
+        updatedAt: '2026-08-18T00:00:00Z',
+        pushedAt: '2026-08-18T00:00:00Z',
+        defaultBranch: 'main',
+        isTemplate: false,
+        archived: false,
+        recommended: true,
+      },
     ];
 
     // 将精选插件插入到结果列表顶部，保持自然排序感
