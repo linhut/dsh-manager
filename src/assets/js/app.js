@@ -23,6 +23,63 @@ const state = {
   localPlugins: [],
 };
 
+// ====== 安全工具（防止 XSS） ======
+/**
+ * HTML 转义（用于 innerHTML 中的文本内容）
+ */
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * 属性值转义（用于 onclick 等单引号包裹的属性值）
+ */
+function escapeAttr(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&#39;')
+    .replace(/"/g, '&quot;');
+}
+
+// ====== 调试日志系统（拦截 console 和全局错误） ======
+const debugLog = {
+  enabled: false, logs: [], MAX_QUEUE: 500,
+  init() {
+    this.enabled = true;
+    const self = this;
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    const origInfo = console.info;
+    console.log = function(...args) { self._log('info', args); origLog.apply(console, args); };
+    console.info = function(...args) { self._log('info', args); origInfo.apply(console, args); };
+    console.warn = function(...args) { self._log('warn', args); origWarn.apply(console, args); };
+    console.error = function(...args) { self._log('error', args); origError.apply(console, args); };
+    window.addEventListener('error', (event) => { self._log('error', [event.error?.stack || event.error?.message || event.message || '未知错误']); });
+    window.addEventListener('unhandledrejection', (event) => { self._log('error', [event.reason?.stack || event.reason?.message || String(event.reason)]); });
+    this.log('info', '调试日志系统已初始化');
+    this.log('info', 'URL: ' + window.location.href);
+  },
+  _log(level, args) {
+    const msg = args.map(a => typeof a === 'object' ? (a?.stack || a?.message || JSON.stringify(a)) : String(a)).join(' ');
+    this.logs.push({ level, message: msg, time: new Date().toISOString() });
+    if (this.logs.length > this.MAX_QUEUE) this.logs.splice(0, this.logs.length - this.MAX_QUEUE);
+    if (window.dshManager) { window.dshManager.writeDebugLog(level, msg).catch(() => {}); }
+  },
+  log(level, message) { this._log(level, [message]); },
+  getLogs() { return this.logs.map(l => '[' + l.time + '] [' + l.level.toUpperCase() + '] ' + l.message).join('\n'); },
+  clearLogs() { this.logs = []; return '日志已清除'; }
+};
+try { debugLog.init(); } catch (e) { try { console.error('调试日志初始化失败:', e); } catch {} }
+
 // ====== 主题系统 ======
 const THEME_KEY = 'dshm-theme';
 
@@ -61,7 +118,22 @@ function selectThemeOption(choice) {
 }
 
 // ====== 初始化（带超时保护） ======
+
+
+// ====== 带超时的 fetch（手动 AbortController） ======
+async function fetchWithTimeout(url, timeoutMs = 3000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  debugLog.log('info', 'DOMContentLoaded 触发');
   // 应用主题（在渲染页面之前）
   applyTheme();
 
@@ -109,13 +181,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 异步检测 DSH 状态（带超时保护，不阻塞 UI）
   Promise.race([
     checkDSHStatus(),
-    new Promise(r => setTimeout(() => { console.warn('checkDSHStatus 超时，跳过'); r(); }, 15_000))
-  ]).catch(() => {});
+    new Promise(r => setTimeout(() => {
+      console.warn('checkDSHStatus 超时，跳过');
+      updateStatusToError('dshStatus', 'DSH 检测超时');
+      r();
+    }, 30_000))
+  ]).then(() => {
+    if (state.dshInstalled && autoStartConsole) {
+      tryLoadDSHWeb();
+    }
+  }).catch(() => {});
 
   // 异步检测 pnpm 状态（带超时保护）
   Promise.race([
     checkPnpmStatus(),
-    new Promise(r => setTimeout(() => { console.warn('checkPnpmStatus 超时，跳过'); r(); }, 15_000))
+    new Promise(r => setTimeout(() => {
+      console.warn('checkPnpmStatus 超时，跳过');
+      updateStatusToError('pnpmStatus', 'pnpm 检测超时');
+      r();
+    }, 30_000))
   ]).catch(() => {});
 
   // 读取 Manager 设置（自动打开控制台 / 启动时检查更新）
@@ -126,10 +210,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     checkUpdatesOnStartup = (await window.dshManager.getConfig('manager.check-updates')) !== false;
   } catch {}
 
-  // 如果已安装且开启"自动打开控制台"，尝试加载 DSH Web
-  if (state.dshInstalled && autoStartConsole) {
-    tryLoadDSHWeb();
-  }
+  //   // 等 checkDSHStatus 完成后再尝试加载 DSH Web
+  // (已移至 Promise.race .then() 中)
 
   // 开启"启动时检查 DSH 更新"则静默检查一次
   if (checkUpdatesOnStartup) {
@@ -155,6 +237,16 @@ function switchPage(page) {
   if (page === 'versions') renderVersionsPage();
 }
 
+// ====== 状态更新辅助函数 ======
+function updateStatusToError(elementId, message) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const dot = el.querySelector('.status-dot');
+  const text = el.querySelector('.status-text');
+  if (dot) dot.className = 'status-dot status-error';
+  if (text) text.textContent = message;
+}
+
 // ====== DSH 状态检测 ======
 async function checkDSHStatus() {
   const statusEl = document.getElementById('dshStatus');
@@ -173,26 +265,21 @@ async function checkDSHStatus() {
       dot.className = 'status-dot status-ok';
       text.textContent = `DSH ${info.version}`;
       
-      // 尝试检测 DSH 是否运行
-      try {
-        const resp = await fetch('http://127.0.0.1:3080', { signal: AbortSignal.timeout(2000) });
-        state.dshRunning = resp.ok;
-      } catch {
-        state.dshRunning = false;
-      }
+      // 不在此处检测 DSH 是否运行（避免 TCP 连接挂起）
+      // 由 tryLoadDSHWeb 在需要时检测
+      state.dshRunning = false;
     } else {
       dot.className = 'status-dot status-error';
       text.textContent = 'DSH 未安装';
     }
     renderDashToolbar();
     renderDashInfo();
+    // 异步检测完成后刷新安装页，避免"已安装却显示未安装/提示重装"
+    const installContent = document.getElementById('installContent');
+    if (installContent) renderInstallPage();
   } catch (err) {
     console.error('状态检测失败:', err);
-    // 修复：检测失败时更新侧边栏状态，避免卡在"检测中..."
-    const dot = statusEl?.querySelector('.status-dot');
-    const text = statusEl?.querySelector('.status-text');
-    if (dot) dot.className = 'status-dot status-error';
-    if (text) text.textContent = 'DSH 检测失败';
+    updateStatusToError('dshStatus', 'DSH 检测失败');
   }
 }
 
@@ -230,12 +317,7 @@ async function checkPnpmStatus() {
     }
   } catch (err) {
     console.error('pnpm 检测失败:', err);
-    // 修复：检测失败时更新侧边栏状态
-    const statusEl = document.getElementById('pnpmStatus');
-    const dot = statusEl?.querySelector('.status-dot');
-    const text = statusEl?.querySelector('.status-text');
-    if (dot) dot.className = 'status-dot status-error';
-    if (text) text.textContent = 'pnpm 检测失败';
+    updateStatusToError('pnpmStatus', 'pnpm 检测失败');
   }
 }
 
@@ -280,6 +362,7 @@ async function checkDSHUpdateStartup() {
 }
 
 // ====== DSH Web 界面加载 ======
+// ====== DSH Web 界面加载 ======
 async function tryLoadDSHWeb() {
   renderDashToolbar();
   renderDashInfo();
@@ -295,13 +378,29 @@ async function tryLoadDSHWeb() {
 
   // 尝试连接 DSH Web
   try {
-    const resp = await fetch('http://127.0.0.1:3080', { signal: AbortSignal.timeout(3000) });
+    const resp = await fetchWithTimeout('http://127.0.0.1:3080', 3000);
     if (resp.ok) {
       placeholder.style.display = 'none';
       webview.style.display = 'flex';
-      webview.src = 'http://127.0.0.1:3080';
       state.dshRunning = true;
-      // 刷新工具栏，显示「🛑 停止 DSH」按钮（否则停留在"未运行"状态）
+      // DSH 运行中：自动收起环境信息
+      dashInfoCollapsed = true;
+      const dashInfoEl = document.getElementById('dashInfo');
+      if (dashInfoEl) dashInfoEl.style.display = 'none';
+
+      // 自动刷新 webview
+      try {
+        if (webview.src === 'http://127.0.0.1:3080') {
+          webview.reload();
+        } else {
+          webview.src = 'http://127.0.0.1:3080';
+        }
+      } catch (e) {
+        console.warn('webview 刷新失败:', e.message);
+        webview.src = 'http://127.0.0.1:3080';
+      }
+
+      // 刷新工具栏
       renderDashToolbar();
       renderDashInfo();
       return;
@@ -309,6 +408,7 @@ async function tryLoadDSHWeb() {
   } catch {}
 
   // DSH 未运行，显示启动提示
+  state.dshRunning = false;
   placeholder.style.display = 'flex';
   webview.style.display = 'none';
   placeholder.innerHTML = `
@@ -322,6 +422,8 @@ async function tryLoadDSHWeb() {
       </button>
     </div>
   `;
+  renderDashToolbar();
+  renderDashInfo();
 }
 
 // ====== 尝试启动 DSH ======
@@ -336,42 +438,86 @@ async function tryStartDSH() {
       return;
     }
     
-    showToast('DSH 启动命令已发送，请稍候...', 'info');
+    showToast('DSH 启动命令已发送，正在等待服务就绪...', 'info');
     
-    // 等待几秒后重试连接
-    setTimeout(async () => {
+    // 重试连接：每 2 秒尝试一次，最长等待 30 秒
+    let retries = 0;
+    const maxRetries = 15;
+    const retryInterval = 2000;
+    
+    const tryConnect = async () => {
+      retries++;
       try {
-        const resp = await fetch('http://127.0.0.1:3080', { signal: AbortSignal.timeout(3000) });
+        const resp = await fetchWithTimeout('http://127.0.0.1:3080', 3000);
         if (resp.ok) {
           showToast('DSH 已启动！', 'success');
           tryLoadDSHWeb();
-        } else {
-          showToast('DSH 启动可能需要一些时间，请稍后再试', 'warning');
+          return;
         }
       } catch {
-        showToast('DSH 启动失败，请手动运行 dsh web', 'error');
+        // 连接失败，继续重试
       }
-    }, 5000);
+      
+      if (retries < maxRetries) {
+        setTimeout(tryConnect, retryInterval);
+      } else {
+        showToast('DSH 启动超时，请手动运行 dsh web 命令，或切换页面重新加载', 'error');
+      }
+    };
+    
+    setTimeout(tryConnect, 2000);
   } catch (err) {
     showToast('启动失败: ' + err.message, 'error');
   }
 }
 
-// ====== DSH 控制台工具条（启动/停止） ======
+// ====== 环境信息折叠状态 ======
+let dashInfoCollapsed = false;
+
+// ====== 切换环境信息显隐 ======
+function toggleDashInfo() {
+  dashInfoCollapsed = !dashInfoCollapsed;
+  const el = document.getElementById('dashInfo');
+  // 用户点击优先：显示与否仅由 dashInfoCollapsed 决定，不受 DSH 运行状态压制
+  if (el) el.style.display = dashInfoCollapsed ? 'none' : 'block';
+  renderDashToolbar();
+  // 更新按钮高亮
+  const btn = document.querySelector('[data-toggle-dashinfo]');
+  if (btn) {
+    btn.classList.toggle('btn-primary', !dashInfoCollapsed);
+    btn.classList.toggle('btn-ghost', dashInfoCollapsed);
+  }
+}
+
+// ====== DSH 控制台合并工具栏（启动/停止/浏览器/更新/安装/环境信息） ======
 function renderDashToolbar() {
   const bar = document.getElementById('dashToolbar');
   if (!bar) return;
-  if (!state.dshInstalled) {
-    bar.style.display = 'none';
-    bar.innerHTML = '';
-    return;
-  }
+
+  const statusBadge = !state.dshInstalled
+    ? '<span class="badge badge-red">🔴 未安装</span>'
+    : state.dshRunning
+      ? '<span class="badge badge-green">🟢 运行中</span>'
+      : '<span class="badge badge-yellow">🟡 未运行</span>';
+
   bar.style.display = 'flex';
-  bar.innerHTML = state.dshRunning
-    ? `<span style="font-size:13px;color:var(--text-secondary);">🟢 DSH 运行中</span>
-       <button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>`
-    : `<span style="font-size:13px;color:var(--text-secondary);">🟡 DSH 未运行</span>
-       <button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>`;
+  bar.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        ${statusBadge}
+        <span style="font-size:12px;color:var(--text-muted);">v${state.dshVersion || '-'}</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;">
+        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('${state.dshUrl}')" title="在系统浏览器中打开 DSH Web">🌐 浏览器打开</button>
+        ${state.dshRunning
+          ? '<button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>'
+          : (state.dshInstalled ? '<button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>' : '')}
+        <button class="btn btn-sm btn-secondary" onclick="checkAppUpdateUI()" title="检查 DSH Manager 新版本">🔄 检查更新</button>
+        <button class="btn btn-sm btn-secondary" onclick="switchPage('install')" title="安装/升级 DSH">📥 安装/升级</button>
+        <button class="btn btn-sm ${!dashInfoCollapsed ? 'btn-primary' : 'btn-ghost'}" onclick="toggleDashInfo()" data-toggle-dashinfo title="展开/收起环境信息">📋 环境信息</button>
+      </div>
+    </div>
+  `;
 }
 
 // ====== 停止 DSH ======
@@ -392,7 +538,7 @@ async function stopDSH() {
   }
 }
 
-// ====== DSH 控制台环境信息栏 ======
+// ====== DSH 控制台环境信息栏（自动折叠） ======
 async function renderDashInfo() {
   const el = document.getElementById('dashInfo');
   if (!el) return;
@@ -402,9 +548,14 @@ async function renderDashInfo() {
     el.innerHTML = '';
     return;
   }
+  // 折叠：仅由用户状态 dashInfoCollapsed 决定（初始加载时 DSH 运行中会自动折叠一次）
+  if (dashInfoCollapsed) {
+    el.style.display = 'none';
+    return;
+  }
   el.style.display = 'block';
-  el.innerHTML = `
-    <div class="card" style="margin-bottom:12px;">
+  el.innerHTML =
+    `<div class="card" style="margin-bottom:12px;">
       <div class="card-header">
         <span class="card-title">🖥️ 环境信息</span>
         <span class="badge ${state.dshRunning ? 'badge-green' : 'badge-gray'}">${state.dshRunning ? '运行中' : '未运行'}</span>
@@ -418,18 +569,10 @@ async function renderDashInfo() {
         <div>🌐 Web 地址: <strong>${state.dshUrl}</strong></div>
         <div id="processStatusCell">🔌 端口 3080: <strong>检测中...</strong></div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
-        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('${state.dshUrl}')">🌐 浏览器打开</button>
-        ${state.dshRunning
-          ? `<button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>`
-          : `<button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>`}
-        <button class="btn btn-sm btn-secondary" onclick="upgradeDSH()">🔄 检查更新</button>
-        <button class="btn btn-sm btn-ghost" onclick="switchPage('install')">📥 安装/升级</button>
-      </div>
     </div>
   `;
 
-  // 异步检测端口/进程状态
+  // 异步检测
   try {
     const proc = await window.dshManager.getDSHProcessInfo();
     const cell = document.getElementById('processStatusCell');
@@ -661,6 +804,35 @@ async function installNodejs() {
     window.dshManager.removeAllListeners('env-install-progress');
   }
 }
+
+// ====== 一键安装 git ======
+async function installGit() {
+  clearEnvInstallLog();
+  appendEnvInstallLog('开始安装 git（通过系统包管理器），请稍候...');
+  showToast('正在通过系统包管理器安装 git，请稍候（可能需要几分钟）...', 'info');
+  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.onEnvInstallProgress((data) => {
+    if (data && data.message) appendEnvInstallLog(data.message, data.level);
+  });
+  try {
+    const result = await window.dshManager.installGit();
+    if (result.success) {
+      appendEnvInstallLog('✅ ' + (result.message || 'git 安装成功'), 'info');
+      showToast('✅ ' + (result.message || 'git 安装成功'), 'success');
+    } else {
+      appendEnvInstallLog('❌ ' + (result.message || result.error || '未知错误'), 'error');
+      showToast('❌ git 安装失败: ' + (result.message || result.error || '未知错误'), 'error');
+    }
+    await renderEnvStatus();
+    await checkDSHStatus();
+  } catch (err) {
+    appendEnvInstallLog('❌ ' + err.message, 'error');
+    showToast('❌ git 安装失败: ' + err.message, 'error');
+  } finally {
+    window.dshManager.removeAllListeners('env-install-progress');
+  }
+}
+
 async function installDSH(tool = 'auto') {
   const btn = document.getElementById('installBtn');
   const progress = document.getElementById('installProgress');
@@ -872,8 +1044,8 @@ async function renderPluginsPage() {
                      <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : 'npm'}</td>
                      <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
                      <td>
-                       <button class="btn btn-sm btn-ghost" onclick="togglePlugin('${p.id}', ${p.enabled !== false})">${p.enabled !== false ? '禁用' : '启用'}</button>
-                       <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${p.id}')">卸载</button>
+                       <button class="btn btn-sm btn-ghost" onclick="togglePlugin('${escapeAttr(p.id)}', ${p.enabled !== false})">${p.enabled !== false ? '禁用' : '启用'}</button>
+                       <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${escapeAttr(p.id)}')">卸载</button>
                      </td>
                    </tr>
                  `).join('')}
@@ -921,8 +1093,6 @@ async function renderPluginsPage() {
   `;
 }
 
-}
-
 /**
  * 关闭安装进度模态框
  * 安装将在后台继续，完成后会自动刷新页面
@@ -938,9 +1108,9 @@ function closeInstallProgressModal() {
 async function showMarketplace() {
   const section = document.getElementById('marketplaceSection');
   section.style.display = 'block';
-  // 加载本地插件列表，用于市场卡片"已安装"标记
+  // 加载本地插件列表，用于市场卡片"已安装"标记（强制刷新，避免缓存不同步）
   try {
-    state.localPlugins = await window.dshManager.getLocalPlugins();
+    state.localPlugins = await window.dshManager.getLocalPlugins(true);
   } catch {
     state.localPlugins = [];
   }
@@ -1094,27 +1264,27 @@ function renderPluginCard(p) {
   const updatedStr = updated ? new Date(updated).toLocaleDateString() : '';
   const npmVersion = p._source === 'npm' && p.version ? p.version : '';
   return `
-    <div class="card" style="cursor:pointer;" onclick="showPluginDetails('${p.fullName}')">
+    <div class="card" style="cursor:pointer;" onclick="showPluginDetails('${escapeAttr(p.fullName)}')">
       <div class="card-header" style="margin-bottom:8px;flex-wrap:wrap;">
         <span class="card-title" style="font-size:13px;display:flex;align-items:center;gap:6px;">
-          ${p.fullName}
+          ${escapeHtml(p.fullName)}
           ${p._source === 'npm' ? '<span class="badge badge-gray" title="来源：npm registry">📦 npm</span>' : ''}
           ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}
           ${isInstalled ? '<span class="badge badge-green">✓ 已安装</span>' : ''}
         </span>
         <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ${p.stars}</span>
       </div>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${(p.description || '暂无描述').slice(0, 80)}</p>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">${escapeHtml((p.description || '暂无描述').slice(0, 80))}</p>
       <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
-        ${p.language ? `<span class="badge badge-gray">${p.language}</span>` : ''}
-        ${npmVersion ? `<span class="badge badge-blue" title="npm 版本">v${npmVersion}</span>` : ''}
-        ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
+        ${p.language ? `<span class="badge badge-gray">${escapeHtml(p.language)}</span>` : ''}
+        ${npmVersion ? `<span class="badge badge-blue" title="npm 版本">v${escapeHtml(npmVersion)}</span>` : ''}
+        ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${escapeHtml(t)}</span>`).join('')}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ${renderLogoIcon(12)} ${(p.stars || 0) + (p.forks || 0)} 活跃${updatedStr ? `  · 更新 ${updatedStr}` : ''}</span>
         <span style="display:flex;gap:6px;">
-          <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();showPluginDetails('${p.fullName}')">👁 详情</button>
-          <button class="btn btn-sm ${isInstalled ? 'btn-secondary' : 'btn-primary'}" onclick="event.stopPropagation();installMarketPlugin('${p.fullName}')">
+          <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();showPluginDetails('${escapeAttr(p.fullName)}')">👁 详情</button>
+          <button class="btn btn-sm ${isInstalled ? 'btn-secondary' : 'btn-primary'}" onclick="event.stopPropagation();installMarketPlugin('${escapeAttr(p.fullName)}')">
             ${isInstalled ? '✓ 已装' : '📥 安装'}
           </button>
         </span>
@@ -1138,23 +1308,23 @@ async function showPluginDetails(fullName) {
   modal.className = 'modal-overlay active';
   modal.innerHTML = `
     <div class="modal" style="min-width:560px;max-width:720px;">
-      <h3 class="modal-title">${renderLogoIcon(18)} ${p.fullName} ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}</h3>
+      <h3 class="modal-title">${renderLogoIcon(18)} ${escapeHtml(p.fullName)} ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}</h3>
       <div class="modal-body">
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:13px;color:var(--text-dim);">
           <span>⭐ <strong>${p.stars}</strong></span>
           <span>🍴 <strong>${p.forks}</strong></span>
-          ${p.language ? `<span>🔤 ${p.language}</span>` : ''}
-          ${p.license ? `<span>📄 ${p.license}</span>` : ''}
+          ${p.language ? `<span>🔤 ${escapeHtml(p.language)}</span>` : ''}
+          ${p.license ? `<span>📄 ${escapeHtml(p.license)}</span>` : ''}
           ${p.issues ? `<span>🐞 ${p.issues}</span>` : ''}
         </div>
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:12px;color:var(--text-dim);">
           ${p.createdAt ? `<span>🗓️ 创建 ${new Date(p.createdAt).toLocaleDateString()}</span>` : ''}
           ${p.pushedAt ? `<span>🔄 更新 ${new Date(p.pushedAt).toLocaleDateString()}</span>` : ''}
-          ${p.homepage ? `<span>🏠 <a href="javascript:void(0)" onclick="window.dshManager.openExternal('${p.homepage}')" style="color:var(--primary-light);">主页</a></span>` : ''}
+          ${p.homepage ? `<span>🏠 <a href="javascript:void(0)" onclick="window.dshManager.openExternal('${escapeAttr(p.homepage)}')" style="color:var(--primary-light);">主页</a></span>` : ''}
         </div>
-        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px;">${p.description || '暂无描述'}</p>
+        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:12px;">${escapeHtml(p.description || '暂无描述')}</p>
         <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">
-          ${(p.topics || []).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
+          ${(p.topics || []).map(t => `<span class="badge badge-blue">${escapeHtml(t)}</span>`).join('')}
         </div>
         <div id="pluginDetailExtra">
           <p style="color:var(--text-dim);font-size:13px;">⏳ 正在加载 README 与版本信息...</p>
@@ -1162,7 +1332,7 @@ async function showPluginDetails(fullName) {
       </div>
       <div class="modal-footer">
         ${ghUrl ? `<button class="btn btn-secondary" onclick="window.dshManager.openExternal('${ghUrl}')">🌐 项目地址</button>` : ''}
-        <button class="btn btn-primary" onclick="installMarketPlugin('${p.fullName}');document.querySelector('.modal-overlay.active')?.remove();">📥 安装</button>
+        <button class="btn btn-primary" onclick="installMarketPlugin('${escapeAttr(p.fullName)}');document.querySelector('.modal-overlay.active')?.remove();">📥 安装</button>
         <button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()">关闭</button>
       </div>
     </div>`;
@@ -1277,8 +1447,8 @@ async function searchPlugins(query) {
               <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : 'npm'}</td>
               <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
               <td>
-                <button class="btn btn-sm btn-ghost" onclick="togglePlugin('${p.id}', ${p.enabled !== false})">${p.enabled !== false ? '禁用' : '启用'}</button>
-                <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${p.id}')">卸载</button>
+                <button class="btn btn-sm btn-ghost" onclick="togglePlugin('${escapeAttr(p.id)}', ${p.enabled !== false})">${p.enabled !== false ? '禁用' : '启用'}</button>
+                <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${escapeAttr(p.id)}')">卸载</button>
               </td>
             </tr>
           `).join('')}
@@ -1342,17 +1512,6 @@ function showInstallProgressModal(label, title = '安装') {
   };
 }
 
-/**
- * 关闭安装进度模态框
- * 安装将在后台继续，完成后会自动刷新页面
- */
-function closeInstallProgressModal() {
-  const overlay = document.querySelector('.modal-overlay.active');
-  if (overlay && overlay.querySelector('#installCloseBtn')) {
-    overlay.remove();
-  }
-}
-
 async function installMarketPlugin(fullName) {
   const p = (state.marketResults || []).find(x => x.fullName === fullName);
   const source = (p && p._source === 'npm') ? `npm:${fullName}` : `github:${fullName}`;
@@ -1365,8 +1524,8 @@ async function installMarketPlugin(fullName) {
     });
     const result = await window.dshManager.installPlugin(source);
     modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
-    // 刷新本地插件列表，同步市场卡片安装状态
-    try { state.localPlugins = await window.dshManager.getLocalPlugins(); } catch { state.localPlugins = []; }
+    // 刷新本地插件列表，同步市场卡片安装状态（强制刷新）
+    try { state.localPlugins = await window.dshManager.getLocalPlugins(true); } catch { state.localPlugins = []; }
     const section = document.getElementById('marketplaceSection');
     if (section && section.style.display !== 'none') renderMarketplaceGrid();
     renderPluginsPage();
@@ -1391,7 +1550,7 @@ async function installPluginSource() {
     const result = await window.dshManager.installPlugin(source);
     modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
     if (input) input.value = '';
-    try { state.localPlugins = await window.dshManager.getLocalPlugins(); } catch { state.localPlugins = []; }
+    try { state.localPlugins = await window.dshManager.getLocalPlugins(true); } catch { state.localPlugins = []; }
     const section2 = document.getElementById('marketplaceSection');
     if (section2 && section2.style.display !== 'none') renderMarketplaceGrid();
     renderPluginsPage();
@@ -1442,7 +1601,7 @@ async function runBatchInstall() {
       const detail = failed.map(r => `${r.source}: ${r.error || '未知错误'}`).join('\n');
       modal.update('失败详情:\n' + detail, 'error');
     }
-    try { state.localPlugins = await window.dshManager.getLocalPlugins(); } catch { state.localPlugins = []; }
+    try { state.localPlugins = await window.dshManager.getLocalPlugins(true); } catch { state.localPlugins = []; }
     const section3 = document.getElementById('marketplaceSection');
     if (section3 && section3.style.display !== 'none') renderMarketplaceGrid();
     renderPluginsPage();
@@ -1941,26 +2100,75 @@ async function renderAboutPage() {
   let version = '0.1.0';
   try { version = await window.dshManager.getAppVersion(); } catch {}
 
+  // 获取系统信息
+  let nodeVer = '-', plat = '-', arch = '-';
+  try {
+    const info = state.dshInfo || {};
+    nodeVer = info.nodeVersion || '-';
+    plat = info.platform || '-';
+    arch = info.arch || '-';
+  } catch {}
+
   el.innerHTML = `
-    <div class="card" style="text-align:center;max-width:500px;margin:0 auto;">
-      <div style="padding:40px 20px;">
-        <div style="margin-bottom:16px;display:flex;justify-content:center;"><img src="assets/images/logo-large.png" alt="DSH Manager" style="width:80px;height:80px;border-radius:18px;"></div>
-        <h2 style="font-size:24px;font-weight:700;margin-bottom:8px;">DSH Manager</h2>
-        <p style="color:var(--text-muted);margin-bottom:4px;">DeepSeek Harness 安装与管理工具</p>
-        <p style="color:var(--text-dim);font-size:13px;">版本 ${version}</p>
-        <div style="margin:24px 0;display:flex;justify-content:center;gap:12px;">
-          <a class="btn btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal('https://github.com/linhut/dsh-manager')">
-            GitHub
-          </a>
-          <a class="btn btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal('https://github.com/linhut/dsh-manager/issues')">
-            反馈问题
-          </a>
+    <div style="width:100%;max-width:960px;margin:0 auto;padding:0 8px 24px;">
+      <!-- Hero 区 -->
+      <div style="text-align:center;padding:40px 16px 28px;">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:16px;">
+          <img src="assets/images/logo-large.png" alt="DSH Manager" style="width:88px;height:88px;border-radius:20px;box-shadow:0 4px 24px rgba(0,0,0,0.15);">
+          <div>
+            <h2 style="font-size:28px;font-weight:800;margin:0 0 4px;letter-spacing:-0.5px;">DSH Manager</h2>
+            <p style="margin:0;color:var(--text-muted);font-size:14px;line-height:1.5;">DeepSeek Harness 安装、管理与插件一体化工具</p>
+          </div>
         </div>
-        <div style="color:var(--text-dim);font-size:12px;line-height:1.8;">
-          <p>MIT License</p>
-          <p>由 Jose AI 编写 · <a href="javascript:void(0)" onclick="window.dshManager.openExternal('https://www.linhut.cn')" style="color:var(--primary-light);">www.linhut.cn</a> 出品</p>
-          <p>Made with ❤️ for the DSH community</p>
+        <div style="margin-top:16px;display:flex;justify-content:center;gap:8px;flex-wrap:wrap;">
+          <span class="badge badge-blue">v${version}</span>
+          <span class="badge badge-gray">${plat} ${arch}</span>
+          <span class="badge badge-gray">Node ${nodeVer}</span>
         </div>
+      </div>
+
+      <!-- 功能亮点（自适应网格） -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:24px;">
+        <div class="card" style="margin:0;padding:16px;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <span style="font-size:20px;line-height:1.4;">🚀</span>
+            <div><div style="font-weight:600;font-size:13px;margin-bottom:2px;">一键安装 DSH</div><div style="font-size:11px;color:var(--text-muted);">npm / pnpm / corepack 自动降级，镜像源加速</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin:0;padding:16px;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <span style="font-size:20px;line-height:1.4;">🔌</span>
+            <div><div style="font-weight:600;font-size:13px;margin-bottom:2px;">插件市场</div><div style="font-size:11px;color:var(--text-muted);">浏览、搜索与一键安装 DSH 社区插件</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin:0;padding:16px;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <span style="font-size:20px;line-height:1.4;">📋</span>
+            <div><div style="font-weight:600;font-size:13px;margin-bottom:2px;">版本管理</div><div style="font-size:11px;color:var(--text-muted);">查看历史版本、切换与回滚 DSH</div></div>
+          </div>
+        </div>
+        <div class="card" style="margin:0;padding:16px;">
+          <div style="display:flex;align-items:flex-start;gap:10px;">
+            <span style="font-size:20px;line-height:1.4;">🌐</span>
+            <div><div style="font-weight:600;font-size:13px;margin-bottom:2px;">代理加速</div><div style="font-size:11px;color:var(--text-muted);">内置 gh-proxy.com 加速，自动切换最快源</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:24px;">
+        <a class="btn btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal('https://github.com/linhut/dsh-manager')" style="font-size:12px;">GitHub</a>
+        <a class="btn btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal('https://discord.gg/4qT7TPdft')" style="font-size:12px;">Discord</a>
+        <a class="btn btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal('https://github.com/linhut/dsh-manager/issues')" style="font-size:12px;">反馈问题</a>
+        <button class="btn btn-sm btn-primary" onclick="checkAppUpdateUI()">🔄 检查更新</button>
+        <button class="btn btn-sm btn-ghost" onclick="toggleDebugPanel()">🐛 调试面板</button>
+      </div>
+
+      <!-- 底部信息 -->
+      <div style="text-align:center;color:var(--text-dim);font-size:12px;line-height:2;padding-bottom:12px;">
+        <p style="margin:0;">MIT License</p>
+        <p style="margin:0;">由 Jose AI 编写 · <a href="javascript:void(0)" onclick="window.dshManager.openExternal('https://www.linhut.cn')" style="color:var(--primary-light);">www.linhut.cn</a> 出品</p>
+        <p style="margin:0;">Made with ❤️ for the DSH community</p>
       </div>
     </div>
   `;
@@ -2244,9 +2452,12 @@ async function renderPresetsTab() {
           ? '<p style="color:var(--text-dim);">暂无 Agent Presets 配置</p>'
           : `
             <div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>名称</th><th>路径</th></tr></thead><tbody>
-              ${entries.map(([id, conf]) => `
-                <tr><td><code>${id}</code></td><td><strong>${conf.name || id}</strong></td><td style="font-size:12px;color:var(--text-dim);">${conf.path || '-'}</td></tr>
-              `).join('')}
+              ${entries.map(([id, conf]) => {
+                // 兼容 DSH 官方格式：agent-presets.default = 'preset-id'（字符串）
+                const name = typeof conf === 'string' ? conf : (conf?.name || id);
+                const path = typeof conf === 'string' ? '' : (conf?.path || '-');
+                return `<tr><td><code>${id}</code></td><td><strong>${name}</strong>${typeof conf === 'string' ? ' <span class="badge badge-blue">默认引用</span>' : ''}</td><td style="font-size:12px;color:var(--text-dim);">${path}</td></tr>`;
+              }).join('')}
             </tbody></table></div>
           `}
       </div>
@@ -2568,4 +2779,124 @@ async function installVersion(version) {
 async function removeVersion(version) {
   if (!confirm(`确定删除 DSH ${version} 版本？`)) return;
   showToast('版本删除功能需要手动操作 npm', 'warning');
+}
+
+// ====== 检查更新（DSH Manager） ======
+async function checkAppUpdateUI() {
+  const existing = document.getElementById('updateResultCard');
+  if (existing) existing.remove();
+  showToast('正在检查更新...', 'info');
+  try {
+    const update = await window.dshManager.checkAppUpdate();
+    console.log('更新检查结果:', update);
+    if (!update.hasUpdate) {
+      showToast('✔ 当前已是最新版本 (' + update.currentVersion + ')', 'success');
+      return;
+    }
+    const card = document.createElement('div');
+    card.id = 'updateResultCard';
+    card.style.cssText = 'margin-bottom:16px;';
+    const proxyLinks = (update.proxyUrls || []).map((url, i) => {
+      const labels = ['🚀 官方 GitHub', '⚡ 加速站 gh-proxy', '🌐 GitHub Proxy 网站'];
+      return '<a class="btn btn-sm btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + url + '\')" style="margin:2px;">' + (labels[i] || '下载 ' + (i+1)) + '</a>';
+    }).join('');
+    card.innerHTML = '<div class="card" style="border-color:var(--primary);">' +
+      '<div class="card-header"><span class="card-title">🆕 新版本可用</span><span class="badge badge-green">v' + update.latestVersion + '</span></div>' +
+      '<div class="card-body">' +
+      '<p style="margin-bottom:12px;color:var(--text-secondary);">当前版本: v' + update.currentVersion + ' → 最新版本: v' + update.latestVersion + '</p>' +
+      (update.releaseNotes ? '<div style="margin-bottom:12px;font-size:13px;color:var(--text-muted);line-height:1.6;">' + update.releaseNotes + '</div>' : '') +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;">' + proxyLinks + '</div>' +
+      '<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">' +
+      '<a href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + update.releaseUrl + '\')">查看 GitHub Release 页面</a> | ' +
+      '<a href="javascript:void(0)" onclick="window.dshManager.openExternal(\'https://github.akams.cn/?url=' + encodeURIComponent(update.downloadUrl) + '\')">GitHub Proxy 加速站</a>' +
+      '</div>' +
+      '</div></div>';
+    const toolbar = document.getElementById('dashToolbar');
+    if (toolbar) toolbar.parentNode.insertBefore(card, toolbar.nextSibling);
+    showToast('🆕 发现新版本 v' + update.latestVersion, 'info');
+  } catch (err) {
+    console.error('检查更新失败:', err);
+    showToast('检查更新失败: ' + (err.message || '网络错误'), 'error');
+  }
+}
+
+// ====== 键盘快捷键 ======
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+    e.preventDefault();
+    toggleDebugPanel();
+  }
+});
+
+// ====== 调试面板（切换显示/隐藏调试日志） ======
+function toggleDebugPanel() {
+  const existing = document.getElementById('debugPanel');
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const panel = document.createElement('div');
+  panel.id = 'debugPanel';
+  panel.style.cssText = 'position:fixed;right:16px;bottom:60px;width:480px;max-height:400px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);z-index:9999;display:flex;flex-direction:column;font-size:12px;font-family:var(--font-mono);overflow:hidden;';
+  panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--bg-secondary);">' +
+    '<span style="font-weight:600;font-family:var(--font-sans);">🐛 调试日志</span>' +
+    '<div style="display:flex;gap:6px;">' +
+    '<button class="btn btn-xs btn-ghost" onclick="refreshDebugLogUI()">🔄 刷新</button>' +
+    '<button class="btn btn-xs btn-ghost" onclick="exportDebugLog()">📥 导出</button>' +
+    '<button class="btn btn-xs btn-ghost" onclick="copyDebugLog()">📋 复制</button>' +
+    '<button class="btn btn-xs btn-ghost" onclick="clearDebugLog()">🗑️ 清空</button>' +
+    '<button class="btn btn-xs btn-ghost" onclick="this.closest(\'#debugPanel\').remove()">✕</button>' +
+    '</div></div>' +
+    '<div id="debugLogContent" style="flex:1;overflow-y:auto;padding:8px 12px;white-space:pre-wrap;word-break:break-all;color:var(--text-muted);">加载中...</div>';
+  document.body.appendChild(panel);
+  refreshDebugLogUI();
+}
+
+async function refreshDebugLogUI() {
+  const el = document.getElementById('debugLogContent');
+  if (!el) return;
+  el.textContent = '加载中...';
+  try {
+    const log = await window.dshManager.getDebugLog();
+    el.textContent = log || '（日志为空）';
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    el.textContent = '加载日志失败: ' + e.message;
+  }
+}
+
+async function exportDebugLog() {
+  try {
+    const log = await window.dshManager.getDebugLog();
+    const blob = new Blob([log], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'dsh-manager-debug-' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.log';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('调试日志已导出', 'success');
+  } catch (e) {
+    showToast('导出失败: ' + e.message, 'error');
+  }
+}
+
+async function copyDebugLog() {
+  try {
+    const log = await window.dshManager.getDebugLog();
+    await navigator.clipboard.writeText(log);
+    showToast('调试日志已复制到剪贴板', 'success');
+  } catch (e) {
+    showToast('复制失败: ' + e.message, 'error');
+  }
+}
+
+async function clearDebugLog() {
+  try {
+    await window.dshManager.clearDebugLog();
+    const el = document.getElementById('debugLogContent');
+    if (el) el.textContent = '（日志已清空）';
+    showToast('调试日志已清空', 'success');
+  } catch (e) {
+    showToast('清空失败: ' + e.message, 'error');
+  }
 }

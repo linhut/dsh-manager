@@ -8,6 +8,7 @@ import { shell, BrowserWindow, dialog } from 'electron';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeLog } from './debug-logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -17,14 +18,24 @@ let core, marketplace;
 
 async function loadCore() {
   if (!core) {
-    core = await import('../packages/core/src/index.js');
+    try {
+      core = await import('../packages/core/src/index.js');
+    } catch (e) {
+      console.error('[debug] 核心模块加载失败:', e.message);
+      throw e;
+    }
   }
   return core;
 }
 
 async function loadMarketplace() {
   if (!marketplace) {
-    marketplace = await import('../packages/marketplace/src/index.js');
+    try {
+      marketplace = await import('../packages/marketplace/src/index.js');
+    } catch (e) {
+      console.error('[debug] 市场模块加载失败:', e.message);
+      throw e;
+    }
   }
   return marketplace;
 }
@@ -141,14 +152,39 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:start', async () => {
     try {
       const { execa } = await import('execa');
-      // 分离启动 DSH Web 服务（不阻塞主进程）
-      const child = execa('dsh', ['web'], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
+      const { DSHUtils } = await loadCore();
+
+      const dshPkgPath = await DSHUtils.getDSHPath();
+      if (!dshPkgPath) {
+        return { success: false, error: 'DSH 未安装，请先安装 DSH' };
+      }
+
+      // 读取 dsh package.json 获取 CLI 入口
+      const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
+      const binEntry = pkgJson.bin;
+      let cliPath;
+      if (typeof binEntry === 'string') {
+        cliPath = join(dshPkgPath, binEntry);
+      } else if (binEntry && typeof binEntry === 'object') {
+        cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
+      }
+      if (!cliPath || !existsSync(cliPath)) {
+        return { success: false, error: '无法定位 DSH CLI 入口文件: ' + (cliPath || '未找到') };
+      }
+
+      // 直接启动 node + CLI（绕过 .cmd 包装，避免 Windows 弹窗）
+      const isWindows = process.platform === 'win32';
+      const child = execa('node', [cliPath, 'web'], {
+        detached: !isWindows,          // Windows 上 detached 会让子进程拥有自己的控制台窗口
+        windowsHide: isWindows,        // Windows 上隐藏控制台窗口（CREATE_NO_WINDOW）
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, NO_COLOR: '1' },
       });
-      child.unref();
+      // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
+      child.nodeChildProcess?.unref();
+      child.catch(err => {
+        writeLog('error', 'DSH 启动失败: ' + err.message + (err.stderr ? ' stderr: ' + err.stderr : ''));
+      });
       return { success: true, message: 'DSH 启动命令已发送' };
     } catch (error) {
       return { success: false, error: error.message };
@@ -158,10 +194,30 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:stop', async () => {
     try {
       const { execa } = await import('execa');
-      // 优先尝试 dsh CLI 优雅停止
-      const result = await execa('dsh', ['stop'], { reject: false, timeout: 10000 });
-      if (result.exitCode === 0) {
-        return { success: true, message: result.stdout || '已停止' };
+      const { DSHUtils } = await loadCore();
+      const dshPkgPath = await DSHUtils.getDSHPath();
+
+      if (dshPkgPath) {
+        // 读取 dsh package.json 获取 CLI 入口，直接 node 运行（绕过 .cmd 包装）
+        const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
+        const binEntry = pkgJson.bin;
+        let cliPath;
+        if (typeof binEntry === 'string') {
+          cliPath = join(dshPkgPath, binEntry);
+        } else if (binEntry && typeof binEntry === 'object') {
+          cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
+        }
+        if (cliPath && existsSync(cliPath)) {
+          const isWindows = process.platform === 'win32';
+          const result = await execa('node', [cliPath, 'stop'], {
+            reject: false,
+            timeout: 10000,
+            windowsHide: isWindows,
+          });
+          if (result.exitCode === 0) {
+            return { success: true, message: result.stdout || '已停止' };
+          }
+        }
       }
       // dsh stop 命令不可用时，降级为按端口结束进程（Windows taskkill / Unix kill）
       const { stopProcessByPort } = await loadCore();
@@ -321,10 +377,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await installer.uninstall(pluginId);
   });
 
-  ipcMain.handle('marketplace:local-plugins', async () => {
+  ipcMain.handle('marketplace:local-plugins', async (_, forceRefresh = false) => {
     const { PluginRegistry } = await loadMarketplace();
     const registry = new PluginRegistry();
-    return registry.getLocalPlugins();
+    return registry.getLocalPlugins(forceRefresh);
   });
 
   ipcMain.handle('marketplace:check-updates', async () => {
@@ -637,5 +693,112 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     } catch (error) {
       return { success: false, error: error.message };
     }
+  });
+
+  // ====== 调试日志 ======
+  ipcMain.handle('debug:get-log', async () => {
+    const { readLog } = await import('./debug-logger.js');
+    return readLog();
+  });
+
+  ipcMain.handle('debug:clear-log', async () => {
+    const { clearLog } = await import('./debug-logger.js');
+    clearLog();
+    return { success: true };
+  });
+
+  ipcMain.handle('debug:get-log-path', async () => {
+    const { getLogPath, isDebugEnabled } = await import('./debug-logger.js');
+    return { path: getLogPath(), enabled: isDebugEnabled() };
+  });
+
+  ipcMain.handle('debug:is-enabled', async () => {
+    const { isDebugEnabled } = await import('./debug-logger.js');
+    return isDebugEnabled();
+  });
+
+  ipcMain.handle('debug:write-log', async (_, level, message) => {
+    const { writeLog } = await import('./debug-logger.js');
+    writeLog(level || 'info', String(message || ''));
+    return { success: true };
+  });
+
+  // ====== 应用版本更新检查 ======
+  ipcMain.handle('app:check-app-update', async () => {
+    const { writeLog } = await import('./debug-logger.js');
+    const { readFileSync, existsSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+
+    // 读取当前版本
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    let currentVersion = '0.0.0';
+    try {
+      const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8'));
+      currentVersion = pkg.version || '0.0.0';
+    } catch {}
+
+    writeLog('info', '[更新检查] 当前版本: ' + currentVersion);
+
+    // 从 GitHub 获取最新 release
+    const GITHUB_URL = 'https://api.github.com/repos/linhut/dsh-manager/releases/latest';
+    // 代理候选
+    const PROXIES = ['https://gh-proxy.com/']; // gh-proxy.com 是唯一验证可用的代理
+
+    let lastError = null;
+    for (const url of [GITHUB_URL, ...PROXIES.map(p => p + GITHUB_URL)]) {
+      try {
+        writeLog('info', '[更新检查] 请求: ' + url);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
+        const resp = await fetch(url, {
+          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.2.3' },
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!resp.ok) { lastError = 'HTTP ' + resp.status; continue; }
+        const data = await resp.json();
+        const latestTag = (data.tag_name || '').replace(/^v/, '');
+        if (!latestTag) { lastError = '无版本标签'; continue; }
+
+        // 提取 .exe 下载资产
+        let asset = data.assets && data.assets.find(a => a.name && a.name.endsWith('.exe') && a.name.includes('Setup'));
+        const downloadName = asset ? asset.name : ('DSH Manager Setup ' + latestTag + '.exe');
+        const downloadUrl = asset ? asset.browser_download_url : 'https://github.com/linhut/dsh-manager/releases/download/v' + latestTag + '/' + downloadName;
+
+        // 构建代理下载链接（gh-proxy.com 自动加速 + github.akams.cn 网站手动加速）
+        const proxyUrls = [
+          ...PROXIES.map(p => p + downloadUrl),
+          'https://github.akams.cn/?url=' + encodeURIComponent(downloadUrl),
+        ];
+
+        // 简易版本比较（去除非数字后缀如 -debug -test）
+        const normalizeVer = (v) => {
+          const m = v.match(/^(\d+\.\d+\.\d+)/);
+          return m ? m[1] : v;
+        };
+        const currentNorm = normalizeVer(currentVersion);
+        const latestNorm = normalizeVer(latestTag);
+        const hasUpdate = latestNorm !== currentNorm;
+
+        writeLog('info', '[更新检查] 最新: ' + latestTag + ' 当前: ' + currentVersion + ' 有更新: ' + hasUpdate);
+        return {
+          hasUpdate,
+          currentVersion,
+          latestVersion: latestTag,
+          downloadUrl,
+          proxyUrls,
+          releaseNotes: (data.body || '').slice(0, 2000),
+          releaseUrl: data.html_url || '',
+          publishedAt: data.published_at || '',
+        };
+      } catch (e) {
+        lastError = e.message;
+        writeLog('warn', '[更新检查] 请求失败: ' + e.message);
+      }
+    }
+
+    writeLog('error', '[更新检查] 全部失败: ' + lastError);
+    return { hasUpdate: false, currentVersion, latestVersion: null, error: lastError };
   });
 }

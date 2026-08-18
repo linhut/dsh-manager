@@ -58,13 +58,44 @@ export const DSH_PATHS = {
 };
 
 /**
+ * 内部：解析 @deepseek-ai/dsh/package.json 的完整路径
+ * 依次尝试：DSH_HOME 内 node_modules → npm root -g → require.resolve
+ * （全局 npm 包不会出现在日常 require 的解析路径中，必须显式探测）
+ */
+async function resolveDSHPackageJson() {
+  // ① 优先检查 DSH_HOME 下的 node_modules（本地部署场景）
+  const homeGlobal = join(DSH_PATHS.home, 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+  if (existsSync(homeGlobal)) return homeGlobal;
+
+  // ② 通过 npm root -g 获取 npm 全局路径
+  try {
+    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+    if (globalRoot && globalRoot.trim()) {
+      const pkgPath = join(globalRoot.trim(), '@deepseek-ai', 'dsh', 'package.json');
+      if (existsSync(pkgPath)) return pkgPath;
+    }
+  } catch {}
+
+  // ③ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
+  try {
+    const { stdout } = await execa('node', [
+      '-e', 'try { console.log(require.resolve("@deepseek-ai/dsh/package.json")); } catch(e) { console.log(""); }'
+    ], { reject: false, timeout: 10_000 });
+    if (stdout && stdout.trim().length > 0) return stdout.trim();
+  } catch {}
+
+  return null;
+}
+
+/**
  * 检测 DSH 是否已安装
+ * 通过 npm root -g 找到全局 node_modules，再检查 @deepseek-ai/dsh/package.json 是否存在
  * @returns {Promise<boolean>}
  */
 export async function isDSHInstalled() {
   try {
-    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 10_000 });
-    return !!stdout;
+    const pkgPath = await resolveDSHPackageJson();
+    return !!pkgPath;
   } catch {
     return false;
   }
@@ -76,11 +107,46 @@ export async function isDSHInstalled() {
  */
 export async function getDSHVersion() {
   try {
-    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 10_000 });
-    return stdout ? stdout.trim() : null;
+    const pkgPath = await resolveDSHPackageJson();
+    if (!pkgPath) return null;
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    return pkg.version || null;
   } catch {
     return null;
   }
+}
+
+/**
+ * 解析 dsh 可执行命令
+ * 
+ * 用户可能通过自定义 npm prefix（如 E:\npm-global）安装 dsh，
+ * 该目录未必在 PATH 中（Windows 常见问题），直接 execa('dsh') 会失败。
+ * 依次尝试：PATH 中的 dsh → npm 全局 bin 下的 dsh(.cmd)。
+ * @returns {Promise<string>} 可直接传给 execa 的命令名或完整路径
+ */
+export async function resolveDSHCommand() {
+  // ① 优先 PATH 中的 dsh
+  try {
+    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 5_000 });
+    if (stdout && stdout.trim()) return 'dsh';
+  } catch {}
+
+  // ② 通过 npm root -g 推导全局 bin 目录（Windows: <prefix> 下有 dsh.cmd；POSIX: <prefix>/bin/dsh）
+  try {
+    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+    if (globalRoot && globalRoot.trim()) {
+      const prefix = dirname(globalRoot.trim());
+      const candidates = process.platform === 'win32'
+        ? [join(prefix, 'dsh.cmd'), join(prefix, 'dsh.exe'), join(prefix, 'dsh')]
+        : [join(prefix, 'bin', 'dsh'), join(prefix, 'dsh')];
+      for (const c of candidates) {
+        if (existsSync(c)) return c;
+      }
+    }
+  } catch {}
+
+  // ③ 兜底：返回 'dsh'，让调用方得到原始错误信息
+  return 'dsh';
 }
 
 /**
@@ -89,12 +155,8 @@ export async function getDSHVersion() {
  */
 export async function getDSHPath() {
   try {
-    const { stdout } = await execa('node', [
-      '-e', 'console.log(require.resolve("@deepseek-ai/dsh/package.json"))'
-    ], { reject: false, timeout: 10_000 });
-    if (stdout) {
-      return dirname(stdout.trim());
-    }
+    const pkgPath = await resolveDSHPackageJson();
+    if (pkgPath) return dirname(pkgPath);
     return null;
   } catch {
     return null;
@@ -178,12 +240,7 @@ export async function checkDSHIntegrity() {
  * @returns {Promise<boolean>}
  */
 export async function isDSHInPath() {
-  try {
-    await execa('dsh', ['--version'], { reject: false });
-    return true;
-  } catch {
-    return false;
-  }
+  return isDSHInstalled();
 }
 
 /**

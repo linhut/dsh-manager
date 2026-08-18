@@ -5,7 +5,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
 import { parseYAML, toYAML } from './yaml-utils.js';
@@ -54,7 +54,7 @@ export class DSHConfig {
     const yaml = this._toYAML(config);
     
     try {
-      const dir = filePath.substring(0, filePath.lastIndexOf('\\'));
+      const dir = dirname(filePath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
@@ -154,7 +154,10 @@ export class DSHConfig {
     
     const agentPresets = settings['agent-presets'] || {};
     for (const [id, config] of Object.entries(agentPresets)) {
-      if (config && typeof config === 'object') {
+      // 兼容 DSH 官方格式：agent-presets.default = 'preset-id'（字符串）
+      if (typeof config === 'string') {
+        presets.push({ id, name: config, path: '', isDefaultRef: true });
+      } else if (config && typeof config === 'object') {
         presets.push({
           id,
           name: config.name || id,

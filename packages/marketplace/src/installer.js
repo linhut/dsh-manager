@@ -5,9 +5,9 @@
  */
 
 import { execa } from 'execa';
-import { existsSync, mkdirSync, cpSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
 import { githubProxyUrls } from './github-api.js';
 
@@ -24,6 +24,22 @@ export class PluginInstaller {
     this.verbose = options.verbose || false;
     this.logs = [];
     this.onProgress = options.onProgress || null;
+    this._dshCmdCache = null;
+  }
+
+  /**
+   * 获取 dsh 可执行命令（缓存）
+   * 用户可能通过自定义 npm prefix（如 E:\npm-global）安装 dsh，该目录未必在 PATH 中，
+   * 直接 execa('dsh') 会失败导致安装卡住/报错。通过 resolveDSHCommand 解析真实命令。
+   * @returns {Promise<string>}
+   * @private
+   */
+  async _dshCmd() {
+    if (!this._dshCmdCache) {
+      this._dshCmdCache = await resolveDSHCommand();
+      this._log(`dsh 命令解析为: ${this._dshCmdCache}`);
+    }
+    return this._dshCmdCache;
   }
 
   /**
@@ -86,7 +102,7 @@ export class PluginInstaller {
       this.registry.unregisterLocalPlugin(pluginId);
 
       // 通过 dsh plugin 命令卸载
-      const { stdout, stderr } = await execa('dsh', [
+      const { stdout, stderr } = await execa(await this._dshCmd(), [
         'plugin', '--profile', profile, 'remove', pluginId,
       ], { reject: false });
 
@@ -143,7 +159,7 @@ export class PluginInstaller {
       // 检查 pnpm 是否已安装（dsh plugin 命令依赖 pnpm）
       await requirePnpm('安装插件');
 
-      const { stdout, stderr } = await execa('dsh', [
+      const { stdout, stderr } = await execa(await this._dshCmd(), [
         'plugin', '--profile', profile, 'add', packageName,
       ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
 
@@ -197,15 +213,16 @@ export class PluginInstaller {
       }
     }
 
-    // 官方源形式：github:owner/repo#ref（#ref 固定分支/标签/commit）
+    // 先尝试官方 dsh plugin add 命令
     const gitSource = `github:${owner}/${repo}${ref ? '#' + ref : ''}`;
     
     try {
-      const { stdout, stderr } = await execa('dsh', [
+      const { stdout, stderr } = await execa(await this._dshCmd(), [
         'plugin', '--profile', profile, 'add', gitSource,
       ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
 
       this._log(stdout || '');
+      if (stderr) this._log(stderr, 'warn');
 
       const pluginId = info.id || repo;
 
@@ -228,6 +245,62 @@ export class PluginInstaller {
         version: info.latestRelease || 'main',
         path: '',
       };
+    } catch (error) {
+      this._log(`dsh plugin add 失败: ${error.message}，降级为 git clone 方式安装`, 'warn');
+    }
+
+    // 降级方案：通过 git clone + 代理手动安装
+    this._log(`通过代理 git clone 安装: ${owner}/${repo}`, 'info');
+    try {
+      // 构建代理 URL
+      const gitUrl = `https://github.com/${owner}/${repo}.git`;
+      const cacheRoot = DSH_PATHS.pluginCache;
+      const dest = join(cacheRoot, repo);
+
+      if (!existsSync(cacheRoot)) mkdirSync(cacheRoot, { recursive: true });
+      if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+
+      let cloned = false;
+      let lastError = null;
+      for (const candidate of githubProxyUrls(gitUrl)) {
+        try {
+          this._log(`执行: git clone --depth 1 ${candidate} (branch: ${ref || 'main'})`);
+          const { stdout, stderr } = await execa('git', [
+            'clone', '--depth', '1', '--branch', ref || 'main', candidate, dest
+          ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+          this._log(stdout || '');
+          if (stderr) this._log(stderr, 'warn');
+          cloned = true;
+          break;
+        } catch (e) {
+          lastError = e;
+          this._log(`代理 ${candidate} 克隆失败: ${e.message}`, 'warn');
+        }
+      }
+      if (!cloned) throw lastError || new Error('git clone 全部失败');
+
+      // 用 dsh plugin add link: 注册
+      this._log(`通过 dsh plugin add link:${dest} 注册到 profile ${profile}`);
+      const { stdout, stderr } = await execa(await this._dshCmd(), [
+        'plugin', '--profile', profile, 'add', `link:${dest}`
+      ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+      this._log(stdout || '');
+      if (stderr) this._log(stderr, 'warn');
+
+      const pluginId = info.id || repo;
+      this.registry.registerLocalPlugin({
+        id: pluginId,
+        name: info.name || repo,
+        version: info.latestRelease || 'main',
+        source: `github:${owner}/${repo}`,
+        profile,
+        type: 'github',
+        installedAt: new Date().toISOString(),
+        description: info.description || '',
+        repoUrl: `https://github.com/${owner}/${repo}`,
+      });
+
+      return { success: true, id: pluginId, name: info.name || repo, version: info.latestRelease || 'main', path: dest };
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -351,6 +424,88 @@ export class PluginInstaller {
   }
 
   /**
+   * 并行克隆 GitHub 仓库：同时尝试直连与各代理，最快成功者胜出
+   * @param {string} gitUrl - 原始 git URL（https://github.com/xxx/yyy.git）
+   * @param {string} dest - 最终目标目录
+   * @param {string} [branch] - 分支名
+   * @returns {Promise<boolean>} 是否克隆成功
+   * @private
+   */
+  async _parallelGitClone(gitUrl, dest, branch = '') {
+    const candidates = githubProxyUrls(gitUrl);
+    const tmpSuffix = Date.now();
+    const results = [];
+
+    // 并行启动所有候选克隆（每个克隆到独立临时目录，避免冲突）
+    const promises = candidates.map(async (candidate, idx) => {
+      const tmpDest = dest + `.tmp-${tmpSuffix}-${idx}`;
+      if (existsSync(tmpDest)) rmSync(tmpDest, { recursive: true, force: true });
+      const start = Date.now();
+      try {
+        this._log(`[并行克隆] 尝试 ${candidate} ...`, 'info');
+        const cloneArgs = ['clone', '--depth', '1'];
+        if (branch) cloneArgs.push('--branch', branch);
+        cloneArgs.push(candidate, tmpDest);
+
+        const { stdout, stderr } = await execa('git', cloneArgs, {
+          timeout: 60_000, // 单候选 60s 超时（比之前 120s 快一倍）
+          stdio: this.verbose ? 'inherit' : 'pipe',
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        });
+        const elapsed = Date.now() - start;
+        this._log(`[并行克隆] ${candidate} 成功（${elapsed}ms）`, 'info');
+        if (stderr) this._log(stderr, 'warn');
+        return { ok: true, tmpDest, candidate, elapsed };
+      } catch (error) {
+        const elapsed = Date.now() - start;
+        // 清理临时目录
+        try { rmSync(tmpDest, { recursive: true, force: true }); } catch {}
+        this._log(`[并行克隆] ${candidate} 失败（${elapsed}ms）: ${error.message}`, 'warn');
+        return { ok: false, candidate, elapsed, error };
+      }
+    });
+
+    const settled = await Promise.allSettled(promises);
+    const okResults = settled
+      .filter(r => r.status === 'fulfilled' && r.value.ok)
+      .map(r => r.value)
+      .sort((a, b) => a.elapsed - b.elapsed);
+
+    if (okResults.length === 0) {
+      // 全部失败，返回最后一个错误信息
+      const errors = settled
+        .filter(r => r.status === 'fulfilled' && !r.value.ok)
+        .map(r => r.value.error?.message);
+      throw new Error('git clone 全部失败: ' + (errors.join('; ') || '未知错误'));
+    }
+
+    // 使用最快的成功结果
+    const winner = okResults[0];
+    this._log(`[并行克隆] 选中最快源: ${winner.candidate}（${winner.elapsed}ms）`, 'info');
+
+    // 将胜出目录移动到最终位置
+    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+    await new Promise(resolve => setTimeout(resolve, 0)); // 让文件系统释放
+    const { renameSync } = await import('node:fs');
+    try {
+      renameSync(winner.tmpDest, dest);
+    } catch (err) {
+      // 跨设备可能失败，用 cpSync 兜底
+      const { cpSync } = await import('node:fs');
+      cpSync(winner.tmpDest, dest, { recursive: true });
+      rmSync(winner.tmpDest, { recursive: true, force: true });
+    }
+
+    // 清理其余临时目录
+    for (const r of settled) {
+      if (r.status === 'fulfilled' && r.value.ok && r.value.tmpDest !== winner.tmpDest) {
+        try { rmSync(r.value.tmpDest, { recursive: true, force: true }); } catch {}
+      }
+    }
+    return true;
+  }
+
+  /**  /**
    * @private
    * 从 Git URL 安装插件（git clone 到插件缓存并注册）
    * @param {string} url - git 仓库地址
@@ -447,7 +602,7 @@ export class PluginInstaller {
 
     // 使用官方 link: 源形式安装（DSH 会做 pnpm 链接）
     const linkSource = `link:${path}`;
-    const { stdout, stderr } = await execa('dsh', [
+    const { stdout, stderr } = await execa(await this._dshCmd(), [
       'plugin', '--profile', profile, 'add', linkSource,
     ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
     this._log(stdout || '');
@@ -594,6 +749,14 @@ export class PluginInstaller {
    */
   _log(message, level = 'info') {
     this.logs.push({ level, message, timestamp: new Date().toISOString() });
+    // 通过 console.log 输出（主进程会拦截并写入调试日志文件）
+    if (level === 'error') {
+      console.error('[插件安装器] ' + message);
+    } else if (level === 'warn') {
+      console.warn('[插件安装器] ' + message);
+    } else {
+      console.log('[插件安装器] ' + message);
+    }
     if (this.onProgress) {
       this.onProgress({ level, message });
     }

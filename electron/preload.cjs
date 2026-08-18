@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   getPluginDetails: (fullName) => ipcRenderer.invoke('marketplace:plugin-details', fullName),
   installPlugin: (source) => ipcRenderer.invoke('marketplace:install-plugin', source),
   uninstallPlugin: (pluginId) => ipcRenderer.invoke('marketplace:uninstall-plugin', pluginId),
-  getLocalPlugins: () => ipcRenderer.invoke('marketplace:local-plugins'),
+  getLocalPlugins: (forceRefresh = false) => ipcRenderer.invoke('marketplace:local-plugins', forceRefresh),
   checkPluginUpdates: () => ipcRenderer.invoke('marketplace:check-updates'),
   enablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:enable-plugin', pluginId),
   disablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:disable-plugin', pluginId),
@@ -98,4 +98,14 @@ contextBridge.exposeInMainWorld('dshManager', {
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel);
   },
+
+  // ====== 应用更新 ======
+  checkAppUpdate: () => ipcRenderer.invoke('app:check-app-update'),
+
+  // ====== 调试日志 ======
+  getDebugLog: () => ipcRenderer.invoke('debug:get-log'),
+  clearDebugLog: () => ipcRenderer.invoke('debug:clear-log'),
+  getDebugLogPath: () => ipcRenderer.invoke('debug:get-log-path'),
+  isDebugEnabled: () => ipcRenderer.invoke('debug:is-enabled'),
+  writeDebugLog: (level, message) => ipcRenderer.invoke('debug:write-log', level, message),
 });
