@@ -36,7 +36,7 @@ function Write-ErrorMsg($Text) { Write-Host "❌ $Text" -ForegroundColor Red }
 
 Write-Host @"
 ╔══════════════════════════════════════════════════╗
-║   ⚡ DSH Manager 一键安装脚本（源码方式）          ║
+║   🐳 DSH Manager 一键安装脚本（源码方式）          ║
 ║   DeepSeek Harness 安装与管理工具                  ║
 ╚══════════════════════════════════════════════════╝
 "@ -ForegroundColor Cyan

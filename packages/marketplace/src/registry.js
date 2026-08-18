@@ -210,6 +210,28 @@ export class PluginRegistry {
         _source: 'npm', // npm 包（@linxin666/dsh-web-ui-all）
         version: '0.1.20',
       },
+      {
+        id: 999999003,
+        name: 'dsh-superpowers',
+        fullName: 'codeAnqiang-ma/dsh-superpowers',
+        owner: 'codeAnqiang-ma',
+        description: 'Superpowers (obra/superpowers) 作为 DeepSeek Harness 插件：内置 brainstorming、using-superpowers、writing-skills、TDD、调试与代码审查等 14 个方法论技能，并在会话中持续注入 using-superpowers 引导。',
+        url: 'https://github.com/codeAnqiang-ma/dsh-superpowers',
+        homepage: '',
+        stars: 3,
+        forks: 0,
+        issues: 0,
+        language: 'JavaScript',
+        topics: ['agent-skills', 'dsh-plugin', 'deepseek-harness', 'dsh', 'skills', 'superpowers', 'tdd', 'code-review', 'recommended'],
+        license: 'NOASSERTION',
+        createdAt: '2026-08-13T15:15:48Z',
+        updatedAt: '2026-08-14T12:26:03Z',
+        pushedAt: '2026-08-13T16:48:29Z',
+        defaultBranch: 'master',
+        isTemplate: false,
+        archived: false,
+        recommended: true,
+      },
     ];
 
     // 将精选插件插入到结果列表顶部，保持自然排序感

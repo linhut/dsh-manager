@@ -296,7 +296,7 @@ async function tryLoadDSHWeb() {
   webview.style.display = 'none';
   placeholder.innerHTML = `
     <div class="placeholder-content">
-      <span class="placeholder-icon">⚡</span>
+      <img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">
       <h2>DSH 已安装但未运行</h2>
       <p>DeepSeek Harness ${state.dshVersion} 已安装，但服务未启动。</p>
       <p class="placeholder-hint">请在终端中运行 <code>dsh web</code> 启动 Web 界面</p>
@@ -506,7 +506,7 @@ function renderInstallPage() {
               : `<span class="badge badge-red">未安装</span>`
             }
             ${!state.pnpmAvailable ? `<span style="color:var(--text-dim);">插件管理需要 pnpm</span>` : ''}
-            ${!state.pnpmAvailable ? `<button class="btn btn-sm btn-primary" onclick="installPnpm()">⚡ 一键安装 pnpm</button>` : ''}
+            ${!state.pnpmAvailable ? `<button class="btn btn-sm btn-primary" onclick="installPnpm()">一键安装 pnpm</button>` : ''}
           </div>
           <button class="btn btn-primary btn-lg" onclick="switchPage('dashboard')" ${!state.dshInstalled ? 'disabled' : ''}>
             🚀 打开 DSH 控制台
@@ -583,7 +583,7 @@ async function renderEnvStatus() {
       ${(missingNode || missingNpm) ? `
         <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://nodejs.org')">🌐 官网下载</button>` : ''}
-      ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">⚡ 一键安装 pnpm</button>` : ''}
+      ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">一键安装 pnpm</button>` : ''}
     </div>
     ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
     <div id="envInstallLog" style="display:none;margin-top:10px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
@@ -992,6 +992,15 @@ async function loadMarketplace(query) {
       topics: ['dsh', 'deepseek-harness', 'ai'],
       recommended: false,
     },
+    {
+      fullName: 'codeAnqiang-ma/dsh-superpowers',
+      stars: 3,
+      forks: 0,
+      description: 'Superpowers (obra/superpowers) 作为 DeepSeek Harness 插件：内置 brainstorming、using-superpowers、writing-skills、TDD、调试与代码审查等 14 个方法论技能，并在会话中持续注入 using-superpowers 引导。',
+      language: 'JavaScript',
+      topics: ['agent-skills', 'dsh-plugin', 'deepseek-harness', 'dsh', 'skills', 'superpowers', 'tdd', 'code-review', 'recommended'],
+      recommended: true,
+    },
   ];
 
   try {
@@ -1055,7 +1064,7 @@ function renderPluginCard(p) {
         ${(p.topics || []).slice(0, 3).map(t => `<span class="badge badge-blue">${t}</span>`).join('')}
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${(p.stars || 0) + (p.forks || 0)} 活跃${updatedStr ? `  · 更新 ${updatedStr}` : ''}</span>
+        <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ${renderLogoIcon(12)} ${(p.stars || 0) + (p.forks || 0)} 活跃${updatedStr ? `  · 更新 ${updatedStr}` : ''}</span>
         <span style="display:flex;gap:6px;">
           <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();showPluginDetails('${p.fullName}')">👁 详情</button>
           <button class="btn btn-sm ${isInstalled ? 'btn-secondary' : 'btn-primary'}" onclick="event.stopPropagation();installMarketPlugin('${p.fullName}')">
@@ -1082,7 +1091,7 @@ async function showPluginDetails(fullName) {
   modal.className = 'modal-overlay active';
   modal.innerHTML = `
     <div class="modal" style="min-width:560px;max-width:720px;">
-      <h3 class="modal-title">⚡ ${p.fullName} ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}</h3>
+      <h3 class="modal-title">${renderLogoIcon(18)} ${p.fullName} ${p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''}</h3>
       <div class="modal-body">
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px;font-size:13px;color:var(--text-dim);">
           <span>⭐ <strong>${p.stars}</strong></span>
@@ -1233,22 +1242,70 @@ async function searchPlugins(query) {
   `;
 }
 
+/**
+ * 显示安装进度模态框
+ * @param {string} label - 安装目标名称
+ * @param {string} title - 标题
+ * @returns {{ update: (msg, level) => void, done: (msg, type) => void }}
+ */
+function showInstallProgressModal(label, title = '安装') {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.innerHTML = `
+    <div class="modal" style="min-width:420px;max-width:520px;">
+      <h3 class="modal-title">📥 ${title}</h3>
+      <div class="modal-body" style="text-align:center;">
+        <div style="font-size:48px;margin-bottom:12px;" id="installSpinner">⏳</div>
+        <p style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--text-primary);" id="installLabel">${label}</p>
+        <div id="installProgressBar" style="width:100%;height:4px;background:var(--bg-primary);border-radius:2px;margin-bottom:12px;overflow:hidden;">
+          <div style="width:30%;height:100%;background:var(--primary-light);border-radius:2px;animation:progressIndeterminate 1.5s ease-in-out infinite;"></div>
+        </div>
+        <div id="installMessage" style="font-size:12px;color:var(--text-dim);min-height:40px;line-height:1.5;">
+          正在准备安装...
+        </div>
+      </div>
+      <div class="modal-footer" style="justify-content:center;">
+        <button class="btn btn-ghost" id="installCloseBtn" style="display:none;" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  return {
+    update: (msg, level = 'info') => {
+      const msgEl = document.getElementById('installMessage');
+      const spinner = document.getElementById('installSpinner');
+      if (msgEl) msgEl.textContent = msg;
+      if (spinner) spinner.textContent = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : '⏳';
+    },
+    done: (msg, type = 'success') => {
+      const spinner = document.getElementById('installSpinner');
+      const bar = document.getElementById('installProgressBar');
+      const closeBtn = document.getElementById('installCloseBtn');
+      const msgEl = document.getElementById('installMessage');
+      if (spinner) spinner.textContent = type === 'success' ? '✅' : '❌';
+      if (bar) bar.innerHTML = '<div style="width:100%;height:100%;background:' + (type === 'success' ? 'var(--success, #22C55E)' : 'var(--error, #EF4444)') + ';border-radius:2px;"></div>';
+      if (msgEl) msgEl.textContent = msg;
+      if (closeBtn) closeBtn.style.display = '';
+    }
+  };
+}
+
 async function installMarketPlugin(fullName) {
-  showToast(`正在安装 ${fullName}...`, 'info');
-  // 订阅主进程推送的插件安装进度
-  window.dshManager.removeAllListeners('plugin-install-progress');
-  window.dshManager.onPluginInstallProgress((data) => {
-    if (data && data.message) showToast(data.message, 'info');
-  });
+  const p = (state.marketResults || []).find(x => x.fullName === fullName);
+  const source = (p && p._source === 'npm') ? `npm:${fullName}` : `github:${fullName}`;
+  const modal = showInstallProgressModal(source, '插件安装');
   try {
-    // 按来源选择前缀：npm 包用 npm:，GitHub 仓库用 github:
-    const p = (state.marketResults || []).find(x => x.fullName === fullName);
-    const source = (p && p._source === 'npm') ? `npm:${fullName}` : `github:${fullName}`;
+    // 订阅主进程推送的插件安装进度
+    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.onPluginInstallProgress((data) => {
+      if (data && data.message) modal.update(data.message, data.level);
+    });
     const result = await window.dshManager.installPlugin(source);
-    showToast(`插件 ${result.name} 安装成功！`, 'success');
+    modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
     renderPluginsPage();
   } catch (err) {
-    showToast('安装失败: ' + err.message, 'error');
+    modal.done('❌ 安装失败: ' + err.message, 'error');
   } finally {
     window.dshManager.removeAllListeners('plugin-install-progress');
   }
@@ -1259,19 +1316,18 @@ async function installPluginSource() {
   const input = document.getElementById('pluginSource');
   const source = input?.value.trim();
   if (!source) { showToast('请输入插件来源', 'error'); return; }
-  showToast(`正在安装 ${source}...`, 'info');
-  // 订阅主进程推送的插件安装进度
-  window.dshManager.removeAllListeners('plugin-install-progress');
-  window.dshManager.onPluginInstallProgress((data) => {
-    if (data && data.message) showToast(data.message, 'info');
-  });
+  const modal = showInstallProgressModal(source, '插件安装');
   try {
+    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.onPluginInstallProgress((data) => {
+      if (data && data.message) modal.update(data.message, data.level);
+    });
     const result = await window.dshManager.installPlugin(source);
-    showToast(`插件 ${result.name} 安装成功！`, 'success');
+    modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
     if (input) input.value = '';
     renderPluginsPage();
   } catch (err) {
-    showToast('安装失败: ' + err.message, 'error');
+    modal.done('❌ 安装失败: ' + err.message, 'error');
   } finally {
     window.dshManager.removeAllListeners('plugin-install-progress');
   }
@@ -1302,19 +1358,26 @@ async function runBatchInstall() {
   const sources = raw.split('\n').map(s => s.trim()).filter(Boolean);
   if (sources.length === 0) { showToast('请输入至少一个插件来源', 'error'); return; }
 
-  showToast(`正在批量安装 ${sources.length} 个插件...`, 'info');
+  const modal = showInstallProgressModal(sources.length + ' 个插件', '批量安装');
   try {
+    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.onPluginInstallProgress((data) => {
+      if (data && data.message) modal.update(data.message, data.level);
+    });
     const results = await window.dshManager.batchInstallPlugins(sources);
     const ok = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success);
-    showToast(`批量安装完成：${ok}/${results.length} 成功${failed.length ? `，${failed.length} 失败` : ''}`, failed.length ? 'warning' : 'success');
+    const msg = `批量安装完成：${ok}/${results.length} 成功${failed.length ? `，${failed.length} 失败` : ''}`;
+    modal.done(msg, failed.length ? 'warning' : 'success');
     if (failed.length > 0) {
       const detail = failed.map(r => `${r.source}: ${r.error || '未知错误'}`).join('\n');
-      alert(`以下插件安装失败：\n\n${detail}`);
+      modal.update('失败详情:\n' + detail, 'error');
     }
     renderPluginsPage();
   } catch (err) {
-    showToast('批量安装失败: ' + err.message, 'error');
+    modal.done('❌ 批量安装失败: ' + err.message, 'error');
+  } finally {
+    window.dshManager.removeAllListeners('plugin-install-progress');
   }
 }
 
@@ -1360,6 +1423,14 @@ async function checkPluginUpdates() {
 }
 
 // ====== 版本管理页面 ======
+/**
+ * 渲染 DSH Manager 品牌 Logo（图片）
+ * @param {number} size - 图标尺寸 px，默认 16
+ * @returns {string} HTML 字符串
+ */
+function renderLogoIcon(size = 16) {
+  return `<img src="assets/images/logo-icon.png" alt="" width="${size}" height="${size}" style="vertical-align:middle;display:inline-block;flex-shrink:0;">`;
+}
 async function renderVersionsPage() {
   const el = document.getElementById('versionsContent');
   if (!el) return;
@@ -1449,183 +1520,36 @@ async function renderSettingsPage() {
   if (!el) return;
 
   let config = { settings: {}, credentials: {} };
+  let autoStartConsole = true;
+  let checkUpdatesOnStartup = true;
   try {
     config = await window.dshManager.getAllConfig();
-  } catch {}
+    autoStartConsole = (await window.dshManager.getConfig('manager.auto-start-dsh')) !== false;
+    checkUpdatesOnStartup = (await window.dshManager.getConfig('manager.check-updates')) !== false;
+  } catch (err) { console.warn('读取配置失败:', err); }
 
   el.innerHTML = `
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">DSH 配置</span>
-        </div>
-        <div class="card-body">
-          <p style="margin-bottom:12px;color:var(--text-dim);">配置文件位于: ~/.dsh/settings.yaml</p>
-          <pre style="background:var(--bg-primary);padding:16px;border-radius:var(--radius-sm);font-size:12px;max-height:300px;overflow-y:auto;color:var(--text-muted);font-family:var(--font-mono);">${JSON.stringify(config.settings, null, 2) || '暂无配置'}</pre>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">LLM 提供商</span>
-        </div>
-        <div class="card-body" id="llmProviderList">
-          <p>正在加载...</p>
-        </div>
-      </div>
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+      <button class="btn btn-primary" onclick="openSettingsTab('manager')">⚙️ Manager 设置</button>
+      <button class="btn btn-secondary" onclick="openSettingsTab('llm')">🤖 LLM 提供商</button>
+      <button class="btn btn-secondary" onclick="openSettingsTab('yaml')">📝 YAML 编辑器</button>
+      <button class="btn btn-secondary" onclick="openSettingsTab('presets')">🧠 Agent Presets</button>
+      <button class="btn btn-secondary" onclick="openSettingsTab('system')">🔧 系统管理</button>
     </div>
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">
-        <span class="card-title">DSH Manager 设置</span>
-      </div>
-      <div class="card-body">
-        <div style="display:flex;flex-direction:column;gap:16px;">
-          <div>
-            <p style="margin-bottom:8px;color:var(--text-secondary);font-size:13px;font-weight:600;">🎨 界面主题</p>
-            <div style="display:flex;gap:8px;">
-              <button class="btn btn-sm theme-option ${(localStorage.getItem(THEME_KEY) || 'system') === 'light' ? 'theme-option-active' : ''}" data-theme-choice="light" onclick="selectThemeOption('light')">
-                ☀️ 浅色
-              </button>
-              <button class="btn btn-sm theme-option ${(localStorage.getItem(THEME_KEY) || 'system') === 'dark' ? 'theme-option-active' : ''}" data-theme-choice="dark" onclick="selectThemeOption('dark')">
-                🌙 深色
-              </button>
-              <button class="btn btn-sm theme-option ${(localStorage.getItem(THEME_KEY) || 'system') === 'system' ? 'theme-option-active' : ''}" data-theme-choice="system" onclick="selectThemeOption('system')">
-                🖥️ 跟随系统
-              </button>
-            </div>
-          </div>
-          <label style="display:flex;align-items:center;gap:12px;cursor:pointer;">
-            <input type="checkbox" id="autoStartDSH">
-            <span>启动时自动打开 DSH 控制台</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:12px;cursor:pointer;">
-            <input type="checkbox" id="checkUpdates">
-            <span>启动时检查 DSH 更新</span>
-          </label>
-        </div>
-      </div>
-    </div>
-    <!-- ====== MCP 服务端管理 ====== -->
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">
-        <span class="card-title">🔌 MCP 服务端</span>
-        <button class="btn btn-sm btn-primary" onclick="mcpAddDialog()">＋ 添加服务端</button>
-      </div>
-      <div class="card-body" id="mcpServerList">
-        <p style="color:var(--text-dim);">正在加载...</p>
-      </div>
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-        <p style="font-size:12px;color:var(--text-dim);line-height:1.7;">
-          MCP (Model Context Protocol) 让 DSH Agent 可以连接外部工具和数据源。
-          配置保存在 <code>~/.dsh/profiles/web/cordis.patch.yml</code>，
-          保存后需重启 DSH 生效。
-        </p>
-      </div>
-    </div>
-    <!-- ====== Profile 管理 ====== -->
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">
-        <span class="card-title">📂 Profile 管理</span>
-      </div>
-      <div class="card-body" id="profileList">
-        <p style="color:var(--text-dim);">正在加载...</p>
-      </div>
-    </div>
-    <!-- ====== 数据管理 ====== -->
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">
-        <span class="card-title">🗂️ 数据管理</span>
-      </div>
-      <div class="card-body" id="dataManagement">
-        <p style="color:var(--text-dim);">正在加载...</p>
-      </div>
+    <div id="settingsTabs">
+      ${renderSettingsManagerTab(autoStartConsole, checkUpdatesOnStartup)}
     </div>
   `;
-
-  // 加载 Manager 设置（自动打开控制台 / 启动时检查更新）并绑定事件
-  try {
-    const autoStart = (await window.dshManager.getConfig('manager.auto-start-dsh')) !== false;
-    const checkUpd = (await window.dshManager.getConfig('manager.check-updates')) !== false;
-    const autoEl = document.getElementById('autoStartDSH');
-    const updEl = document.getElementById('checkUpdates');
-    if (autoEl) {
-      autoEl.checked = autoStart;
-      autoEl.addEventListener('change', () => {
-        window.dshManager.setConfig('manager.auto-start-dsh', autoEl.checked);
-      });
-    }
-    if (updEl) {
-      updEl.checked = checkUpd;
-      updEl.addEventListener('change', () => {
-        window.dshManager.setConfig('manager.check-updates', updEl.checked);
-      });
-    }
-  } catch {}
-
-  // 加载 LLM 提供商
-  try {
-    const providers = await window.dshManager.getLLMProviders();
-    const listEl = document.getElementById('llmProviderList');
-    if (providers.length > 0) {
-      listEl.innerHTML = providers.map(p => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);">
-          <span><strong>${p.name}</strong></span>
-          <span style="display:flex;align-items:center;gap:8px;">
-            <span style="color:var(--text-muted);">${p.provider} / ${p.model}</span>
-            <button class="btn btn-sm btn-ghost" style="color:var(--error);" onclick="removeLLMProvider('${p.name}')">删除</button>
-          </span>
-        </div>
-      `).join('');
-    } else {
-      listEl.innerHTML = '<p style="color:var(--text-dim);">暂无配置的 LLM 提供商</p>';
-    }
-    // 添加提供商表单
-    listEl.innerHTML += `
-      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
-        <input class="input" id="llmName" placeholder="名称（如 deepseek）" style="flex:1;min-width:100px;">
-        <input class="input" id="llmProvider" placeholder="提供商（如 deepseek）" style="flex:1;min-width:100px;">
-        <input class="input" id="llmModel" placeholder="模型（如 deepseek-chat）" style="flex:1;min-width:120px;">
-        <button class="btn btn-sm btn-primary" onclick="addLLMProvider()">＋ 添加</button>
-      </div>`;
-  } catch {}
-
-  // 加载 MCP 服务端列表
-  await mcpRenderList();
-
-  // 加载 Profile 列表与数据管理
-  await renderProfiles();
-  await renderDataManagement();
+  el.querySelector('.btn-primary')?.classList.add('settings-tab-active');
 }
 
-// ====== LLM 提供商管理 ======
 async function addLLMProvider() {
-  const name = document.getElementById('llmName')?.value.trim();
-  const provider = document.getElementById('llmProvider')?.value.trim();
-  const model = document.getElementById('llmModel')?.value.trim();
-  if (!name || !provider || !model) {
-    showToast('请填写名称、提供商和模型', 'error');
-    return;
-  }
-  try {
-    await window.dshManager.setConfig(`llm.${name}.provider`, provider);
-    await window.dshManager.setConfig(`llm.${name}.model`, model);
-    showToast(`LLM 提供商 ${name} 已添加`, 'success');
-    renderSettingsPage();
-  } catch (err) {
-    showToast('添加失败: ' + err.message, 'error');
-  }
+  showLLMProviderForm();
 }
 
 async function removeLLMProvider(name) {
-  if (!confirm(`确定要删除 LLM 提供商 "${name}" 吗？`)) return;
-  try {
-    await window.dshManager.deleteConfig(`llm.${name}`);
-    showToast(`已删除 ${name}`, 'success');
-    renderSettingsPage();
-  } catch (err) {
-    showToast('删除失败: ' + err.message, 'error');
-  }
+  deleteLLMProvider(name);
 }
-
 // ====== Profile 管理 ======
 function formatBytes(bytes) {
   if (!bytes || bytes < 0) return '0 B';
@@ -1948,7 +1872,7 @@ async function renderAboutPage() {
   el.innerHTML = `
     <div class="card" style="text-align:center;max-width:500px;margin:0 auto;">
       <div style="padding:40px 20px;">
-        <div style="font-size:64px;margin-bottom:16px;">⚡</div>
+        <div style="margin-bottom:16px;display:flex;justify-content:center;"><img src="assets/images/logo-large.png" alt="DSH Manager" style="width:80px;height:80px;border-radius:18px;"></div>
         <h2 style="font-size:24px;font-weight:700;margin-bottom:8px;">DSH Manager</h2>
         <p style="color:var(--text-muted);margin-bottom:4px;">DeepSeek Harness 安装与管理工具</p>
         <p style="color:var(--text-dim);font-size:13px;">版本 ${version}</p>
@@ -1983,6 +1907,50 @@ function showToast(message, type = 'info') {
 }
 
 // ====== 设置页面 - 辅助函数 ======
+
+function renderSystemManagementTab() {
+  const html = `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">🔌 MCP 服务端</span>
+        <button class="btn btn-sm btn-primary" onclick="mcpAddDialog()">＋ 添加服务端</button>
+      </div>
+      <div class="card-body" id="mcpServerList">
+        <p style="color:var(--text-dim);">正在加载...</p>
+      </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <p style="font-size:12px;color:var(--text-dim);line-height:1.7;">
+          MCP (Model Context Protocol) 让 DSH Agent 可以连接外部工具和数据源。
+          配置保存在 <code>~/.dsh/profiles/web/cordis.patch.yml</code>，
+          保存后需重启 DSH 生效。
+        </p>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">📂 Profile 管理</span>
+      </div>
+      <div class="card-body" id="profileList">
+        <p style="color:var(--text-dim);">正在加载...</p>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">🗂️ 数据管理</span>
+      </div>
+      <div class="card-body" id="dataManagement">
+        <p style="color:var(--text-dim);">正在加载...</p>
+      </div>
+    </div>
+  `;
+  setTimeout(() => {
+    mcpRenderList();
+    renderProfiles();
+    renderDataManagement();
+  }, 50);
+  return html;
+}
+
 function openSettingsTab(tab) {
   const el = document.getElementById('settingsContent');
   if (!el) return;
@@ -2013,6 +1981,9 @@ function openSettingsTab(tab) {
       break;
     case 'presets':
       renderPresetsTab().then(html => { tabEl.innerHTML = html; });
+      break;
+    case 'system':
+      tabEl.innerHTML = renderSystemManagementTab();
       break;
   }
 
@@ -2079,8 +2050,9 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
 
 async function renderLLMProvidersTab() {
   let providers = [];
-  try { providers = await window.dshManager.getLLMProviders(); } catch {}
-  const config = await window.dshManager.getAllConfig();
+  let config = { settings: {}, credentials: {} };
+  try { providers = await window.dshManager.getLLMProviders(); } catch (e) { console.warn('getLLMProviders failed:', e); }
+  try { config = await window.dshManager.getAllConfig(); } catch (e) { console.warn('getAllConfig failed:', e); }
   const llm = config.settings?.llm || {};
   const providerEntries = Object.entries(llm);
   if (providerEntries.length === 0) {
@@ -2278,20 +2250,55 @@ function toggleApiKeyVisibility() {
   if (input) input.type = input.type === 'password' ? 'text' : 'password';
 }
 
+let _pendingSaveTimer = null;
+
 async function saveYAMLConfig() {
   const editor = document.getElementById('yamlEditor');
   const status = document.getElementById('yamlEditorStatus');
   if (!editor) return;
-  const yamlText = editor.value;
-  status.textContent = '正在解析和保存...'; status.style.color = 'var(--text-muted)';
-  try {
-    const parsed = parseSimpleYAML(yamlText);
-    await window.dshManager.writeConfig(parsed);
-    status.textContent = '✅ 配置已保存成功！'; status.style.color = 'var(--success)';
-    showToast('✅ 配置已保存', 'success');
-  } catch (err) {
-    status.textContent = '❌ ' + (err.message || '保存失败，请检查 YAML 格式'); status.style.color = 'var(--error)';
-    showToast('❌ 保存失败: ' + (err.message || 'YAML 格式错误'), 'error');
+
+  // 二次确认：第一次点击显示确认按钮，第二次才真正保存
+  const saveBtn = document.querySelector('#settingsTabs .btn-primary');
+  if (saveBtn && saveBtn.dataset.confirming === 'true') {
+    // 第二次点击，执行保存
+    saveBtn.dataset.confirming = 'false';
+    saveBtn.textContent = '💾 保存中...';
+    saveBtn.disabled = true;
+    const yamlText = editor.value;
+    status.textContent = '正在解析和保存...'; status.style.color = 'var(--text-muted)';
+    try {
+      const parsed = parseSimpleYAML(yamlText);
+      await window.dshManager.writeConfig(parsed);
+      status.textContent = '✅ 配置已保存成功！'; status.style.color = 'var(--success)';
+      showToast('✅ 配置已保存', 'success');
+      saveBtn.textContent = '💾 保存';
+      saveBtn.disabled = false;
+    } catch (err) {
+      status.textContent = '❌ ' + (err.message || '保存失败，请检查 YAML 格式'); status.style.color = 'var(--error)';
+      showToast('❌ 保存失败: ' + (err.message || 'YAML 格式错误'), 'error');
+      saveBtn.textContent = '💾 保存';
+      saveBtn.disabled = false;
+    }
+  } else {
+    // 第一次点击，显示确认
+    if (saveBtn) {
+      saveBtn.dataset.confirming = 'true';
+      saveBtn.textContent = '⚠️ 确认保存？';
+      saveBtn.style.background = 'var(--warning)';
+      saveBtn.style.borderColor = 'var(--warning)';
+      status.textContent = '⚠️ 再次点击"确认保存"以保存配置'; status.style.color = 'var(--warning)';
+      // 5秒后自动取消确认状态
+      if (_pendingSaveTimer) clearTimeout(_pendingSaveTimer);
+      _pendingSaveTimer = setTimeout(() => {
+        if (saveBtn.dataset.confirming === 'true') {
+          saveBtn.dataset.confirming = 'false';
+          saveBtn.textContent = '💾 保存';
+          saveBtn.style.background = '';
+          saveBtn.style.borderColor = '';
+          status.textContent = ''; status.style.color = '';
+        }
+      }, 5000);
+    }
   }
 }
 

@@ -16,9 +16,9 @@ const buildDir = join(root, 'build');
 
 /** 源文件 → 目标文件映射 */
 const ICON_MAP = [
-  ['dsh-manager-whale_v01-512.png', 'icon.png'],
-  ['dsh-manager-whale_v01-256.png', 'icon-256.png'],
-  ['dsh-manager-whale_v01.ico', 'icon.ico'],
+  ['dsh-manager-whale_v01_transparent-512.png', 'icon.png'],
+  ['dsh-manager-whale_v01_transparent-256.png', 'icon-256.png'],
+  ['dsh-manager-whale_v01_transparent.ico', 'icon.ico'],
 ];
 
 function generateIcons() {
