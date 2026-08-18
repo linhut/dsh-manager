@@ -57,3 +57,26 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
 
   return base;
 }
+
+/**
+ * 按端口结束占用进程（用于 dsh stop 命令不可用时的降级方案）
+ * @param {number} [port=3080] - 目标端口
+ * @returns {Promise<{success: boolean, pid: number|null, message: string}>}
+ */
+export async function stopProcessByPort(port = DSH_WEB_PORT) {
+  const info = await getDSHProcessInfo(port);
+  if (!info.portInUse || !info.pid) {
+    return { success: true, pid: null, message: `端口 ${port} 无占用进程` };
+  }
+
+  try {
+    if (process.platform === 'win32') {
+      await execa('taskkill', ['/PID', String(info.pid), '/F', '/T'], { timeout: 10_000, reject: false });
+    } else {
+      await execa('kill', [String(info.pid)], { timeout: 10_000, reject: false });
+    }
+    return { success: true, pid: info.pid, message: `已结束进程 PID ${info.pid}（${info.command || ''}）` };
+  } catch (error) {
+    return { success: false, pid: info.pid, message: `结束进程失败: ${error.message}` };
+  }
+}

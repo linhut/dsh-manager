@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
+import { parseYAML } from './yaml-utils.js';
 
 /**
  * DSH 路径配置
@@ -209,56 +210,9 @@ export async function readConfigFile(filePath) {
     if (filePath.endsWith('.json')) {
       return JSON.parse(content);
     }
-    // 简单 YAML 解析（仅用于读取 settings.yaml）
-    return parseSimpleYAML(content);
+    // 复用共享 YAML 解析（与 DSHConfig 一致）
+    return parseYAML(content);
   } catch {
     return null;
   }
-}
-
-/**
- * 简单 YAML 解析器（仅用于 dsh 配置文件）
- * @param {string} yaml
- * @returns {object}
- */
-function parseSimpleYAML(yaml) {
-  const result = {};
-  let currentKey = null;
-  let currentIndent = 0;
-  
-  for (const line of yaml.split('\n')) {
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-    
-    const indent = line.search(/\S/);
-    const trimmed = line.trim();
-    
-    if (trimmed.endsWith(':')) {
-      currentKey = trimmed.slice(0, -1);
-      result[currentKey] = {};
-      currentIndent = indent;
-    } else if (trimmed.includes(':') && currentKey) {
-      const [key, ...rest] = trimmed.split(':');
-      const value = rest.join(':').trim();
-      if (value) {
-        result[currentKey] = result[currentKey] || {};
-        result[currentKey][key.trim()] = parseYAMLValue(value);
-      }
-    }
-  }
-  
-  return result;
-}
-
-function parseYAMLValue(value) {
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null' || value === '~') return null;
-  const num = Number(value);
-  if (!isNaN(num) && value.trim() !== '') return num;
-  // 去掉引号
-  if ((value.startsWith("'") && value.endsWith("'")) ||
-      (value.startsWith('"') && value.endsWith('"'))) {
-    return value.slice(1, -1);
-  }
-  return value;
 }

@@ -16,7 +16,7 @@ export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';
 export { checkNode, checkNpm, checkEnvironment, getNodeInstallGuide, requireNodeAndNpm } from './env-check.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
-export { getDSHProcessInfo, DSH_WEB_PORT } from './process-manager.js';
+export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT } from './process-manager.js';
 export { DSHProfileManager } from './profile-manager.js';
 
 /**

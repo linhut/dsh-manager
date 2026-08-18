@@ -6,25 +6,35 @@
  */
 
 import { execa } from 'execa';
-import { checkPnpm } from './pnpm-check.js';
 
 /**
- * 检测 Node.js 是否安装
+ * 内部：检测命令是否可用（checkNode/checkNpm 共用）
+ * @private
+ * @param {string} cmd - 命令名
+ * @param {string} label - 显示名
  * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
  */
-export async function checkNode() {
+async function checkCommand(cmd, label) {
   try {
-    const { stdout, stderr } = await execa('node', ['--version'], { reject: false, timeout: 10_000 });
+    const { stdout, stderr } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000 });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }
     if (stderr) {
       return { installed: false, version: null, error: stderr.trim() };
     }
-    return { installed: false, version: null, error: 'node 命令未找到' };
+    return { installed: false, version: null, error: `${label} 命令未找到` };
   } catch (error) {
     return { installed: false, version: null, error: error.message };
   }
+}
+
+/**
+ * 检测 Node.js 是否安装
+ * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
+ */
+export async function checkNode() {
+  return checkCommand('node', 'node');
 }
 
 /**
@@ -32,18 +42,7 @@ export async function checkNode() {
  * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
  */
 export async function checkNpm() {
-  try {
-    const { stdout, stderr } = await execa('npm', ['--version'], { reject: false, timeout: 10_000 });
-    if (stdout && stdout.trim()) {
-      return { installed: true, version: stdout.trim(), error: null };
-    }
-    if (stderr) {
-      return { installed: false, version: null, error: stderr.trim() };
-    }
-    return { installed: false, version: null, error: 'npm 命令未找到' };
-  } catch (error) {
-    return { installed: false, version: null, error: error.message };
-  }
+  return checkCommand('npm', 'npm');
 }
 
 /**
@@ -54,7 +53,7 @@ export async function checkEnvironment() {
   const [node, npm, pnpm] = await Promise.all([
     checkNode(),
     checkNpm(),
-    checkPnpm(),
+    checkCommand('pnpm', 'pnpm'),
   ]);
   return { node, npm, pnpm };
 }

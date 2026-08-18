@@ -82,6 +82,12 @@ contextBridge.exposeInMainWorld('dshManager', {
   onInstallProgress: (callback) => {
     ipcRenderer.on('dsh:install-progress', (_, data) => callback(data));
   },
+  onPluginInstallProgress: (callback) => {
+    ipcRenderer.on('plugin-install-progress', (_, data) => callback(data));
+  },
+  onEnvInstallProgress: (callback) => {
+    ipcRenderer.on('env-install-progress', (_, data) => callback(data));
+  },
   removeAllListeners: (channel) => {
     ipcRenderer.removeAllListeners(channel);
   },

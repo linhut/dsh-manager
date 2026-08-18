@@ -22,6 +22,7 @@ export class PluginInstaller {
     this.profile = options.profile || 'web';
     this.verbose = options.verbose || false;
     this.logs = [];
+    this.onProgress = options.onProgress || null;
   }
 
   /**
@@ -42,7 +43,13 @@ export class PluginInstaller {
     // 获取插件信息
     let pluginInfo = {};
     if (parsed.type === 'github') {
+      this._log(`获取 GitHub 仓库信息: ${parsed.owner}/${parsed.repo}`);
       pluginInfo = await this._getGitHubPluginInfo(parsed.owner, parsed.repo);
+      // 有 npm 包名则优先走 npm（更快），否则 git 安装
+      if (pluginInfo.npmPackage) {
+        this._log(`发现 npm 包: ${pluginInfo.npmPackage}，优先使用 npm 安装`);
+        return await this._installFromNpm(pluginInfo.npmPackage, profile, pluginInfo);
+      }
     }
 
     // 执行安装
@@ -433,6 +440,9 @@ export class PluginInstaller {
    */
   _log(message, level = 'info') {
     this.logs.push({ level, message, timestamp: new Date().toISOString() });
+    if (this.onProgress) {
+      this.onProgress({ level, message });
+    }
   }
 
   getLogs() {

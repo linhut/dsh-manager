@@ -147,11 +147,24 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:stop', async () => {
     try {
       const { execa } = await import('execa');
-      // 通过 dsh CLI 停止 / 或直接结束进程（这里尝试优雅停止）
+      // 优先尝试 dsh CLI 优雅停止
       const result = await execa('dsh', ['stop'], { reject: false, timeout: 10000 });
-      return { success: result.exitCode === 0, message: result.stdout || '已停止' };
+      if (result.exitCode === 0) {
+        return { success: true, message: result.stdout || '已停止' };
+      }
+      // dsh stop 命令不可用时，降级为按端口结束进程（Windows taskkill / Unix kill）
+      const { stopProcessByPort } = await loadCore();
+      const fallback = await stopProcessByPort();
+      return { success: fallback.success, message: fallback.message, fallback: true };
     } catch (error) {
-      return { success: false, error: error.message };
+      // CLI 异常也尝试端口降级
+      try {
+        const { stopProcessByPort } = await loadCore();
+        const fallback = await stopProcessByPort();
+        return { success: fallback.success, message: fallback.message, fallback: true };
+      } catch {
+        return { success: false, error: error.message };
+      }
     }
   });
 
@@ -273,8 +286,22 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   ipcMain.handle('marketplace:install-plugin', async (_, source) => {
     const { PluginInstaller } = await loadMarketplace();
-    const installer = new PluginInstaller();
-    return await installer.install(source, { fromMarketplace: true });
+    const installer = new PluginInstaller({
+      onProgress: (data) => {
+        // 将插件安装日志推送到渲染进程，驱动实时进度提示
+        const win = getMainWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('plugin-install-progress', data);
+        }
+      },
+    });
+    try {
+      return await installer.install(source, { fromMarketplace: true });
+    } catch (error) {
+      // 透传 execa 的 stderr 细节，便于排查
+      const detail = error?.stderr ? `\n${String(error.stderr).trim().slice(0, 500)}` : '';
+      throw new Error(`${error?.message || '插件安装失败'}${detail}`);
+    }
   });
 
   ipcMain.handle('marketplace:uninstall-plugin', async (_, pluginId) => {
@@ -399,7 +426,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       );
       return pkg.version;
     } catch {
-      return '1.1.0';
+      return '1.2.0';
     }
   });
 
@@ -415,12 +442,29 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('app:install-pnpm', async () => {
     try {
       const { execa } = await import('execa');
-      // 通过 npm 全局安装 pnpm（跨平台通用，无需 corepack/管理员权限的特殊要求）
-      const child = await execa('npm', ['install', '-g', 'pnpm'], {
+      const win = getMainWindow();
+      const pushProgress = (data) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('env-install-progress', data);
+        }
+      };
+      pushProgress({ level: 'info', message: '开始安装 pnpm（npm install -g pnpm）...' });
+
+      // 流式安装 pnpm（跨平台通用）
+      const child = execa('npm', ['install', '-g', 'pnpm'], {
         timeout: 180_000,
         reject: false,
-        stdio: 'pipe',
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
+      child.stdout?.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) pushProgress({ level: 'info', message: text });
+      });
+      child.stderr?.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) pushProgress({ level: 'warn', message: text });
+      });
+      const result = await child;
 
       // 安装后验证
       const { checkPnpm } = await loadCore();
@@ -431,7 +475,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       return {
         success: false,
         message: '安装命令执行完成，但 pnpm 仍不可用',
-        detail: child.stderr || child.stdout || '',
+        detail: result.stderr || result.stdout || '',
       };
     } catch (error) {
       return { success: false, error: error.message };
@@ -453,24 +497,45 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     try {
       const { execa } = await import('execa');
       const platform = process.platform;
-      let result;
+      const win = getMainWindow();
+
+      // 将安装过程输出实时推送到渲染进程（回显状态）
+      const pushProgress = (data) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('env-install-progress', data);
+        }
+      };
+
+      pushProgress({ level: 'info', message: `开始安装 Node.js（平台: ${platform}）...` });
+
+      const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'] };
+      let child;
 
       if (platform === 'win32') {
         // Windows: winget 安装 Node.js LTS（静默）
-        const child = await execa('winget', [
+        child = execa('winget', [
           'install', '--id', 'OpenJS.NodeJS.LTS',
           '--silent', '--accept-source-agreements', '--accept-package-agreements',
-        ], { timeout: 300_000, reject: false, stdio: 'pipe' });
-        result = child;
+        ], cmdOptions);
       } else if (platform === 'darwin') {
         // macOS: 尝试 brew，缺失则提示
-        const child = await execa('brew', ['install', 'node'], { timeout: 300_000, reject: false, stdio: 'pipe' });
-        result = child;
+        child = execa('brew', ['install', 'node'], cmdOptions);
       } else {
         // Linux: 尝试 apt
-        const child = await execa('sudo', ['apt-get', 'install', '-y', 'nodejs', 'npm'], { timeout: 300_000, reject: false, stdio: 'pipe' });
-        result = child;
+        child = execa('sudo', ['apt-get', 'install', '-y', 'nodejs', 'npm'], cmdOptions);
       }
+
+      // 流式转发 stdout/stderr
+      child.stdout?.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) pushProgress({ level: 'info', message: text });
+      });
+      child.stderr?.on('data', (chunk) => {
+        const text = String(chunk).trim();
+        if (text) pushProgress({ level: 'warn', message: text });
+      });
+
+      const result = await child;
 
       // 安装后验证
       const { checkNode, checkNpm } = await loadCore();

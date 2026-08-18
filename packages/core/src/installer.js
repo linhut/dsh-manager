@@ -8,7 +8,7 @@ import { execa } from 'execa';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
-import { DSH_PATHS, isDSHInstalled, getDSHVersion } from './dsh-utils.js';
+import { DSH_PATHS, isDSHInstalled, getDSHVersion, getDSHPath } from './dsh-utils.js';
 import { requireNodeAndNpm } from './env-check.js';
 
 /**
@@ -302,15 +302,7 @@ export class DSHInstaller {
 
   /** @private */
   async _getDSHPath() {
-    try {
-      const { stdout } = await execa('node', [
-        '-e', 'console.log(require.resolve("@deepseek-ai/dsh/package.json"))'
-      ], { reject: false });
-      if (stdout) {
-        const { dirname } = await import('node:path');
-        return dirname(stdout.trim());
-      }
-    } catch {}
-    return null;
+    // 复用 dsh-utils 的共享实现，避免重复
+    return getDSHPath();
   }
 }

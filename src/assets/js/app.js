@@ -224,19 +224,31 @@ async function checkPnpmStatus() {
 
 // ====== 一键安装 pnpm ======
 async function installPnpm() {
+  clearEnvInstallLog();
+  appendEnvInstallLog('开始安装 pnpm（npm install -g pnpm）...');
   showToast('正在安装 pnpm，请稍候...', 'info');
+  // 订阅主进程推送的安装过程输出（实时回显）
+  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.onEnvInstallProgress((data) => {
+    if (data && data.message) appendEnvInstallLog(data.message, data.level);
+  });
   try {
     const result = await window.dshManager.installPnpm();
     if (result.success) {
+      appendEnvInstallLog(`✅ pnpm ${result.version} 安装成功！`, 'info');
       showToast(`✅ pnpm ${result.version} 安装成功！`, 'success');
     } else {
       const detail = result.message || result.error || '未知错误';
+      appendEnvInstallLog(`❌ pnpm 安装失败: ${detail}`, 'error');
       showToast(`❌ pnpm 安装失败: ${detail}`, 'error');
     }
     await checkPnpmStatus();
     renderInstallPage();
   } catch (err) {
+    appendEnvInstallLog(`❌ ${err.message}`, 'error');
     showToast('❌ pnpm 安装失败: ' + err.message, 'error');
+  } finally {
+    window.dshManager.removeAllListeners('env-install-progress');
   }
 }
 
@@ -272,6 +284,9 @@ async function tryLoadDSHWeb() {
       webview.style.display = 'flex';
       webview.src = 'http://127.0.0.1:3080';
       state.dshRunning = true;
+      // 刷新工具栏，显示「🛑 停止 DSH」按钮（否则停留在"未运行"状态）
+      renderDashToolbar();
+      renderDashInfo();
       return;
     }
   } catch {}
@@ -569,29 +584,56 @@ async function renderEnvStatus() {
         <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://nodejs.org')">🌐 官网下载</button>` : ''}
       ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">⚡ 一键安装 pnpm</button>` : ''}
-      <span style="font-size:12px;color:var(--text-dim);align-self:center;">${env.nodeInstallGuide ? '' : ''}</span>
     </div>
     ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
+    <div id="envInstallLog" style="display:none;margin-top:10px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
   `;
+}
+
+// ====== 安装回显日志（Node/pnpm 安装实时输出） ======
+function appendEnvInstallLog(message, level = 'info') {
+  const log = document.getElementById('envInstallLog');
+  if (!log) return;
+  if (log.style.display === 'none') log.style.display = 'block';
+  const color = level === 'warn' ? 'var(--warning)' : level === 'error' ? 'var(--error)' : 'var(--text-muted)';
+  log.innerHTML += `<div style="color:${color};white-space:pre-wrap;">${message.replace(/</g, '&lt;')}</div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearEnvInstallLog() {
+  const log = document.getElementById('envInstallLog');
+  if (log) { log.innerHTML = ''; log.style.display = 'none'; }
 }
 
 // ====== 一键安装 Node.js ======
 async function installNodejs() {
   const btn = document.getElementById('installNodeBtn');
+  clearEnvInstallLog();
+  appendEnvInstallLog('开始安装 Node.js（通过系统包管理器），请稍候...');
   showToast('正在通过系统包管理器安装 Node.js，请稍候（可能需要几分钟）...', 'info');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 安装中...'; }
+  // 订阅主进程推送的安装过程输出（实时回显）
+  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.onEnvInstallProgress((data) => {
+    if (data && data.message) appendEnvInstallLog(data.message, data.level);
+  });
   try {
     const result = await window.dshManager.installNodejs();
     if (result.success) {
+      appendEnvInstallLog(`✅ ${result.message || 'Node.js 安装成功'}`, 'info');
       showToast(`✅ ${result.message || 'Node.js 安装成功'}`, 'success');
     } else {
+      appendEnvInstallLog(`❌ ${result.message || result.error || '未知错误'}`, 'error');
       showToast(`❌ Node.js 安装失败: ${result.message || result.error || '未知错误'}`, 'error');
     }
     await renderEnvStatus();
     await checkDSHStatus();
   } catch (err) {
+    appendEnvInstallLog(`❌ ${err.message}`, 'error');
     showToast('❌ Node.js 安装失败: ' + err.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = '⬇️ 一键安装 Node.js'; }
+  } finally {
+    window.dshManager.removeAllListeners('env-install-progress');
   }
 }
 async function installDSH(tool = 'auto') {
@@ -1192,8 +1234,13 @@ async function searchPlugins(query) {
 }
 
 async function installMarketPlugin(fullName) {
+  showToast(`正在安装 ${fullName}...`, 'info');
+  // 订阅主进程推送的插件安装进度
+  window.dshManager.removeAllListeners('plugin-install-progress');
+  window.dshManager.onPluginInstallProgress((data) => {
+    if (data && data.message) showToast(data.message, 'info');
+  });
   try {
-    showToast(`正在安装 ${fullName}...`, 'info');
     // 按来源选择前缀：npm 包用 npm:，GitHub 仓库用 github:
     const p = (state.marketResults || []).find(x => x.fullName === fullName);
     const source = (p && p._source === 'npm') ? `npm:${fullName}` : `github:${fullName}`;
@@ -1202,6 +1249,8 @@ async function installMarketPlugin(fullName) {
     renderPluginsPage();
   } catch (err) {
     showToast('安装失败: ' + err.message, 'error');
+  } finally {
+    window.dshManager.removeAllListeners('plugin-install-progress');
   }
 }
 
@@ -1211,6 +1260,11 @@ async function installPluginSource() {
   const source = input?.value.trim();
   if (!source) { showToast('请输入插件来源', 'error'); return; }
   showToast(`正在安装 ${source}...`, 'info');
+  // 订阅主进程推送的插件安装进度
+  window.dshManager.removeAllListeners('plugin-install-progress');
+  window.dshManager.onPluginInstallProgress((data) => {
+    if (data && data.message) showToast(data.message, 'info');
+  });
   try {
     const result = await window.dshManager.installPlugin(source);
     showToast(`插件 ${result.name} 安装成功！`, 'success');
@@ -1218,6 +1272,8 @@ async function installPluginSource() {
     renderPluginsPage();
   } catch (err) {
     showToast('安装失败: ' + err.message, 'error');
+  } finally {
+    window.dshManager.removeAllListeners('plugin-install-progress');
   }
 }
 
