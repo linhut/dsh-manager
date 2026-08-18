@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo/dsh-manager-whale_v01-256.png" alt="DSH Manager Logo" width="128">
+</p>
+
 # ⚡ DSH Manager
 
 > **DeepSeek Harness 桌面管理工具** — 像 ccswitch 一样，简单、直观、强大
