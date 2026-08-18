@@ -7,7 +7,6 @@ Thumbs.db
 
 # npm
 npm-debug.log*
-package-lock.json
 
 # IDE
 .vscode/
