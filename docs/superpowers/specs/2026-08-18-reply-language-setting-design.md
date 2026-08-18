@@ -45,7 +45,7 @@
   2. 写 `manager.reply-language` 到 settings.yaml（复用 `DSHConfig.set`）。
   失败时回滚已完成的写入（文件写失败则不落配置；配置写失败则回滚 AGENTS.md）。
 - `getReplyLanguage()`：返回当前配置值（缺省为 `default`）。
-- `clearReplyLanguage()`：移除 AGENTS.md 中的指令块并删除配置键（等价于 `setReplyLanguage('default')`，保留为内部辅助）。
+- `clearReplyLanguage()`：移除 AGENTS.md 中的指令块并**删除** `manager.reply-language` 配置键（不写入 `default` 值；删除后读取时按 3.1 缺省逻辑归为 `default`，效果与 `setReplyLanguage('default')` 相同）。保留为内部辅助。
 
 ### 3.3 AGENTS.md 指令块格式
 
@@ -57,11 +57,21 @@
 - 默认始终使用简体中文进行思考（reasoning）与所有最终回答。
 - 计划、工具调用、总结、代码注释同样使用简体中文。
 - 仅代码、命令、文件路径、变量名、API 名称等必须原样保留的内容使用英文。
+- 若某个工作区/项目的 AGENTS.md 明确指定了其他语言，则以该项目级规则为准。
 <!-- /dsh-manager:reply-language -->
 ```
 
 - `zh-CN`：写入上述中文块。
-- `en`：写入英文等价块（"Always think and reply in English..."）。
+- `en`：写入英文等价块：
+  ```markdown
+  <!-- dsh-manager:reply-language -->
+  # Language Rules
+  - Think (reasoning) and reply in English by default.
+  - Plans, tool calls, summaries, and code comments are also in English.
+  - Code, commands, file paths, variable names, API names, and other content that must stay verbatim remain in their original form.
+  - If a workspace/project AGENTS.md explicitly specifies another language, that project-level rule takes precedence.
+  <!-- /dsh-manager:reply-language -->
+  ```
 - `default`：移除整块（含空行清理）。
 
 替换逻辑：查找 `<!-- dsh-manager:reply-language -->` 与 `<!-- /dsh-manager:reply-language -->` 之间的内容并整体替换；未找到则追加到文件末尾（文件不存在则创建）。
