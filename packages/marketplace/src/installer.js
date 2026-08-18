@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, cpSync, readFileSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
+import { githubProxyUrls } from './github-api.js';
 
 export class PluginInstaller {
   /**
@@ -51,9 +52,11 @@ export class PluginInstaller {
     if (parsed.type === 'npm') {
       return await this._installFromNpm(parsed.packageName, profile, pluginInfo);
     } else if (parsed.type === 'github') {
-      return await this._installFromGitHub(parsed.owner, parsed.repo, profile, pluginInfo);
+      return await this._installFromGitHub(parsed.owner, parsed.repo, profile, pluginInfo, parsed.ref);
     } else if (parsed.type === 'git') {
       return await this._installFromGit(parsed.url, profile, pluginInfo);
+    } else if (parsed.type === 'link') {
+      return await this._installFromLink(parsed.path, profile);
     } else if (parsed.type === 'file') {
       return await this._installFromFile(parsed.path, profile);
     } else {
@@ -180,8 +183,8 @@ export class PluginInstaller {
   /**
    * @private
    */
-  async _installFromGitHub(owner, repo, profile, info) {
-    this._log(`从 GitHub 安装: ${owner}/${repo}`);
+  async _installFromGitHub(owner, repo, profile, info, ref = '') {
+    this._log(`从 GitHub 安装: ${owner}/${repo}${ref ? '#' + ref : ''}`);
 
     // 有 npm 包名则优先走 npm（更快）；npm 失败自动降级为 git 安装
     if (info.npmPackage) {
@@ -189,17 +192,17 @@ export class PluginInstaller {
       try {
         return await this._installFromNpm(info.npmPackage, profile, info);
       } catch (npmError) {
-        this._log(`npm 安装失败（${npmError.message}），降级为 GitHub git 安装`, 'warn');
-        // 继续走 git URL 安装
+        this._log(`npm 安装失败（${npmError.message}），降级为 GitHub 安装`, 'warn');
+        // 继续走官方 github:owner/repo#ref 形式安装
       }
     }
 
-    // git URL 安装
-    const gitUrl = `https://github.com/${owner}/${repo}.git`;
+    // 官方源形式：github:owner/repo#ref（#ref 固定分支/标签/commit）
+    const gitSource = `github:${owner}/${repo}${ref ? '#' + ref : ''}`;
     
     try {
       const { stdout, stderr } = await execa('dsh', [
-        'plugin', '--profile', profile, 'add', gitUrl,
+        'plugin', '--profile', profile, 'add', gitSource,
       ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
 
       this._log(stdout || '');
@@ -276,18 +279,26 @@ export class PluginInstaller {
    */
   _parseSource(source) {
     if (source.startsWith('github:')) {
-      const fullName = source.replace('github:', '');
-      const [owner, repo] = fullName.split('/');
-      return { type: 'github', owner, repo, fullName };
+      // github:owner/repo#ref（#ref 可选，固定分支/标签/commit）
+      const full = source.replace('github:', '');
+      const [owner, repoFull, ...rest] = full.split('/');
+      const refPart = rest.length > 0 ? rest.join('/') : '';
+      const [repo, ref] = this._splitRef(repoFull, refPart);
+      return { type: 'github', owner, repo, ref, fullName: `${owner}/${repo}${ref ? '#' + ref : ''}` };
     }
     
     if (source.startsWith('npm:')) {
       return { type: 'npm', packageName: source.replace('npm:', '') };
     }
 
-    // 本地目录安装：file:<绝对路径>
+    // 本地目录/tarball 安装：file:<路径>
     if (source.startsWith('file:')) {
       return { type: 'file', path: source.replace(/^file:/, '') };
+    }
+
+    // 本地 link 源：link:./packages/xxx（DSH 官方支持）
+    if (source.startsWith('link:')) {
+      return { type: 'link', path: source.replace(/^link:/, '') };
     }
 
     // Git URL 直装：git:<url> / git+https:// / git+ssh:// / git@
@@ -299,23 +310,44 @@ export class PluginInstaller {
     if (source.includes('/') && source.includes('github.com')) {
       const match = source.match(/github\.com\/([^/]+)\/([^/.]+)/);
       if (match) {
-        return { type: 'github', owner: match[1], repo: match[2], fullName: `${match[1]}/${match[2]}` };
+        // https://github.com/owner/repo#ref 形式
+        const [owner, repoFull, ...rest] = `${match[1]}/${match[2]}`.split('/');
+        const [repo, ref] = this._splitRef(repoFull, '');
+        // 从原 source 提取 #ref（可能在 repo 后）
+        const hashMatch = source.match(/#([^/]+)$/);
+        return { type: 'github', owner, repo, ref: hashMatch ? hashMatch[1] : '', fullName: `${owner}/${repo}${hashMatch ? '#' + hashMatch[1] : ''}` };
       }
     }
     
     // 默认视为 npm 包
     if (source.includes('/') || source.startsWith('@')) {
+      // 裸 owner/repo 形式：解析 #ref
+      if (!source.startsWith('@') && source.includes('/')) {
+        const [owner, repoFull, ...rest] = source.split('/');
+        if (rest.length === 0) {
+          const [repo, ref] = this._splitRef(repoFull, '');
+          if (repo && !repo.startsWith('.')) {
+            return { type: 'github', owner, repo, ref, fullName: `${owner}/${repo}${ref ? '#' + ref : ''}` };
+          }
+        }
+      }
       return { type: 'npm', packageName: source };
-    }
-    
-    // 假设是 GitHub owner/repo 格式
-    if (source.includes('/')) {
-      const [owner, repo] = source.split('/');
-      return { type: 'github', owner, repo, fullName: source };
     }
     
     // 默认 npm
     return { type: 'npm', packageName: source };
+  }
+
+  /**
+   * 将 "repo#ref" 拆分为 repo 与 ref
+   * @private
+   */
+  _splitRef(repoPart, rest) {
+    const hashIdx = repoPart.indexOf('#');
+    if (hashIdx >= 0) {
+      return [repoPart.slice(0, hashIdx), repoPart.slice(hashIdx + 1)];
+    }
+    return [repoPart, rest || ''];
   }
 
   /**
@@ -341,13 +373,26 @@ export class PluginInstaller {
       // 清空旧缓存避免冲突
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
 
-      this._log(`执行: git clone --depth 1 ${url}`);
-      const { stdout, stderr } = await execa('git', ['clone', '--depth', '1', url, dest], {
-        timeout: 120_000,
-        stdio: this.verbose ? 'inherit' : 'pipe',
-      });
-      this._log(stdout || '');
-      if (stderr) this._log(stderr, 'warn');
+      // 直连 clone，失败自动切换 GitHub 代理（gh-proxy.com / github.akams.cn）
+      let cloned = false;
+      let lastError = null;
+      for (const candidate of githubProxyUrls(url)) {
+        try {
+          this._log(`执行: git clone --depth 1 ${candidate}`);
+          const { stdout, stderr } = await execa('git', ['clone', '--depth', '1', candidate, dest], {
+            timeout: 120_000,
+            stdio: this.verbose ? 'inherit' : 'pipe',
+          });
+          this._log(stdout || '');
+          if (stderr) this._log(stderr, 'warn');
+          cloned = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          this._log(`git clone 失败（${candidate}）: ${error.message}`, 'warn');
+        }
+      }
+      if (!cloned) throw lastError || new Error('git clone 失败');
 
       // 读取 package.json
       let pkg = null;
@@ -382,18 +427,66 @@ export class PluginInstaller {
 
   /**
    * @private
+   * 从本地 link 源安装插件（DSH 官方 link: 形式）
+   * 命令: dsh plugin --profile <profile> add link:<path>
+   * @param {string} path - 本地路径（如 ./packages/xxx）
+   * @param {string} profile
+   */
+  async _installFromLink(path, profile) {
+    this._log(`从本地 link 安装: ${path}`);
+
+    if (!path) {
+      throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `link 路径不能为空`);
+    }
+
+    // 读取 package.json 获取插件信息（路径可能相对工作目录）
+    let pkg = null;
+    try {
+      pkg = JSON.parse(readFileSync(join(path, 'package.json'), 'utf-8'));
+    } catch {}
+
+    // 使用官方 link: 源形式安装（DSH 会做 pnpm 链接）
+    const linkSource = `link:${path}`;
+    const { stdout, stderr } = await execa('dsh', [
+      'plugin', '--profile', profile, 'add', linkSource,
+    ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+    this._log(stdout || '');
+    if (stderr) this._log(stderr, 'warn');
+
+    const pluginId = pkg?.name || basename(path);
+    this.registry.registerLocalPlugin({
+      id: pluginId,
+      name: pkg?.name || basename(path),
+      version: pkg?.version || 'local',
+      source: `link:${path}`,
+      profile,
+      type: 'link',
+      installedAt: new Date().toISOString(),
+      description: pkg?.description || '',
+    });
+
+    return { success: true, id: pluginId, name: pluginId, version: pkg?.version || 'local', path };
+  }
+
+  /**
+   * @private
    * 从本地目录安装插件（复制到插件缓存并注册）
    * @param {string} dir - 本地插件目录
    * @param {string} profile
    */
   async _installFromFile(dir, profile) {
-    this._log(`从本地目录安装: ${dir}`);
+    this._log(`从本地文件安装: ${dir}`);
 
     if (!dir || !existsSync(dir)) {
-      throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `本地目录不存在: ${dir}`);
+      throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `本地路径不存在: ${dir}`);
     }
 
-    // 校验 package.json
+    // 支持 .tgz / .tar.gz tarball（DSH 官方 file: 源形式：file:/path/to/pkg.tgz）
+    if (/\.(tgz|tar\.gz)$/i.test(dir)) {
+      return await this._installFromTarball(dir, profile);
+    }
+
+    // 目录安装：校验 package.json
     const pkgPath = join(dir, 'package.json');
     let pkg = null;
     try {
@@ -432,6 +525,67 @@ export class PluginInstaller {
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
         `本地目录安装失败: ${error.message}`
       );
+    }
+  }
+
+  /**
+   * @private
+   * 从 .tgz / .tar.gz tarball 安装插件（DSH 官方 file: 源形式）
+   * 解压到插件缓存并注册
+   * @param {string} tarball - tarball 路径
+   * @param {string} profile
+   */
+  async _installFromTarball(tarball, profile) {
+    this._log(`从 tarball 安装: ${tarball}`);
+    const cacheRoot = DSH_PATHS.pluginCache;
+    if (!existsSync(cacheRoot)) mkdirSync(cacheRoot, { recursive: true });
+
+    // 临时解压目录
+    const tempDir = join(cacheRoot, `tmp-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    try {
+      await execa('tar', ['-xzf', tarball, '-C', tempDir], {
+        timeout: 120_000,
+        stdio: this.verbose ? 'inherit' : 'pipe',
+      });
+
+      // 定位解压后的 package.json（tarball 可能含 package/ 前缀目录）
+      let pkgDir = tempDir;
+      if (!existsSync(join(pkgDir, 'package.json'))) {
+        const entries = readdirSync(tempDir, { withFileTypes: true }).filter(e => e.isDirectory());
+        const sub = entries.find(e => existsSync(join(tempDir, e.name, 'package.json')));
+        if (sub) pkgDir = join(tempDir, sub.name);
+      }
+      const pkgPath = join(pkgDir, 'package.json');
+      if (!existsSync(pkgPath)) {
+        throw new Error('tarball 中未找到 package.json');
+      }
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+
+      const pluginName = pkg.name || basename(tarball).replace(/\.(tgz|tar\.gz)$/i, '');
+      const dest = join(cacheRoot, pluginName);
+      if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+      cpSync(pkgDir, dest, { recursive: true });
+
+      this.registry.registerLocalPlugin({
+        id: pluginName,
+        name: pkg.name || pluginName,
+        version: pkg.version || 'local',
+        source: `file:${tarball}`,
+        profile,
+        type: 'file',
+        installedAt: new Date().toISOString(),
+        description: pkg.description || '',
+      });
+
+      return { success: true, id: pluginName, name: pluginName, version: pkg.version || 'local', path: dest };
+    } catch (error) {
+      throw new DSHError(
+        DSHErrorCodes.PLUGIN_INSTALL_FAILED,
+        `tarball 安装失败: ${error.message}`
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   }
 

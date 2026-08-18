@@ -63,7 +63,7 @@ export const DSH_PATHS = {
  */
 export async function isDSHInstalled() {
   try {
-    const { stdout } = await execa('dsh', ['--version'], { reject: false });
+    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 10_000 });
     return !!stdout;
   } catch {
     return false;
@@ -76,7 +76,7 @@ export async function isDSHInstalled() {
  */
 export async function getDSHVersion() {
   try {
-    const { stdout } = await execa('dsh', ['--version'], { reject: false });
+    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 10_000 });
     return stdout ? stdout.trim() : null;
   } catch {
     return null;
@@ -91,7 +91,7 @@ export async function getDSHPath() {
   try {
     const { stdout } = await execa('node', [
       '-e', 'console.log(require.resolve("@deepseek-ai/dsh/package.json"))'
-    ], { reject: false });
+    ], { reject: false, timeout: 10_000 });
     if (stdout) {
       return dirname(stdout.trim());
     }
@@ -117,7 +117,7 @@ export async function getDSHInfo() {
   // 获取 npm 全局路径
   let npmGlobalPath = null;
   try {
-    const { stdout } = await execa('npm', ['root', '-g'], { reject: false });
+    const { stdout } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
     npmGlobalPath = stdout?.trim() || null;
   } catch {}
 

@@ -46,16 +46,39 @@ export async function checkNpm() {
 }
 
 /**
- * 检测完整基础环境（node / npm / pnpm）
- * @returns {Promise<{node: object, npm: object, pnpm: object}>}
+ * 检测完整基础环境（node / npm / pnpm / git）
+ * @returns {Promise<{node: object, npm: object, pnpm: object, git: object}>}
  */
 export async function checkEnvironment() {
-  const [node, npm, pnpm] = await Promise.all([
+  const [node, npm, pnpm, git] = await Promise.all([
     checkNode(),
     checkNpm(),
     checkCommand('pnpm', 'pnpm'),
+    checkCommand('git', 'git'),
   ]);
-  return { node, npm, pnpm };
+  return { node, npm, pnpm, git };
+}
+
+/**
+ * 检测 git 是否安装（git 插件安装依赖）
+ * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
+ */
+export async function checkGit() {
+  return checkCommand('git', 'git');
+}
+
+/**
+ * 获取 git 安装引导提示（按平台）
+ * @returns {string}
+ */
+export function getGitInstallGuide() {
+  const platform = process.platform;
+  const guides = {
+    win32: 'winget install Git.Git\n  或: 前往 https://git-scm.com/download/win 下载安装',
+    darwin: 'brew install git\n  或: 前往 https://git-scm.com/download/mac 下载安装',
+    linux: 'sudo apt install git\n  或: 前往 https://git-scm.com/download/linux 下载安装',
+  };
+  return guides[platform] || guides.linux;
 }
 
 /**

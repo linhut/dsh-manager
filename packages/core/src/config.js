@@ -101,12 +101,16 @@ export class DSHConfig {
 
   /**
    * 列出所有已配置的 LLM 提供商
-   * @returns {Promise<Array<{name: string, provider: string, model: string}>>}
+   * 兼容两种配置形态：
+   *   - 旧格式: settings.llm.<name> = { provider, model, apiKey, baseUrl }
+   *   - DSH 官方格式: settings.llm-<adapter>.<providers>.<name> = { api, baseURL, models, apiKeyEnv }
+   * @returns {Promise<Array<{name: string, provider: string, model: string, apiKeyEnv?: string}>>}
    */
   async listLLMProviders() {
     const { settings } = await this.read();
     const providers = [];
     
+    // 旧格式 settings.llm.<name>
     const llm = settings.llm || {};
     for (const [name, config] of Object.entries(llm)) {
       if (config && typeof config === 'object') {
@@ -115,6 +119,25 @@ export class DSHConfig {
           provider: config.provider || 'unknown',
           model: config.model || 'unknown',
         });
+      }
+    }
+
+    // DSH 官方格式 settings.llm-<adapter>.providers.<name>
+    for (const [adapter, adapterCfg] of Object.entries(settings)) {
+      if (!/^llm-/.test(adapter) || !adapterCfg || typeof adapterCfg !== 'object') continue;
+      const adapterProviders = adapterCfg.providers || {};
+      for (const [name, config] of Object.entries(adapterProviders)) {
+        if (config && typeof config === 'object') {
+          const model = Array.isArray(config.models) && config.models[0]
+            ? (config.models[0].id || config.models[0])
+            : 'unknown';
+          providers.push({
+            name,
+            provider: adapter,
+            model,
+            apiKeyEnv: config.apiKeyEnv || '',
+          });
+        }
       }
     }
     

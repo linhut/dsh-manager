@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="logo/dsh-manager-whale_v01_transparent-256.png" alt="DSH Manager Logo" width="128">
 </p>
 
@@ -63,9 +63,11 @@
 - 检查更新
 
 ### ⚙️ 设置
-- 查看 DSH 配置
-- 管理 LLM 提供商
-- 自动启动设置
+- **Manager 设置**：自动启动 DSH 控制台、启动时检查更新、回复语言、界面主题
+- **LLM 提供商管理**：可视化管理模型供应商（名称/类型/模型/API Key），支持添加/编辑/删除
+- **YAML 编辑器**：直接编辑 ~/.dsh/settings.yaml，带语法解析、保存二次确认
+- **Agent Presets**：查看已配置的 Agent 预设
+- **系统管理**：MCP 服务端管理、Profile 管理、数据管理
 
 ---
 

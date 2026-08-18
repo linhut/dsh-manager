@@ -60,7 +60,7 @@ function selectThemeOption(choice) {
   showToast(`主题已切换为: ${choice === 'light' ? '浅色' : choice === 'dark' ? '深色' : '跟随系统'}`, 'success');
 }
 
-// ====== 初始化 ======
+// ====== 初始化（带超时保护） ======
 document.addEventListener('DOMContentLoaded', async () => {
   // 应用主题（在渲染页面之前）
   applyTheme();
@@ -99,11 +99,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {}
   }
 
-  // 检测 DSH 状态
-  await checkDSHStatus();
+  // 首次渲染页面（让用户尽快看到内容，不因检测阻塞）
+  renderInstallPage();
+  renderPluginsPage();
+  renderVersionsPage();
+  renderSettingsPage();
+  renderAboutPage();
 
-  // 检测 pnpm 状态
-  await checkPnpmStatus();
+  // 异步检测 DSH 状态（带超时保护，不阻塞 UI）
+  Promise.race([
+    checkDSHStatus(),
+    new Promise(r => setTimeout(() => { console.warn('checkDSHStatus 超时，跳过'); r(); }, 15_000))
+  ]).catch(() => {});
+
+  // 异步检测 pnpm 状态（带超时保护）
+  Promise.race([
+    checkPnpmStatus(),
+    new Promise(r => setTimeout(() => { console.warn('checkPnpmStatus 超时，跳过'); r(); }, 15_000))
+  ]).catch(() => {});
 
   // 读取 Manager 设置（自动打开控制台 / 启动时检查更新）
   let autoStartConsole = true;
@@ -122,13 +135,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (checkUpdatesOnStartup) {
     checkDSHUpdateStartup();
   }
-
-  // 渲染各页面
-  renderInstallPage();
-  renderPluginsPage();
-  renderVersionsPage();
-  renderSettingsPage();
-  renderAboutPage();
 });
 
 // ====== 页面切换 ======
@@ -182,6 +188,11 @@ async function checkDSHStatus() {
     renderDashInfo();
   } catch (err) {
     console.error('状态检测失败:', err);
+    // 修复：检测失败时更新侧边栏状态，避免卡在"检测中..."
+    const dot = statusEl?.querySelector('.status-dot');
+    const text = statusEl?.querySelector('.status-text');
+    if (dot) dot.className = 'status-dot status-error';
+    if (text) text.textContent = 'DSH 检测失败';
   }
 }
 
@@ -219,6 +230,12 @@ async function checkPnpmStatus() {
     }
   } catch (err) {
     console.error('pnpm 检测失败:', err);
+    // 修复：检测失败时更新侧边栏状态
+    const statusEl = document.getElementById('pnpmStatus');
+    const dot = statusEl?.querySelector('.status-dot');
+    const text = statusEl?.querySelector('.status-text');
+    if (dot) dot.className = 'status-dot status-error';
+    if (text) text.textContent = 'pnpm 检测失败';
   }
 }
 
@@ -551,7 +568,15 @@ async function renderEnvStatus() {
   const el = document.getElementById('envStatus');
   if (!el) return;
   let env = null;
-  try { env = await window.dshManager.checkEnvironment(); } catch {}
+  try {
+    // 带超时保护的环境检测（30秒超时，防止挂死）
+    env = await Promise.race([
+      window.dshManager.checkEnvironment(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('环境检测超时')), 30_000))
+    ]);
+  } catch (e) {
+    console.warn('环境检测失败:', e.message);
+  }
   if (!env) {
     el.innerHTML = '<p style="color:var(--error);font-size:13px;">⚠️ 环境检测失败</p>';
     return;
@@ -894,6 +919,19 @@ async function renderPluginsPage() {
       </div>
     </div>
   `;
+}
+
+}
+
+/**
+ * 关闭安装进度模态框
+ * 安装将在后台继续，完成后会自动刷新页面
+ */
+function closeInstallProgressModal() {
+  const overlay = document.querySelector('.modal-overlay.active');
+  if (overlay && overlay.querySelector('#installCloseBtn')) {
+    overlay.remove();
+  }
 }
 
 // ====== 插件市场 ======
@@ -1262,7 +1300,10 @@ function showInstallProgressModal(label, title = '安装') {
   overlay.className = 'modal-overlay active';
   overlay.innerHTML = `
     <div class="modal" style="min-width:420px;max-width:520px;">
-      <h3 class="modal-title">📥 ${title}</h3>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+        <h3 class="modal-title" style="margin-bottom:0;">📥 ${title}</h3>
+        <button class="btn btn-sm btn-ghost" id="installCloseX" onclick="closeInstallProgressModal()" title="关闭窗口（安装将在后台继续）" style="min-width:28px;padding:1px 8px;font-size:14px;line-height:1.4;">✕</button>
+      </div>
       <div class="modal-body" style="text-align:center;">
         <div style="font-size:48px;margin-bottom:12px;" id="installSpinner">⏳</div>
         <p style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--text-primary);" id="installLabel">${label}</p>
@@ -1272,9 +1313,10 @@ function showInstallProgressModal(label, title = '安装') {
         <div id="installMessage" style="font-size:12px;color:var(--text-dim);min-height:40px;line-height:1.5;">
           正在准备安装...
         </div>
+        <p style="font-size:11px;color:var(--text-dim);margin-top:4px;">安装期间可随时关闭此窗口，安装将在后台继续。</p>
       </div>
       <div class="modal-footer" style="justify-content:center;">
-        <button class="btn btn-ghost" id="installCloseBtn" style="display:none;" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+        <button class="btn btn-ghost" id="installCloseBtn" onclick="closeInstallProgressModal()">后台继续（关闭窗口）</button>
       </div>
     </div>
   `;
@@ -1295,9 +1337,20 @@ function showInstallProgressModal(label, title = '安装') {
       if (spinner) spinner.textContent = type === 'success' ? '✅' : '❌';
       if (bar) bar.innerHTML = '<div style="width:100%;height:100%;background:' + (type === 'success' ? 'var(--success, #22C55E)' : 'var(--error, #EF4444)') + ';border-radius:2px;"></div>';
       if (msgEl) msgEl.textContent = msg;
-      if (closeBtn) closeBtn.style.display = '';
+      if (closeBtn) { closeBtn.style.display = ''; closeBtn.textContent = '关闭'; }
     }
   };
+}
+
+/**
+ * 关闭安装进度模态框
+ * 安装将在后台继续，完成后会自动刷新页面
+ */
+function closeInstallProgressModal() {
+  const overlay = document.querySelector('.modal-overlay.active');
+  if (overlay && overlay.querySelector('#installCloseBtn')) {
+    overlay.remove();
+  }
 }
 
 async function installMarketPlugin(fullName) {
@@ -1312,6 +1365,10 @@ async function installMarketPlugin(fullName) {
     });
     const result = await window.dshManager.installPlugin(source);
     modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
+    // 刷新本地插件列表，同步市场卡片安装状态
+    try { state.localPlugins = await window.dshManager.getLocalPlugins(); } catch { state.localPlugins = []; }
+    const section = document.getElementById('marketplaceSection');
+    if (section && section.style.display !== 'none') renderMarketplaceGrid();
     renderPluginsPage();
   } catch (err) {
     modal.done('❌ 安装失败: ' + err.message, 'error');
@@ -1334,6 +1391,9 @@ async function installPluginSource() {
     const result = await window.dshManager.installPlugin(source);
     modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
     if (input) input.value = '';
+    try { state.localPlugins = await window.dshManager.getLocalPlugins(); } catch { state.localPlugins = []; }
+    const section2 = document.getElementById('marketplaceSection');
+    if (section2 && section2.style.display !== 'none') renderMarketplaceGrid();
     renderPluginsPage();
   } catch (err) {
     modal.done('❌ 安装失败: ' + err.message, 'error');
@@ -1382,6 +1442,9 @@ async function runBatchInstall() {
       const detail = failed.map(r => `${r.source}: ${r.error || '未知错误'}`).join('\n');
       modal.update('失败详情:\n' + detail, 'error');
     }
+    try { state.localPlugins = await window.dshManager.getLocalPlugins(); } catch { state.localPlugins = []; }
+    const section3 = document.getElementById('marketplaceSection');
+    if (section3 && section3.style.display !== 'none') renderMarketplaceGrid();
     renderPluginsPage();
   } catch (err) {
     modal.done('❌ 批量安装失败: ' + err.message, 'error');
@@ -2062,8 +2125,28 @@ async function renderLLMProvidersTab() {
   let config = { settings: {}, credentials: {} };
   try { providers = await window.dshManager.getLLMProviders(); } catch (e) { console.warn('getLLMProviders failed:', e); }
   try { config = await window.dshManager.getAllConfig(); } catch (e) { console.warn('getAllConfig failed:', e); }
-  const llm = config.settings?.llm || {};
-  const providerEntries = Object.entries(llm);
+
+  // 收集 LLM 提供商，兼容两种配置形态：
+  //   旧格式: settings.llm.<name> = { provider, model, apiKey, baseUrl }
+  //   DSH 官方格式: settings.llm-<adapter>.providers.<name> = { api, baseURL, models, apiKeyEnv }
+  const settings = config.settings || {};
+  const providerEntries = [];
+  const llm = settings.llm || {};
+  for (const [name, conf] of Object.entries(llm)) {
+    if (conf && typeof conf === 'object') providerEntries.push([name, conf]);
+  }
+  for (const [adapter, adapterCfg] of Object.entries(settings)) {
+    if (!/^llm-/.test(adapter) || !adapterCfg || typeof adapterCfg !== 'object') continue;
+    for (const [name, conf] of Object.entries(adapterCfg.providers || {})) {
+      if (conf && typeof conf === 'object') {
+        const model = Array.isArray(conf.models) && conf.models[0]
+          ? (conf.models[0].id || conf.models[0])
+          : '';
+        providerEntries.push([name, { provider: adapter, model, apiKeyEnv: conf.apiKeyEnv || '', baseURL: conf.baseURL || '', _official: true }]);
+      }
+    }
+  }
+
   if (providerEntries.length === 0) {
     return `
       <div class="card">
@@ -2094,10 +2177,10 @@ async function renderLLMProvidersTab() {
             <tbody>
               ${providerEntries.map(([name, conf]) => `
                 <tr>
-                  <td><strong>${name}</strong></td>
+                  <td><strong>${name}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
                   <td><span class="badge badge-blue">${conf.provider || 'unknown'}</span></td>
                   <td><code>${conf.model || '-'}</code></td>
-                  <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : '<span style="color:var(--warning);">未设置</span>'}</td>
+                  <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
                     <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${name}')">✏️ 编辑</button>
                     <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${name}')">🗑️ 删除</button>

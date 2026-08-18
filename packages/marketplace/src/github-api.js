@@ -15,6 +15,29 @@ const MAX_RETRIES = 2;
 /** 重试间隔（毫秒） */
 const RETRY_DELAY = 2_000;
 
+/**
+ * GitHub 后备中转代理（国内网络访问 GitHub 不畅时自动切换）
+ * 格式：代理前缀 + 原始 URL（gh-proxy 风格）
+ */
+const GITHUB_PROXIES = [
+  'https://gh-proxy.com/',
+  'https://github.akams.cn/',
+];
+
+/**
+ * 将 GitHub 相关 URL 转换为代理地址（如 https://api.github.com/xxx → https://gh-proxy.com/https://api.github.com/xxx）
+ * @param {string} url - 原始 URL
+ * @returns {string[]} 原始 URL + 各代理 URL（去重）
+ */
+export function githubProxyUrls(url) {
+  const result = [url];
+  for (const proxy of GITHUB_PROXIES) {
+    const proxied = `${proxy}${url}`;
+    if (!result.includes(proxied)) result.push(proxied);
+  }
+  return result;
+}
+
 export class GitHubAPI {
   /**
    * @param {object} [options]
@@ -30,7 +53,8 @@ export class GitHubAPI {
   }
 
   /**
-   * 带超时和重试的 fetch 封装
+   * 带超时、重试与代理降级的 fetch 封装
+   * 直连 GitHub 失败（网络错误或 HTTP 4xx/5xx）时自动切换后备代理
    * @param {string} url - 请求 URL
    * @param {object} [options] - fetch 选项
    * @param {number} [attempt=1] - 当前重试次数
@@ -38,30 +62,44 @@ export class GitHubAPI {
    * @private
    */
   async _fetchWithRetry(url, options = {}, attempt = 1) {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: { ...this.headers, ...options.headers },
-      });
-      clearTimeout(timeoutId);
-      return response;
-    } catch (error) {
-      // 超时或网络错误时重试
-      if (error.name === 'AbortError' || error.type === 'system' || error.code === 'ERR_NETWORK') {
-        if (attempt <= MAX_RETRIES) {
-          await new Promise(r => setTimeout(r, RETRY_DELAY * attempt));
-          return this._fetchWithRetry(url, options, attempt + 1);
+    // 候选 URL：直连 + 各代理（仅对 GitHub 域名启用代理，npm registry 不代理）
+    const candidates = url.startsWith('https://api.github.com/') || url.startsWith('https://github.com/')
+      ? githubProxyUrls(url)
+      : [url];
+
+    // 依次尝试直连与代理
+    for (const candidate of candidates) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
+        const response = await fetch(candidate, {
+          ...options,
+          signal: controller.signal,
+          headers: { ...this.headers, ...options.headers },
+        });
+        clearTimeout(timeoutId);
+        // 2xx 直接返回；否则记录并继续尝试下一个候选
+        if (response.ok) return response;
+        // 4xx（如 404 不存在）无需再试代理，直接返回
+        if (response.status >= 400 && response.status < 500) return response;
+      } catch (error) {
+        // 超时或网络错误：继续尝试下一个候选（代理）
+        if (error.name === 'AbortError' || error.type === 'system' || error.code === 'ERR_NETWORK') {
+          continue;
         }
-        throw new DSHError(
-          DSHErrorCodes.NETWORK_ERROR,
-          `网络请求超时，已重试 ${MAX_RETRIES} 次，请检查网络连接`
-        );
+        throw error;
       }
-      throw error;
     }
+
+    // 全部候选失败：按原逻辑重试
+    if (attempt <= MAX_RETRIES) {
+      await new Promise(r => setTimeout(r, RETRY_DELAY * attempt));
+      return this._fetchWithRetry(url, options, attempt + 1);
+    }
+    throw new DSHError(
+      DSHErrorCodes.NETWORK_ERROR,
+      `网络请求失败（直连与代理均已尝试），请检查网络连接`
+    );
   }
 
   /**
