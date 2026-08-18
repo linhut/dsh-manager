@@ -45,11 +45,6 @@ export class PluginInstaller {
     if (parsed.type === 'github') {
       this._log(`获取 GitHub 仓库信息: ${parsed.owner}/${parsed.repo}`);
       pluginInfo = await this._getGitHubPluginInfo(parsed.owner, parsed.repo);
-      // 有 npm 包名则优先走 npm（更快），否则 git 安装
-      if (pluginInfo.npmPackage) {
-        this._log(`发现 npm 包: ${pluginInfo.npmPackage}，优先使用 npm 安装`);
-        return await this._installFromNpm(pluginInfo.npmPackage, profile, pluginInfo);
-      }
     }
 
     // 执行安装
@@ -188,13 +183,18 @@ export class PluginInstaller {
   async _installFromGitHub(owner, repo, profile, info) {
     this._log(`从 GitHub 安装: ${owner}/${repo}`);
 
-    // 检查是否有 npm 包名
+    // 有 npm 包名则优先走 npm（更快）；npm 失败自动降级为 git 安装
     if (info.npmPackage) {
-      this._log(`发现 npm 包: ${info.npmPackage}，通过 npm 安装`);
-      return await this._installFromNpm(info.npmPackage, profile, info);
+      this._log(`发现 npm 包: ${info.npmPackage}，优先通过 npm 安装`);
+      try {
+        return await this._installFromNpm(info.npmPackage, profile, info);
+      } catch (npmError) {
+        this._log(`npm 安装失败（${npmError.message}），降级为 GitHub git 安装`, 'warn');
+        // 继续走 git URL 安装
+      }
     }
 
-    // 没有 npm 包，尝试通过 git URL 安装
+    // git URL 安装
     const gitUrl = `https://github.com/${owner}/${repo}.git`;
     
     try {

@@ -4,7 +4,7 @@
  * 管理本地插件注册信息、缓存、搜索
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { GitHubAPI } from './github-api.js';
@@ -12,6 +12,8 @@ import { GitHubAPI } from './github-api.js';
 const DSH_HOME = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 const REGISTRY_PATH = () => join(DSH_HOME(), 'manager', 'plugins.json');
 const CACHE_PATH = () => join(DSH_HOME(), 'manager', 'marketplace-cache.json');
+/** 从 DSH profile patch 文件解析出的插件名缓存（避免重复扫描） */
+let profilePluginsCache = null;
 
 export class PluginRegistry {
   /**
@@ -260,18 +262,72 @@ export class PluginRegistry {
   }
 
   /**
-   * 获取本地已安装的插件列表
+   * 从 DSH 实际安装的 profile patch 文件解析插件（bundle 层安装的插件）
+   * DSH 插件安装后会写入 ~/.dsh/profiles/<profile>/cordis.patch.yml，
+   * 格式形如：- insert: / - id: xxx / name: '@scope/pkg'
+   * @returns {Array<object>}
+   */
+  _readProfilePlugins() {
+    if (profilePluginsCache) return profilePluginsCache;
+
+    const result = [];
+    const profilesDir = join(DSH_HOME(), 'profiles');
+    if (!existsSync(profilesDir)) { profilePluginsCache = result; return result; }
+
+    let profiles = [];
+    try { profiles = readdirSync(profilesDir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); } catch {}
+
+    for (const profile of profiles) {
+      const patchFile = join(profilesDir, profile, 'cordis.patch.yml');
+      if (!existsSync(patchFile)) continue;
+      try {
+        const content = readFileSync(patchFile, 'utf-8');
+        // 匹配 - id: xxx 或 name: '@scope/pkg' 形式的条目
+        for (const line of content.split(/\r?\n/)) {
+          const idMatch = line.match(/^\s*-\s*id:\s*(.+)$/);
+          if (idMatch) {
+            const id = idMatch[1].trim().replace(/^['"]|['"]$/g, '');
+            if (!id) continue;
+            result.push({
+              id,
+              name: id,
+              source: `dsh:${profile}`,
+              profile,
+              type: 'dsh',
+              installedAt: null,
+              description: '（DSH 已安装）',
+            });
+          }
+        }
+      } catch {}
+    }
+
+    profilePluginsCache = result;
+    return result;
+  }
+
+  /**
+   * 获取本地已安装的插件列表（合并本地注册表 + DSH 实际安装）
    * @returns {Array<object>}
    */
   getLocalPlugins() {
-    if (!existsSync(REGISTRY_PATH())) return [];
-    
-    try {
-      const data = readFileSync(REGISTRY_PATH(), 'utf-8');
-      return JSON.parse(data);
-    } catch {
-      return [];
+    let local = [];
+    if (existsSync(REGISTRY_PATH())) {
+      try {
+        local = JSON.parse(readFileSync(REGISTRY_PATH(), 'utf-8'));
+      } catch {}
     }
+
+    // 合并 DSH 实际安装的插件（去重：本地注册表优先）
+    const profilePlugins = this._readProfilePlugins();
+    const localIds = new Set(local.map(p => p.id));
+    for (const p of profilePlugins) {
+      if (!localIds.has(p.id)) {
+        local.push(p);
+        localIds.add(p.id);
+      }
+    }
+    return local;
   }
 
   /**
