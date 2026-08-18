@@ -807,14 +807,14 @@ async function renderPluginsPage() {
       <div class="card-body">
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
           <input class="input" id="pluginSource" placeholder="插件来源：github:owner/repo · npm:包名 · git:URL · file:本地路径" style="flex:1;min-width:220px;">
-          <button class="btn btn-sm btn-primary" onclick="installPluginSource()">⬇️ 安装</button>
+          <button class="btn btn-sm btn-primary" onclick="installPluginSource()" id="pluginSourceInstallBtn">⬇️ 安装</button>
           <button class="btn btn-sm btn-secondary" onclick="pickLocalPluginDir()">📁 选择本地目录</button>
           <button class="btn btn-sm btn-ghost" onclick="toggleBatchInstall()">📚 批量安装</button>
         </div>
         <div id="batchInstallBox" style="display:none;">
           <textarea class="input" id="batchSources" rows="3" placeholder="每行一个插件来源，如：&#10;github:linhut/gongwen-skill&#10;npm:@linxin666/dsh-web-ui-all"></textarea>
           <div style="margin-top:8px;">
-            <button class="btn btn-sm btn-primary" onclick="runBatchInstall()">🚀 开始批量安装</button>
+            <button class="btn btn-sm btn-primary" onclick="runBatchInstall()" id="batchRunBtn">🚀 开始批量安装</button>
           </div>
         </div>
         <p style="font-size:12px;color:var(--text-dim);margin-top:8px;">支持来源：<code>github:owner/repo</code> · <code>npm:包名</code> · <code>git:仓库URL</code> · <code>file:本地目录</code></p>
@@ -890,6 +890,7 @@ async function renderPluginsPage() {
             <div class="skeleton" style="height:120px;"></div>
             <div class="skeleton" style="height:120px;"></div>
           </div>
+          <div id="pluginInstallLog" style="display:none;margin-top:12px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
         </div>
       </div>
     </div>
@@ -1058,7 +1059,7 @@ function renderPluginCard(p) {
         <span style="font-size:11px;color:var(--text-dim);">🍴 ${p.forks}  ⚡ ${(p.stars || 0) + (p.forks || 0)} 活跃${updatedStr ? `  · 更新 ${updatedStr}` : ''}</span>
         <span style="display:flex;gap:6px;">
           <button class="btn btn-sm btn-ghost" onclick="event.stopPropagation();showPluginDetails('${p.fullName}')">👁 详情</button>
-          <button class="btn btn-sm ${isInstalled ? 'btn-secondary' : 'btn-primary'}" onclick="event.stopPropagation();installMarketPlugin('${p.fullName}')">
+          <button class="btn btn-sm ${isInstalled ? 'btn-secondary' : 'btn-primary'} plugin-install-btn" onclick="event.stopPropagation();installMarketPlugin('${p.fullName}')">
             ${isInstalled ? '✓ 已装' : '📥 安装'}
           </button>
         </span>
@@ -1233,23 +1234,55 @@ async function searchPlugins(query) {
   `;
 }
 
+// ====== 插件安装回显日志（市场/直装/批量安装实时输出） ======
+function appendPluginInstallLog(message, level = 'info') {
+  const log = document.getElementById('pluginInstallLog');
+  if (!log) return;
+  if (log.style.display === 'none') log.style.display = 'block';
+  const color = level === 'warn' ? 'var(--warning)' : level === 'error' ? 'var(--error)' : 'var(--text-muted)';
+  log.innerHTML += `<div style="color:${color};white-space:pre-wrap;">${String(message || '').replace(/</g, '&lt;')}</div>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearPluginInstallLog() {
+  const log = document.getElementById('pluginInstallLog');
+  if (log) { log.innerHTML = ''; log.style.display = 'none'; }
+}
+
+/** 市场卡片安装按钮进入 loading 态 */
+function setMarketInstallButtonsLoading(loading) {
+  document.querySelectorAll('.plugin-install-btn').forEach(b => {
+    b.disabled = loading;
+    b.textContent = loading ? '⏳ 安装中' : '📥 安装';
+  });
+}
+
 async function installMarketPlugin(fullName) {
   showToast(`正在安装 ${fullName}...`, 'info');
+  clearPluginInstallLog();
+  appendPluginInstallLog(`开始安装 ${fullName} ...`);
+  setMarketInstallButtonsLoading(true);
   // 订阅主进程推送的插件安装进度
   window.dshManager.removeAllListeners('plugin-install-progress');
   window.dshManager.onPluginInstallProgress((data) => {
-    if (data && data.message) showToast(data.message, 'info');
+    if (data && data.message) {
+      appendPluginInstallLog(data.message, data.level);
+      showToast(data.message, 'info');
+    }
   });
   try {
     // 按来源选择前缀：npm 包用 npm:，GitHub 仓库用 github:
     const p = (state.marketResults || []).find(x => x.fullName === fullName);
     const source = (p && p._source === 'npm') ? `npm:${fullName}` : `github:${fullName}`;
     const result = await window.dshManager.installPlugin(source);
+    appendPluginInstallLog(`✅ 插件 ${result.name} 安装成功！`, 'info');
     showToast(`插件 ${result.name} 安装成功！`, 'success');
     renderPluginsPage();
   } catch (err) {
+    appendPluginInstallLog(`❌ 安装失败: ${err.message}`, 'error');
     showToast('安装失败: ' + err.message, 'error');
   } finally {
+    setMarketInstallButtonsLoading(false);
     window.dshManager.removeAllListeners('plugin-install-progress');
   }
 }
@@ -1260,19 +1293,30 @@ async function installPluginSource() {
   const source = input?.value.trim();
   if (!source) { showToast('请输入插件来源', 'error'); return; }
   showToast(`正在安装 ${source}...`, 'info');
+  clearPluginInstallLog();
+  appendPluginInstallLog(`开始安装 ${source} ...`);
+  // 来源安装按钮 loading 态
+  const installBtn = document.getElementById('pluginSourceInstallBtn');
+  if (installBtn) { installBtn.disabled = true; installBtn.textContent = '⏳ 安装中...'; }
   // 订阅主进程推送的插件安装进度
   window.dshManager.removeAllListeners('plugin-install-progress');
   window.dshManager.onPluginInstallProgress((data) => {
-    if (data && data.message) showToast(data.message, 'info');
+    if (data && data.message) {
+      appendPluginInstallLog(data.message, data.level);
+      showToast(data.message, 'info');
+    }
   });
   try {
     const result = await window.dshManager.installPlugin(source);
+    appendPluginInstallLog(`✅ 插件 ${result.name} 安装成功！`, 'info');
     showToast(`插件 ${result.name} 安装成功！`, 'success');
     if (input) input.value = '';
     renderPluginsPage();
   } catch (err) {
+    appendPluginInstallLog(`❌ 安装失败: ${err.message}`, 'error');
     showToast('安装失败: ' + err.message, 'error');
   } finally {
+    if (installBtn) { installBtn.disabled = false; installBtn.textContent = '⬇️ 安装'; }
     window.dshManager.removeAllListeners('plugin-install-progress');
   }
 }
@@ -1303,18 +1347,36 @@ async function runBatchInstall() {
   if (sources.length === 0) { showToast('请输入至少一个插件来源', 'error'); return; }
 
   showToast(`正在批量安装 ${sources.length} 个插件...`, 'info');
+  clearPluginInstallLog();
+  appendPluginInstallLog(`开始批量安装 ${sources.length} 个插件 ...`);
+  // 批量安装按钮 loading 态
+  const runBtn = document.getElementById('batchRunBtn');
+  if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ 批量安装中...'; }
+  // 订阅主进程推送的批量安装进度（每条插件逐条回显）
+  window.dshManager.removeAllListeners('plugin-install-progress');
+  window.dshManager.onPluginInstallProgress((data) => {
+    if (data && data.message) {
+      appendPluginInstallLog(data.message, data.level);
+    }
+  });
   try {
     const results = await window.dshManager.batchInstallPlugins(sources);
     const ok = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success);
+    appendPluginInstallLog(`📊 批量安装完成：${ok}/${results.length} 成功${failed.length ? `，${failed.length} 失败` : ''}`, failed.length ? 'warn' : 'info');
     showToast(`批量安装完成：${ok}/${results.length} 成功${failed.length ? `，${failed.length} 失败` : ''}`, failed.length ? 'warning' : 'success');
     if (failed.length > 0) {
       const detail = failed.map(r => `${r.source}: ${r.error || '未知错误'}`).join('\n');
+      appendPluginInstallLog(`❌ 失败明细:\n${detail}`, 'error');
       alert(`以下插件安装失败：\n\n${detail}`);
     }
     renderPluginsPage();
   } catch (err) {
+    appendPluginInstallLog(`❌ 批量安装失败: ${err.message}`, 'error');
     showToast('批量安装失败: ' + err.message, 'error');
+  } finally {
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = '🚀 开始批量安装'; }
+    window.dshManager.removeAllListeners('plugin-install-progress');
   }
 }
 

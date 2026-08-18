@@ -325,7 +325,15 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   // ====== 批量安装 ======
   ipcMain.handle('marketplace:batch-install', async (_, sources = []) => {
     const { PluginManager } = await loadMarketplace();
-    const manager = new PluginManager();
+    const win = getMainWindow();
+    const manager = new PluginManager({
+      onProgress: (data) => {
+        // 将批量安装中每条插件的进度推送到渲染进程
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('plugin-install-progress', data);
+        }
+      },
+    });
     return await manager.batchInstall(sources);
   });
 
