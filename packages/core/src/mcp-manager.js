@@ -232,8 +232,13 @@ export class MCPServerManager {
       // 替换已有块
       newContent = rawContent.replace(existing.block, this._buildBlock(config));
     } else {
-      // 追加新块
-      newContent = rawContent.trimEnd() + '\n\n' + this._buildBlock(config) + '\n';
+      // 空 patch 文件（[] 占位）→ 替换占位为真实条目；否则在末尾追加新块
+      const placeholderMatch = rawContent.match(/^# dsh profile patch layer\n\[\s*\]/);
+      if (placeholderMatch) {
+        newContent = rawContent.replace(/\[\s*\]/, this._buildBlock(config));
+      } else {
+        newContent = rawContent.trimEnd() + '\n\n' + this._buildBlock(config) + '\n';
+      }
     }
 
     writeFileSync(this.patchFile, newContent, 'utf-8');

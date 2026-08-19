@@ -5,16 +5,21 @@
  * 功能：版本管理、插件管理、配置管理
  */
 
-import { app, BrowserWindow, ipcMain, shell, Menu, dialog, session, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, Menu, dialog, session, nativeTheme, globalShortcut } from 'electron';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { registerIpcHandlers } from './ipc-handlers.js';
+import { initDebugLog, writeLog, isDebugEnabled } from './debug-logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
+
+// 开发调试模式：环境变量 DSH_DEBUG=true 或 --debug 参数
+const isDebug = isDev || process.env.DSH_DEBUG === 'true' || process.argv.includes('--debug');
+initDebugLog(isDebug);
 
 let mainWindow = null;
 let dshWebView = null;
@@ -61,6 +66,18 @@ function createMainWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
+    // 调试模式自动打开 DevTools（可看到 console 输出）
+    if (isDebug) {
+      writeLog('debug', '调试模式已启用，自动打开 DevTools');
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    }
+  });
+
+  // F12 快捷键打开 DevTools
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12' && input.type === 'keyDown') {
+      mainWindow.webContents.toggleDevTools();
+    }
   });
 
   // 外部链接用浏览器打开
@@ -122,10 +139,62 @@ function createAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// ====== 主进程控制台日志重定向到调试日志文件 ======
+const origConsoleLog = console.log;
+const origConsoleWarn = console.warn;
+const origConsoleError = console.error;
+console.log = function(...args) {
+  writeLog('info', args.map(a => typeof a === 'object' ? (a?.stack || a?.message || JSON.stringify(a)) : String(a)).join(' '));
+  origConsoleLog.apply(console, args);
+};
+console.warn = function(...args) {
+  writeLog('warn', args.map(a => typeof a === 'object' ? (a?.stack || a?.message || JSON.stringify(a)) : String(a)).join(' '));
+  origConsoleWarn.apply(console, args);
+};
+console.error = function(...args) {
+  writeLog('error', args.map(a => typeof a === 'object' ? (a?.stack || a?.message || JSON.stringify(a)) : String(a)).join(' '));
+  origConsoleError.apply(console, args);
+};
+writeLog('info', '主进程 console 重定向到调试日志文件完成');
+writeLog('info', '启动参数: ' + process.argv.slice(1).join(' '));
+writeLog('info', '环境变量 DSH_DEBUG: ' + (process.env.DSH_DEBUG || '未设置'));
+
+// ====== 全局异常处理 ======
+process.on('uncaughtException', (error) => {
+  writeLog('error', '主进程未捕获异常: ' + (error?.stack || error?.message || error));
+});
+process.on('unhandledRejection', (reason) => {
+  writeLog('error', '主进程未处理 Promise 拒绝: ' + (reason?.stack || reason?.message || reason));
+});
+app.on('web-contents-created', (event, contents) => {
+  contents.on('console-message', (event, level, message, line, sourceId) => {
+    const levelNames = ['verbose', 'info', 'warning', 'error'];
+    writeLog('debug', `[渲染进程] ${levelNames[level] || level}: ${message} (源: ${sourceId}:${line})`);
+  });
+});
+
 // ====== 应用生命周期 ======
 
 app.whenReady().then(async () => {
   createAppMenu();
+  // 全局 IPC 日志：拦截 ipcMain.handle 包装所有处理器
+  const origHandle = ipcMain.handle.bind(ipcMain);
+  ipcMain.handle = (channel, handler) => {
+    return origHandle(channel, async (event, ...args) => {
+      const start = Date.now();
+      try {
+        const result = await handler(event, ...args);
+        const elapsed = Date.now() - start;
+        writeLog('debug', `[IPC] ${channel} (${elapsed}ms) OK`);
+        return result;
+      } catch (error) {
+        const elapsed = Date.now() - start;
+        writeLog('error', `[IPC] ${channel} (${elapsed}ms) ERROR: ${error?.message || error}`);
+        throw error;
+      }
+    });
+  };
+  // 注册所有 IPC 处理器（会被上面的包装自动拦截）
   registerIpcHandlers(ipcMain, () => mainWindow);
   createMainWindow();
 

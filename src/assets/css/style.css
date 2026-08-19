@@ -471,10 +471,20 @@ body, .sidebar, .main-content, .card, .titlebar, .nav-item, .btn, .input, .badge
 
 /* ====== Webview ====== */
 .dash-toolbar {
+  display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 4px;
-  margin-bottom: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+.dash-toolbar:hover {
+  border-color: var(--border-light);
+  box-shadow: var(--shadow-lg);
 }
 .webview-container {
   display: flex;

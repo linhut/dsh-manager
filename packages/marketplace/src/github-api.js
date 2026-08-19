@@ -17,15 +17,26 @@ const RETRY_DELAY = 2_000;
 
 /**
  * GitHub 后备中转代理（国内网络访问 GitHub 不畅时自动切换）
- * 格式：代理前缀 + 原始 URL（gh-proxy 风格）
+ * 
+ * 用法：代理前缀 + 原始 URL
+ * 例如 https://gh-proxy.com/https://github.com/owner/repo.git
+ * 
+ * 注意：
+ * - gh-proxy.com: 真正的代理服务，支持 API/raw/git clone/release 下载
+ * - github.akams.cn: 是「GitHub Proxy」项目的前端网站，不是代理端点
+ *   保留它作为手动下载选项，但自动切换时不使用
  */
 const GITHUB_PROXIES = [
   'https://gh-proxy.com/',
-  'https://github.akams.cn/',
+  // 如需添加更多代理，确保测试过 API/raw/git clone 都可用
 ];
 
 /**
- * 将 GitHub 相关 URL 转换为代理地址（如 https://api.github.com/xxx → https://gh-proxy.com/https://api.github.com/xxx）
+ * 将 GitHub 相关 URL 转换为代理地址
+ * 
+ * 返回 [原始URL, 代理1, 代理2, ...] 的数组，用于并行竞速。
+ * 代理 URL 格式：https://gh-proxy.com/https://github.com/...
+ * 
  * @param {string} url - 原始 URL
  * @returns {string[]} 原始 URL + 各代理 URL（去重）
  */
@@ -36,6 +47,19 @@ export function githubProxyUrls(url) {
     if (!result.includes(proxied)) result.push(proxied);
   }
   return result;
+}
+
+/**
+ * 获取 GitHub Proxy 网站的访问链接（用于手动下载加速）
+ * 用户可以在该网站粘贴 GitHub 链接，自动获取可用加速节点
+ * @param {string} [githubUrl] - 可选的 GitHub 原始 URL，预填到搜索框
+ * @returns {string} GitHub Proxy 网站 URL
+ */
+export function getGitHubProxySiteUrl(githubUrl) {
+  if (githubUrl) {
+    return 'https://github.akams.cn/?url=' + encodeURIComponent(githubUrl);
+  }
+  return 'https://github.akams.cn/';
 }
 
 export class GitHubAPI {
@@ -62,43 +86,82 @@ export class GitHubAPI {
    * @private
    */
   async _fetchWithRetry(url, options = {}, attempt = 1) {
-    // 候选 URL：直连 + 各代理（仅对 GitHub 域名启用代理，npm registry 不代理）
-    const candidates = url.startsWith('https://api.github.com/') || url.startsWith('https://github.com/')
-      ? githubProxyUrls(url)
-      : [url];
+    // 候选 URL
+    const isGithub = url.startsWith('https://api.github.com/') || url.startsWith('https://github.com/');
+    // 对 npm registry 也启用代理镜像
+    const isNpmRegistry = url.startsWith('https://registry.npmjs.org/');
+    let candidates = [url];
+    if (isGithub) {
+      candidates = githubProxyUrls(url);
+    } else if (isNpmRegistry) {
+      // 添加 npm 镜像（国内加速）
+      candidates = [
+        url,
+        url.replace('https://registry.npmjs.org/', 'https://registry.npmmirror.com/'),
+        ...GITHUB_PROXIES.map(p => p + url),
+      ];
+    }
 
-    // 依次尝试直连与代理
-    for (const candidate of candidates) {
-      try {
+    // 并行竞速：同时尝试所有候选，使用最快成功的响应
+    // 记录每个候选的耗时，便于调试
+    let firstError = null;
+    const results = await Promise.allSettled(
+      candidates.map(async (candidate) => {
+        const startTime = Date.now();
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
-        const response = await fetch(candidate, {
-          ...options,
-          signal: controller.signal,
-          headers: { ...this.headers, ...options.headers },
-        });
-        clearTimeout(timeoutId);
-        // 2xx 直接返回；否则记录并继续尝试下一个候选
-        if (response.ok) return response;
-        // 4xx（如 404 不存在）无需再试代理，直接返回
-        if (response.status >= 400 && response.status < 500) return response;
-      } catch (error) {
-        // 超时或网络错误：继续尝试下一个候选（代理）
-        if (error.name === 'AbortError' || error.type === 'system' || error.code === 'ERR_NETWORK') {
-          continue;
+        try {
+          const response = await fetch(candidate, {
+            ...options,
+            signal: controller.signal,
+            headers: { ...this.headers, ...options.headers },
+          });
+          clearTimeout(timeoutId);
+          const elapsed = Date.now() - startTime;
+          // 4xx 错误直接返回（无需再试其他）
+          if (response.ok || (response.status >= 400 && response.status < 500)) {
+            return { response, candidate, elapsed };
+          }
+          // 5xx 错误继续等更好的候选
+          return { error: new Error(`HTTP ${response.status}`), candidate, elapsed };
+        } catch (error) {
+          clearTimeout(timeoutId);
+          const elapsed = Date.now() - startTime;
+          return { error, candidate, elapsed };
         }
-        throw error;
+      })
+    );
+
+    // 优先选成功且最快的
+    const okResponses = results
+      .filter(r => r.status === 'fulfilled' && r.value.response && r.value.response.ok)
+      .sort((a, b) => a.value.elapsed - b.value.elapsed);
+    if (okResponses.length > 0) {
+      return okResponses[0].value.response;
+    }
+
+    // 其次选 4xx 响应（表示资源不存在，无需再试）
+    const clientErrors = results
+      .filter(r => r.status === 'fulfilled' && r.value.response && r.value.response.status >= 400 && r.value.response.status < 500);
+    if (clientErrors.length > 0) {
+      return clientErrors[0].value.response;
+    }
+
+    // 全部失败：记录最后一个错误
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.error) {
+        firstError = r.value.error;
       }
     }
 
-    // 全部候选失败：按原逻辑重试
+    // 重试
     if (attempt <= MAX_RETRIES) {
       await new Promise(r => setTimeout(r, RETRY_DELAY * attempt));
       return this._fetchWithRetry(url, options, attempt + 1);
     }
     throw new DSHError(
       DSHErrorCodes.NETWORK_ERROR,
-      `网络请求失败（直连与代理均已尝试），请检查网络连接`
+      `网络请求失败（直连与代理均已尝试）: ${firstError?.message || '未知错误'}`
     );
   }
 
@@ -285,7 +348,7 @@ export class GitHubAPI {
     const url = `${GITHUB_API}/repos/${owner}/${repo}`;
 
     try {
-      const response = await fetch(url, { headers: this.headers });
+      const response = await this._fetchWithRetry(url, { headers: this.headers });
       
       if (!response.ok) {
         throw new DSHError(
@@ -348,7 +411,7 @@ export class GitHubAPI {
     const url = `${GITHUB_API}/repos/${owner}/${repo}/releases?per_page=${limit}`;
 
     try {
-      const response = await fetch(url, { headers: this.headers });
+      const response = await this._fetchWithRetry(url, { headers: this.headers });
       
       if (!response.ok) return [];
 
@@ -376,7 +439,7 @@ export class GitHubAPI {
     const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/package.json?ref=${branch}`;
 
     try {
-      const response = await fetch(url, { headers: this.headers });
+      const response = await this._fetchWithRetry(url, { headers: this.headers });
       
       if (!response.ok) return null;
 

@@ -231,14 +231,24 @@ export class DSHInstaller {
 
     // 先卸载旧版本
     await this.uninstall();
-    // 安装指定版本
-    const result = await this.install(version);
-
-    return {
-      success: result.success,
-      oldVersion,
-      newVersion: result.version,
-    };
+    // 安装指定版本（失败时回滚到旧版本）
+    try {
+      const result = await this.install(version);
+      return {
+        success: result.success,
+        oldVersion,
+        newVersion: result.version,
+      };
+    } catch (error) {
+      this._log(`版本切换失败，尝试恢复旧版本 ${oldVersion}...`, 'warn');
+      try {
+        await this.install(oldVersion);
+        this._log(`已恢复旧版本 ${oldVersion}`, 'info');
+      } catch (restoreError) {
+        this._log(`恢复旧版本失败: ${restoreError.message}。DSH 当前可能已卸载。`, 'error');
+      }
+      throw error;
+    }
   }
 
   /**
