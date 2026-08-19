@@ -979,7 +979,8 @@ async function renderPluginsPage() {
 
   let localPlugins = [];
   try {
-    localPlugins = await window.dshManager.getLocalPlugins();
+    // 强制刷新：读取 DSH profile 中实际安装的插件（版本/描述/来源）
+    localPlugins = await window.dshManager.getLocalPlugins(true);
   } catch {}
 
   el.innerHTML = `

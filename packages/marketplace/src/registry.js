@@ -313,6 +313,48 @@ export class PluginRegistry {
    * 格式为 dependencies 与 dsh.profile.bundles。
    * @returns {Array<object>}
    */
+  /**
+   * 读取单个插件在 profile 下的真实元数据（版本/描述），来源为 node_modules/<name>/package.json
+   * @param {string} profile - profile 名称
+   * @param {string} name - 插件名
+   * @param {string} depSpec - package.json dependencies 中的原始 spec（用于判断来源）
+   * @returns {object} 插件条目
+   * @private
+   */
+  _buildProfilePluginEntry(profile, name, depSpec = '') {
+    let version = null;
+    let description = '';
+    let type = 'dsh';
+
+    // 从实际安装副本读取版本与描述
+    const nmPkg = join(DSH_HOME(), 'profiles', profile, 'node_modules', name, 'package.json');
+    try {
+      if (existsSync(nmPkg)) {
+        const pj = JSON.parse(readFileSync(nmPkg, 'utf-8'));
+        version = pj.version || null;
+        description = pj.description || '';
+      }
+    } catch {}
+
+    // 来源判断：dependencies 的原始 spec 以 github:/git: 开头则为 GitHub 安装
+    const isGitSource = /^(github:|git:|https?:\/\/github\.com\/)/.test(depSpec);
+    const source = isGitSource
+      ? (depSpec.includes('#') ? depSpec.split('#')[0] : depSpec)
+      : `npm:${name}`;
+    if (isGitSource) type = 'github';
+
+    return {
+      id: name,
+      name,
+      version,
+      source,
+      profile,
+      type,
+      installedAt: null,
+      description: description || '（DSH 已安装）',
+    };
+  }
+
   _readProfilePlugins(forceRefresh = false) {
     const now = Date.now();
     if (profilePluginsCache && !forceRefresh && (now - profilePluginsCacheTime) < PROFILE_CACHE_TTL) {
@@ -334,35 +376,20 @@ export class PluginRegistry {
         const deps = pkg.dependencies || {};
         const bundles = pkg.dsh?.profile?.bundles || [];
 
-        // 收集所有 bundles 名称
+        // 收集所有 bundles 名称（按 bundles 顺序，保留依赖 spec 判断来源）
         for (const bundle of bundles) {
           if (bundle.startsWith('@deepseek-ai/dsh-base') || bundle.startsWith('@deepseek-ai/dsh-web-app')) continue;
-          result.push({
-            id: bundle,
-            name: bundle,
-            source: `npm:${bundle}`,
-            profile,
-            type: 'dsh',
-            installedAt: null,
-            description: '（DSH 已安装）',
-          });
+          const depSpec = deps[bundle] || '';
+          result.push(this._buildProfilePluginEntry(profile, bundle, depSpec));
         }
 
         // 收集所有 dependencies（去重）
-        for (const [name, _ver] of Object.entries(deps)) {
+        for (const [name, depSpec] of Object.entries(deps)) {
           // 排除 DSH 核心包
           if (name.startsWith('@deepseek-ai/dsh')) continue;
           // 排除已在 bundles 中的
           if (bundles.includes(name)) continue;
-          result.push({
-            id: name,
-            name,
-            source: `npm:${name}`,
-            profile,
-            type: 'dsh',
-            installedAt: null,
-            description: '（DSH 已安装）',
-          });
+          result.push(this._buildProfilePluginEntry(profile, name, depSpec));
         }
       } catch {}
     }
