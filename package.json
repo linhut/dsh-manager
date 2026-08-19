@@ -41,7 +41,8 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "artifactName": "DSH-Manager-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -61,7 +62,8 @@
         }
       ],
       "icon": "build/icon.png",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "artifactName": "DSH-Manager-${version}-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -73,7 +75,8 @@
         }
       ],
       "icon": "build/icon.png",
-      "category": "Development"
+      "category": "Development",
+      "artifactName": "DSH-Manager-${version}.${ext}"
     },
     "extraResources": [
       {

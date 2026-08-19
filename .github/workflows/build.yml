@@ -121,14 +121,14 @@ jobs:
             下载适用于你平台的安装包：
 
             ### Windows
-            - `DSH.Manager.Setup.${{ github.ref_name }}.exe` - Windows NSIS 安装程序
+            - `DSH-Manager-Setup-${{ github.ref_name }}.exe` - Windows NSIS 安装程序
 
             ### macOS
-            - `DSH.Manager-${{ github.ref_name }}.dmg` - macOS 磁盘映像（Intel）
-            - `DSH.Manager-${{ github.ref_name }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
+            - `DSH-Manager-${{ github.ref_name }}-x64.dmg` - macOS 磁盘映像（Intel）
+            - `DSH-Manager-${{ github.ref_name }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
             ### Linux
-            - `DSH.Manager-${{ github.ref_name }}.AppImage` - Linux AppImage
+            - `DSH-Manager-${{ github.ref_name }}.AppImage` - Linux AppImage
 
             ---
             ### 安装说明
