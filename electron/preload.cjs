@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   disablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:disable-plugin', pluginId),
   batchInstallPlugins: (sources) => ipcRenderer.invoke('marketplace:batch-install', sources),
   pickPluginDir: () => ipcRenderer.invoke('marketplace:pick-plugin-dir'),
+  selectSkillDirectory: () => ipcRenderer.invoke('skills:pick-dir'),
 
   // ====== 配置管理 ======
   getConfig: (key) => ipcRenderer.invoke('config:get', key),

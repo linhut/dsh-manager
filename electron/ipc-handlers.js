@@ -450,6 +450,17 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return result.filePaths[0];
   });
 
+  // 技能管理：选择本地技能目录
+  ipcMain.handle('skills:pick-dir', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) || null;
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择技能目录',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+    return { canceled: false, path: result.filePaths[0] };
+  });
+
   ipcMain.handle('marketplace:enable-plugin', async (_, pluginId) => {
     const { PluginManager } = await loadMarketplace();
     const manager = new PluginManager();
