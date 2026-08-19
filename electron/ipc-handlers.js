@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * DSH Manager - IPC 通信处理
  * 
  * 处理渲染进程的请求，调用核心逻辑
@@ -44,6 +50,9 @@ async function loadMarketplace() {
  * 注册所有 IPC 处理器
  */
 export function registerIpcHandlers(ipcMain, getMainWindow) {
+  // 跟踪最后一次启动的实际端口（用于 stop 和诊断）
+  let lastActivePort = 3080;
+
   // ====== 窗口控制 ======
   ipcMain.on('window-minimize', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
@@ -130,7 +139,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   // ====== 进程管理 ======
   ipcMain.handle('dsh:process-info', async () => {
     const { getDSHProcessInfo } = await loadCore();
-    return await getDSHProcessInfo();
+    return await getDSHProcessInfo(lastActivePort);
   });
 
   // ====== Profile 管理 ======
@@ -173,45 +182,97 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
 
       // 直接启动 node + CLI（绕过 .cmd 包装，避免 Windows 弹窗）
-      const isWindows = process.platform === 'win32';
-      // 低配置运行配置：便携版 Node PATH 注入 + 低内存参数 + 自定义端口
-      const { buildRuntimeEnv, getRuntimeConfig } = await loadCore();
+      // 关键修复：用 detached: true（所有平台）确保子进程脱离父进程树，
+      // 不会被父进程（终端/任务计划/管理器）退出时回收杀死。
+      // 旧版本 detached: !isWindows 导致 Windows 上进程挂靠在父进程树中。
+      const { buildRuntimeEnv, getRuntimeConfig, findAvailablePort, testDSHHealth } = await loadCore();
       const [{ env }, rt] = await Promise.all([buildRuntimeEnv(), getRuntimeConfig()]);
+      const preferredPort = rt.port && rt.port > 0 ? rt.port : 3080;
+
+      // 端口自动检测：首选端口若被占用，自动切换到随机空闲端口
+      const portResult = await findAvailablePort(preferredPort);
+      const actualPort = portResult.port;
+      lastActivePort = actualPort; // 记录本次实际端口，供 stop/diagnose 使用
+
+      // 构建启动参数
       const startArgs = ['web'];
-      if (rt.port && rt.port !== 3080) startArgs.push('--port', String(rt.port));
+      if (actualPort !== 3080) startArgs.push('--port', String(actualPort));
       const nodeEnv = { ...env, NO_COLOR: '1' };
+      if (rt.retryCount && rt.retryCount > 0) {
+        nodeEnv.DSH_AGENT_MAX_RETRIES = String(rt.retryCount);
+      }
       if (rt.lowMemory) {
         nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
       }
       const child = execa('node', [cliPath, ...startArgs], {
-        detached: !isWindows,          // Windows 上 detached 会让子进程拥有自己的控制台窗口
-        windowsHide: isWindows,        // Windows 上隐藏控制台窗口（CREATE_NO_WINDOW）
+        detached: true,                // 所有平台脱离父进程树，防止被回收
+        windowsHide: true,             // Windows 隐藏控制台窗口（CREATE_NO_WINDOW）
         stdio: ['ignore', 'pipe', 'pipe'],
         env: nodeEnv,
         reject: false,                 // 不抛异常，由下方统一处理失败
       });
       // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
       child.nodeChildProcess?.unref();
-      child.then(result => {
+      child.then(async result => {
         // 进程已退出（成功启动后退出或启动即失败）。短暂存活期内的非零退出视为启动失败
         if (result.exitCode !== 0 && result.failed) {
           const stderr = (result.stderr || '').toString().trim();
           writeLog('error', 'DSH 启动失败: exit=' + result.exitCode + (stderr ? ' stderr: ' + stderr.slice(0, 2000) : ''));
+          // 自动诊断是否有无效插件导致启动失败（如 gongwen-skill "invalid plugin"）
+          // 从 stderr 中提取失效插件 ID（更可靠：直接匹配运行时报错信息）
+          let invalidPlugins = [];
+          try {
+            const { PluginRegistry } = await loadMarketplace();
+            const registry = new PluginRegistry();
+            // 传入 stderr 让诊断提取运行时报错的插件 ID
+            const diag = registry.diagnoseInvalidPlugins('web', stderr);
+            invalidPlugins = diag.invalid || [];
+          } catch (diagErr) {
+            writeLog('error', '启动失败后插件诊断异常: ' + (diagErr?.message || diagErr));
+          }
+          // 兜底：如果诊断未找到，直接从 stderr 解析 failing plugin ID
+          if (invalidPlugins.length === 0 && stderr) {
+            const re = /failed to apply loader entry [^(]+\(([^)]+)\)/g;
+            let m;
+            while ((m = re.exec(stderr)) !== null) {
+              const id = m[1].trim();
+              if (id && !id.startsWith('@deepseek-ai/')) {
+                invalidPlugins.push({ id, reason: '启动时加载失败（stderr 指示）' });
+              }
+            }
+          }
           const win = getMainWindow();
           if (win && !win.isDestroyed()) {
             win.webContents.send('dsh:start-error', {
               exitCode: result.exitCode,
               stderr: stderr.slice(0, 2000),
+              port: actualPort,
+              invalidPlugins,
             });
           }
         } else {
-          writeLog('info', 'DSH 进程已退出: exit=' + result.exitCode);
+          writeLog('info', 'DSH 进程已退出: exit=' + result.exitCode + ' port=' + actualPort);
         }
       }).catch(err => {
         // reject:false 下极少走到这里，兜底记录
         writeLog('error', 'DSH 启动监控异常: ' + err.message);
       });
-      return { success: true, message: 'DSH 启动命令已发送' };
+      // 短暂等待后检查 DSH 是否成功启动（最多 10 秒）
+      let health = null;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        health = await testDSHHealth(actualPort);
+        if (health.reachable) break;
+      }
+      return {
+        success: true,
+        message: 'DSH 启动命令已发送',
+        port: actualPort,
+        portChanged: portResult.used,
+        preferredPort: preferredPort,
+        reachable: health?.reachable || false,
+        webUrl: 'http://127.0.0.1:' + actualPort,
+      };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -234,11 +295,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
         }
         if (cliPath && existsSync(cliPath)) {
-          const isWindows = process.platform === 'win32';
           const result = await execa('node', [cliPath, 'stop'], {
             reject: false,
             timeout: 10000,
-            windowsHide: isWindows,
+            windowsHide: true,
           });
           if (result.exitCode === 0) {
             return { success: true, message: result.stdout || '已停止' };
@@ -247,17 +307,134 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
       // dsh stop 命令不可用时，降级为按端口结束进程（Windows taskkill / Unix kill）
       const { stopProcessByPort } = await loadCore();
-      const fallback = await stopProcessByPort();
-      return { success: fallback.success, message: fallback.message, fallback: true };
+      const fallback = await stopProcessByPort(lastActivePort);
+      return { success: fallback.success, message: fallback.message, fallback: true, port: lastActivePort };
     } catch (error) {
       // CLI 异常也尝试端口降级
       try {
         const { stopProcessByPort } = await loadCore();
-        const fallback = await stopProcessByPort();
-        return { success: fallback.success, message: fallback.message, fallback: true };
+        const fallback = await stopProcessByPort(lastActivePort);
+        return { success: fallback.success, message: fallback.message, fallback: true, port: lastActivePort };
       } catch {
         return { success: false, error: error.message };
       }
+    }
+  });
+
+  // ====== DSH 服务诊断与端口管理 ======
+  ipcMain.handle('dsh:diagnose', async (_, port) => {
+    const { diagnoseDSHProcess } = await loadCore();
+    const targetPort = Number(port) || lastActivePort || 3080;
+    return await diagnoseDSHProcess(targetPort);
+  });
+
+  ipcMain.handle('dsh:check-port', async (_, port) => {
+    const { isPortFree, findAvailablePort } = await loadCore();
+    const targetPort = Number(port) || (lastActivePort !== 3080 ? lastActivePort : 3080);
+    const free = isPortFree(targetPort);
+    const avail = await findAvailablePort(targetPort);
+    return {
+      port: targetPort,
+      free: await free,
+      available: avail.port,
+      wouldUse: avail.port,
+      note: avail.used
+        ? '端口 ' + targetPort + ' 被占用，启动时将自动切换到 ' + avail.port
+        : '端口 ' + targetPort + ' 空闲，可直接使用',
+    };
+  });
+
+  ipcMain.handle('dsh:get-actual-port', async () => {
+    return { port: lastActivePort, defaultPort: 3080 };
+  });
+
+  // 一键修复无效插件并重启 DSH（解决 gongwen-skill "invalid plugin" 等启动失败）
+  ipcMain.handle('dsh:fix-and-restart', async () => {
+    try {
+      // ① 修复无效插件
+      const { PluginRegistry } = await loadMarketplace();
+      const registry = new PluginRegistry();
+      const fixResult = await registry.fixInvalidPlugins('web');
+
+      // ② 重新触发启动（复用 dsh:start 逻辑）
+      const { execa } = await import('execa');
+      const { DSHUtils, findAvailablePort, testDSHHealth, buildRuntimeEnv, getRuntimeConfig } = await loadCore();
+      const dshPkgPath = await DSHUtils.getDSHPath();
+      if (!dshPkgPath) {
+        return { success: false, error: 'DSH 未安装，请先安装 DSH' };
+      }
+      const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
+      const binEntry = pkgJson.bin;
+      let cliPath;
+      if (typeof binEntry === 'string') {
+        cliPath = join(dshPkgPath, binEntry);
+      } else if (binEntry && typeof binEntry === 'object') {
+        cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
+      }
+      if (!cliPath || !existsSync(cliPath)) {
+        return { success: false, error: '无法定位 DSH CLI 入口文件: ' + (cliPath || '未找到') };
+      }
+      const [{ env }, rt] = await Promise.all([buildRuntimeEnv(), getRuntimeConfig()]);
+      const preferredPort = rt.port && rt.port > 0 ? rt.port : 3080;
+      const portResult = await findAvailablePort(preferredPort);
+      const actualPort = portResult.port;
+      lastActivePort = actualPort;
+
+      const startArgs = ['web'];
+      if (actualPort !== 3080) startArgs.push('--port', String(actualPort));
+      const nodeEnv = { ...env, NO_COLOR: '1' };
+      if (rt.retryCount && rt.retryCount > 0) {
+        nodeEnv.DSH_AGENT_MAX_RETRIES = String(rt.retryCount);
+      }
+      if (rt.lowMemory) {
+        nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
+      }
+      const child = execa('node', [cliPath, ...startArgs], {
+        detached: true,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: nodeEnv,
+        reject: false,
+      });
+      child.nodeChildProcess?.unref();
+      child.then(async result => {
+        if (result.exitCode !== 0 && result.failed) {
+          const stderr = (result.stderr || '').toString().trim();
+          writeLog('error', '修复后 DSH 重启仍失败: exit=' + result.exitCode + (stderr ? ' stderr: ' + stderr.slice(0, 2000) : ''));
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('dsh:start-error', {
+              exitCode: result.exitCode,
+              stderr: stderr.slice(0, 2000),
+              port: actualPort,
+              invalidPlugins: [],
+              afterFix: true,
+            });
+          }
+        } else {
+          writeLog('info', '修复后 DSH 进程已退出: exit=' + result.exitCode + ' port=' + actualPort);
+        }
+      }).catch(err => {
+        writeLog('error', '修复后 DSH 启动监控异常: ' + err.message);
+      });
+
+      // 等待 HTTP 就绪
+      let health = null;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(res => setTimeout(res, 1000));
+        health = await testDSHHealth(actualPort);
+        if (health.reachable) break;
+      }
+      return {
+        success: true,
+        message: '无效插件已修复，DSH 重新启动',
+        fixResult,
+        port: actualPort,
+        webUrl: 'http://127.0.0.1:' + actualPort,
+        reachable: health?.reachable || false,
+      };
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   });
 
@@ -705,6 +882,101 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return mgr.stats();
   });
 
+  // ====== 总提示词管理 (Master Prompts) ======
+  ipcMain.handle('prompts:list', async (_, filter) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.list(filter || {});
+  });
+
+  ipcMain.handle('prompts:get', async (_, id) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.get(id);
+  });
+
+  ipcMain.handle('prompts:create', async (_, input) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.create(input);
+  });
+
+  ipcMain.handle('prompts:update', async (_, id, patch) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.update(id, patch);
+  });
+
+  ipcMain.handle('prompts:delete', async (_, id) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.delete(id);
+  });
+
+  ipcMain.handle('prompts:toggle', async (_, id, enabled) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.toggle(id, enabled);
+  });
+
+  ipcMain.handle('prompts:render', async (_, options) => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.render(options || {});
+  });
+
+  ipcMain.handle('prompts:stats', async () => {
+    const { MasterPromptManager } = await loadCore();
+    const mgr = new MasterPromptManager();
+    return mgr.stats();
+  });
+
+  // ====== GitHub Skill 搜索（可搜索 skill 项目仓库） ======
+  ipcMain.handle('skills:search-github', async (_, query, page = 1) => {
+    try {
+      const q = (query || '').trim();
+      if (!q) return { success: false, error: '请输入搜索关键词', items: [] };
+      // GitHub Search API：搜索仓库（skills 相关关键词组合）
+      const queries = [
+        `${q} skill in:name,description,readme sort:stars-desc`,
+        `dsh-skill OR agent-skill OR claude-skill ${q} sort:stars-desc`,
+      ];
+      const results = [];
+      const seen = new Set();
+      for (const searchQ of queries) {
+        try {
+          const url = 'https://api.github.com/search/repositories?q=' + encodeURIComponent(searchQ) + '&per_page=30&page=' + page;
+          const resp = await fetch(url, {
+            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager' },
+            signal: AbortSignal.timeout(15000),
+          });
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          for (const repo of (data.items || [])) {
+            const fullName = repo.full_name || '';
+            if (seen.has(fullName)) continue;
+            seen.add(fullName);
+            results.push({
+              fullName,
+              name: repo.name,
+              description: repo.description || '',
+              stars: repo.stargazers_count || 0,
+              forks: repo.forks_count || 0,
+              updatedAt: repo.updated_at || '',
+              htmlUrl: repo.html_url || '',
+              topics: repo.topics || [],
+              license: repo.license?.spdx_id || '',
+              defaultBranch: repo.default_branch || 'main',
+            });
+          }
+        } catch {}
+      }
+      return { success: true, items: results, count: results.length };
+    } catch (error) {
+      return { success: false, error: error.message, items: [] };
+    }
+  });
+
   // ====== 系统 ======
   ipcMain.handle('shell:open-external', async (_, url) => {
     return shell.openExternal(url);
@@ -717,10 +989,21 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       );
       return pkg.version;
     } catch {
-      return '1.2.0';
+      return '1.3.3';
     }
   });
 
+
+  // ====== 剪贴板 ======
+  ipcMain.handle('app:copy-to-clipboard', async (_, text) => {
+    try {
+      const { clipboard } = require('electron');
+      clipboard.writeText(text);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  }),
   ipcMain.handle('app:check-pnpm', async () => {
     const { checkPnpm, getPnpmInstallGuide } = await loadCore();
     const result = await checkPnpm();
@@ -1013,5 +1296,40 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
     writeLog('error', '[更新检查] 全部失败: ' + lastError);
     return { hasUpdate: false, currentVersion, latestVersion: null, error: lastError };
+  });
+
+  // ====== 依赖完整性检查与修复 ======
+  ipcMain.handle('deps:check-integrity', async (_, profile, options) => {
+    const { checkProfileIntegrity } = await loadCore();
+    const result = await checkProfileIntegrity(profile || 'web', options || {});
+    return result;
+  });
+
+  ipcMain.handle('deps:repair', async (_, profile, options) => {
+    const { repairProfileFromGlobal } = await loadCore();
+    const result = await repairProfileFromGlobal(profile || 'web', options || {});
+    return result;
+  });
+
+  ipcMain.handle('deps:repair-all', async (_, options) => {
+    const { repairAllProfiles } = await loadCore();
+    const result = await repairAllProfiles(options || {});
+    return result;
+  });
+
+  ipcMain.handle('deps:health', async (_, profile) => {
+    const { getDependencyHealth } = await loadCore();
+    const result = await getDependencyHealth(profile || 'web');
+    return result;
+  });
+
+  ipcMain.handle('deps:classify', async (_, name) => {
+    const { isSystemComponent, isExternalPlugin, classifyPackage } = await loadCore();
+    return {
+      name,
+      system: isSystemComponent(name),
+      external: isExternalPlugin(name),
+      category: classifyPackage(name),
+    };
   });
 }

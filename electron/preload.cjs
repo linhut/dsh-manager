@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * DSH Manager - 预加载脚本
  * 
  * 使用 CommonJS 格式（.js 文件但使用 require），确保在 Electron 打包后
@@ -36,6 +42,11 @@ contextBridge.exposeInMainWorld('dshManager', {
     return () => ipcRenderer.removeAllListeners('dsh:start-error');
   },
   stopDSH: () => ipcRenderer.invoke('dsh:stop'),
+  diagnoseDSH: (port) => ipcRenderer.invoke('dsh:diagnose', port),
+  checkDSHPort: (port) => ipcRenderer.invoke('dsh:check-port', port),
+  getDSHActualPort: () => ipcRenderer.invoke('dsh:get-actual-port'),
+  fixAndRestartDSH: () => ipcRenderer.invoke('dsh:fix-and-restart'),
+  searchGitHubSkills: (query, page) => ipcRenderer.invoke('skills:search-github', query, page),
 
   // ====== 数据管理 ======
   getDSHStorageInfo: () => ipcRenderer.invoke('dsh:storage-info'),
@@ -102,6 +113,16 @@ contextBridge.exposeInMainWorld('dshManager', {
   skillsImportDir: (srcPath, options) => ipcRenderer.invoke('skills:import-dir', srcPath, options),
   skillsStats: () => ipcRenderer.invoke('skills:stats'),
 
+  // ====== 总提示词管理 ======
+  promptList: (filter) => ipcRenderer.invoke('prompts:list', filter),
+  promptGet: (id) => ipcRenderer.invoke('prompts:get', id),
+  promptCreate: (input) => ipcRenderer.invoke('prompts:create', input),
+  promptUpdate: (id, patch) => ipcRenderer.invoke('prompts:update', id, patch),
+  promptDelete: (id) => ipcRenderer.invoke('prompts:delete', id),
+  promptToggle: (id, enabled) => ipcRenderer.invoke('prompts:toggle', id, enabled),
+  promptRender: (options) => ipcRenderer.invoke('prompts:render', options),
+  promptStats: () => ipcRenderer.invoke('prompts:stats'),
+
 
   // ====== 系统 ======
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
@@ -138,4 +159,14 @@ contextBridge.exposeInMainWorld('dshManager', {
   getDebugLogPath: () => ipcRenderer.invoke('debug:get-log-path'),
   isDebugEnabled: () => ipcRenderer.invoke('debug:is-enabled'),
   writeDebugLog: (level, message) => ipcRenderer.invoke('debug:write-log', level, message),
+
+  // ====== 依赖完整性检查与修复 ======
+  checkDepsIntegrity: (profile, options) => ipcRenderer.invoke('deps:check-integrity', profile, options),
+  repairDeps: (profile, options) => ipcRenderer.invoke('deps:repair', profile, options),
+  repairAllDeps: (options) => ipcRenderer.invoke('deps:repair-all', options),
+  getDepsHealth: (profile) => ipcRenderer.invoke('deps:health', profile),
+  classifyPackage: (name) => ipcRenderer.invoke('deps:classify', name),
+  
+  // ====== 剪贴板 ======
+  copyToClipboard: (text) => ipcRenderer.invoke('app:copy-to-clipboard', text),
 });

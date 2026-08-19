@@ -1,13 +1,97 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 服务/进程管理
  * 
  * 检测 DSH Web 服务端口占用与进程信息，辅助排查"已安装但连不上"类问题。
+ * 
+ * 已知问题与修复思路：
+ *  - 现象：dsh web 曾显示启动成功，但浏览器永远打不开主页。
+ *  - 根因：dsh web 进程挂在退出会话的进程树下（终端/任务计划结束时被回收），
+ *          3080 端口无人监听，浏览器自然无法访问。
+ *  - 修复：此处提供 <b>findAvailablePort</b>（端口占用自动换随机空闲端口）、
+ *          <b>diagnoseDSHProcess</b>（一键诊断端口/进程/HTTP 可达性）、
+ *          <b>testDSHHealth</b>（HTTP 存活探测）等能力，供 UI 直接调用。
  */
 
 import { execa } from 'execa';
 
 /** DSH Web 默认端口 */
 export const DSH_WEB_PORT = 3080;
+
+/** 随机端口探测范围（避开常见占用区间） */
+const PORT_SCAN_MIN = 3100;
+const PORT_SCAN_MAX = 3999;
+
+/**
+ * 随机端口号
+ * @returns {number}
+ */
+function randomPort() {
+  return Math.floor(Math.random() * (PORT_SCAN_MAX - PORT_SCAN_MIN + 1)) + PORT_SCAN_MIN;
+}
+
+/**
+ * 检查单个端口是否可绑定（未被监听）
+ * 通过 netstat / lsof 探测，探测失败时返回 true（视为空闲，不阻断）。
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+export async function isPortFree(port) {
+  try {
+    if (process.platform === 'win32') {
+      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false });
+      const lines = stdout.split(/\r?\n/).filter(l => {
+        return l.includes(`:${port}`) && l.trim().toUpperCase().includes('LISTENING');
+      });
+      return lines.length === 0;
+    }
+    // 非 Windows：优先 lsof
+    try {
+      const { stdout } = await execa('lsof', ['-i', `:${port}`], { timeout: 10_000, reject: false });
+      return !stdout.split(/\r?\n/).some(l => l.includes('LISTEN'));
+    } catch {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * 查找可用端口：优先 preferredPort，被占用则尝试随机空闲端口
+ * @param {number} [preferredPort=3080] - 首选端口
+ * @param {number} [attempts=20] - 随机探测次数上限
+ * @returns {Promise<{port: number, used: boolean, preferredPort: number}>}
+ *   - used=true：返回的 port 与 preferredPort 不同（自动更换了端口）
+ *   - used=false：preferredPort 空闲，直接使用
+ */
+export async function findAvailablePort(preferredPort = DSH_WEB_PORT, attempts = 20) {
+  const preferred = Number(preferredPort) || DSH_WEB_PORT;
+
+  // 首选端口空闲 → 直接使用
+  if (await isPortFree(preferred)) {
+    return { port: preferred, used: false, preferredPort: preferred };
+  }
+
+  // 首选被占用 → 随机探测
+  const tried = new Set([preferred]);
+  for (let i = 0; i < attempts; i++) {
+    const candidate = randomPort();
+    if (tried.has(candidate)) continue;
+    tried.add(candidate);
+    if (await isPortFree(candidate)) {
+      return { port: candidate, used: true, preferredPort: preferred };
+    }
+  }
+
+  // 全部失败：返回首选端口，由调用方决定是否报错
+  return { port: preferred, used: false, preferredPort: preferred };
+}
 
 /**
  * 获取 DSH 服务进程信息
@@ -56,6 +140,79 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
   }
 
   return base;
+}
+
+/**
+ * 探测 DSH Web 是否真正可访问（HTTP 存活检查）
+ * 解决"进程在但页面打不开"的误判：端口被占用 ≠ DSH 在服务。
+ * @param {number} [port=3080]
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<{reachable: boolean, status: number|null, error: string|null, url: string}>}
+ */
+export async function testDSHHealth(port = DSH_WEB_PORT, timeoutMs = 5000) {
+  const url = `http://127.0.0.1:${port}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    return { reachable: resp.ok, status: resp.status, error: null, url };
+  } catch (error) {
+    return {
+      reachable: false,
+      status: null,
+      error: error?.cause?.code || error?.message || '连接失败',
+      url,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 一键诊断 DSH Web 服务（端口/进程/HTTP 可达性）
+ * 对应线上问题："两次启动都显示成功，但浏览器永远打不开"。
+ * @param {number} [port=3080]
+ * @returns {Promise<{
+ *   port: number, portFree: boolean, portInUse: boolean, pid: number|null, command: string|null,
+ *   health: {reachable: boolean, status: number|null, error: string|null, url: string},
+ *   issues: string[], suggestions: string[], summary: string
+ * }>}
+ */
+export async function diagnoseDSHProcess(port = DSH_WEB_PORT) {
+  const issues = [];
+  const suggestions = [];
+
+  const proc = await getDSHProcessInfo(port);
+  const health = await testDSHHealth(port);
+
+  if (proc.portInUse && proc.pid) {
+    if (!health.reachable) {
+      issues.push(`端口 ${port} 已被进程 PID ${proc.pid}（${proc.command || '未知'}）占用，但 HTTP 无法访问`);
+      suggestions.push('该进程可能不是 DSH 服务，或 DSH 启动后立即崩溃但端口尚未释放');
+      suggestions.push('可尝试"停止服务"释放端口后重新启动');
+    } else {
+      issues.length = 0; // 正常
+    }
+  } else if (!health.reachable) {
+    issues.push(`端口 ${port} 空闲，DSH Web 服务未在运行`);
+    suggestions.push('最常见原因：dsh web 进程随启动它的终端/任务计划退出被一并回收');
+    suggestions.push('请通过本软件"启动服务"按钮启动（管理器会以独立进程方式托管，不再依赖终端会话）');
+    suggestions.push('若端口被其他程序占用，启动时将自动切换到随机空闲端口');
+  }
+
+  return {
+    port,
+    portFree: !proc.portInUse,
+    portInUse: proc.portInUse,
+    pid: proc.pid,
+    command: proc.command,
+    health,
+    issues,
+    suggestions,
+    summary: issues.length === 0
+      ? `DSH Web 正常运行中：http://127.0.0.1:${port}（PID ${proc.pid || '-'}）`
+      : issues.join('；'),
+  };
 }
 
 /**

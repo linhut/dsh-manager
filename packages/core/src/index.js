@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 核心库入口
  * 
  * 提供 DSH 安装管理、配置管理、版本管理等核心功能
@@ -17,9 +23,11 @@ export { checkNode, checkNpm, checkGit, checkEnvironment, getNodeInstallGuide, g
 export { installPortableNode, uninstallPortableNode, getPortableNodeInfo, getLatestLTSVersion, buildRuntimeEnv, getRuntimeConfig } from './portable-node.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
-export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT } from './process-manager.js';
+export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT, findAvailablePort, isPortFree, testDSHHealth, diagnoseDSHProcess } from './process-manager.js';
 export { DSHProfileManager } from './profile-manager.js';
 export { SkillManager } from './skill-manager.js';
+export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules } from './dependency-integrity.js';
+export { MasterPromptManager } from './master-prompt-manager.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 
 /**

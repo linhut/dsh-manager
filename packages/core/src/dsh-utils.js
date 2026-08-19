@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - DSH 工具函数
  * 
  * 检测 DSH 安装状态、获取版本信息、路径管理

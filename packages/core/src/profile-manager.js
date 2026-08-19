@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - Profile 管理
  * 
  * 管理 DSH profiles（web/dev/自定义多配置）：列表、新建、备份。

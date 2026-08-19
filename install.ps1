@@ -1,3 +1,7 @@
+# DSH Manager
+# Copyright (c) 2026 linhut (https://github.com/linhut)
+# MIT License
+
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
@@ -130,13 +134,80 @@ Write-Step 4 "安装依赖 (npm install)"
 Push-Location $InstallDir
 try {
     Write-Host "  安装依赖可能需要几分钟，请耐心等待..." -ForegroundColor Yellow
-    npm install --no-audit --no-fund 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        # 若符号链接报错，重试启用开发者模式提示
-        Write-ErrorMsg "npm install 失败（错误码: $LASTEXITCODE）"
-        Write-WarningMsg "常见原因: Windows 符号链接权限。请启用开发者模式（设置 → 隐私和安全性 → 开发者选项）后重启系统重试"
+
+    # 经验教训：npm install 中断会造成依赖树残缺，且 --offline 显示 "up to date"
+    # 但实际文件缺失。以下策略增强安装可靠性：
+    #   ① 优先尝试 npm ci（若 package-lock.json 存在、干净安装）
+    #   ② 失败后回退到 npm install（增量兼容）
+    #   ③ 安装后校验关键入口文件，残缺则自动重试一次
+
+    $installOk = $false
+    $lockFile = Join-Path $InstallDir "package-lock.json"
+    $failDetail = $null
+
+    # ① npm ci 干净安装（更可靠，避免残缺增量）
+    if (Test-Path $lockFile) {
+        Write-Host "  使用 npm ci 干净安装（package-lock.json 存在）..." -ForegroundColor Yellow
+        npm ci --no-audit --no-fund 2>&1
+        if ($LASTEXITCODE -eq 0) { $installOk = $true }
+        else {
+            Write-WarningMsg "npm ci 失败（错误码: $LASTEXITCODE），回退到 npm install..."
+            $failDetail = "npm ci 失败"
+        }
+    }
+
+    # ② npm install 增量安装
+    if (-not $installOk) {
+        Write-Host "  使用 npm install 安装依赖..." -ForegroundColor Yellow
+        npm install --no-audit --no-fund 2>&1
+        if ($LASTEXITCODE -eq 0) { $installOk = $true }
+        else {
+            Write-WarningMsg "npm install 失败（错误码: $LASTEXITCODE），尝试带兼容参数重试..."
+            $failDetail = "npm install 失败: $LASTEXITCODE"
+            npm install --no-audit --no-fund --legacy-peer-deps 2>&1
+            if ($LASTEXITCODE -eq 0) { $installOk = $true }
+        }
+    }
+
+    if (-not $installOk) {
+        Write-ErrorMsg "依赖安装失败（npm ci / npm install 均失败）"
+        Write-WarningMsg "$failDetail"
+        Write-WarningMsg "常见原因: 1) 网络中断 2) Windows 符号链接权限 3) 依赖包已下架"
+        Write-WarningMsg "修复建议: 请启用开发者模式（设置 → 隐私和安全性 → 开发者选项）后重启，或删除 node_modules 与 package-lock.json 后重试"
         pause; exit 1
     }
+
+    # ③ 安装后完整性校验（关键入口文件）
+    Write-Host "  校验关键依赖入口文件..." -ForegroundColor Yellow
+    $keyEntries = @(
+        "node_modules/electron/dist/electron.exe",
+        "node_modules/execa/index.js",
+        "packages/core/src/index.js",
+        "packages/marketplace/src/index.js"
+    )
+    $missing = @()
+    foreach ($entry in $keyEntries) {
+        if (-not (Test-Path (Join-Path $InstallDir $entry))) { $missing += $entry }
+    }
+    if ($missing.Count -gt 0) {
+        Write-WarningMsg "完整性校验发现缺失文件: $($missing -join ', ')"
+        Write-WarningMsg "尝试重新安装（删除 node_modules 后 npm ci）..."
+        if (Test-Path node_modules) { Remove-Item node_modules -Recurse -Force }
+        if (Test-Path $lockFile) {
+            npm ci --no-audit --no-fund 2>&1
+        } else {
+            npm install --no-audit --no-fund 2>&1
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Write-WarningMsg "二次安装仍失败，node_modules 可能仍不完整。"
+            Write-WarningMsg "建议手动运行: cd $InstallDir; npm ci"
+        } else {
+            Write-Success "重装完成"
+        }
+    } else {
+        Write-Success "完整性校验通过"
+    }
+
     Write-Success "依赖安装完成"
 } catch {
     Write-ErrorMsg "npm install 失败: $($_.Exception.Message)"

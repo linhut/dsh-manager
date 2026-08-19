@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * DSH Manager - Electron 主进程
  * 
  * 核心流程：安装 DSH → 打开 DSH Web 页面

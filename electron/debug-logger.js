@@ -1,5 +1,7 @@
 /**
  * DSH Manager - 调试日志模块
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
  * 
  * 写入和管理调试日志文件，用于排查打包后无法看到控制台输出的问题。
  * 日志文件位置: ~/.dsh/manager/debug.log

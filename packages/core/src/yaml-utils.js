@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 共享 YAML 工具
  * 
  * 统一的 YAML 解析/序列化实现（兼容 dsh settings.yaml 格式）。

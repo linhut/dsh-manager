@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 技能（Skills）管理器
  *
  * 管理 DSH Agent 技能：多源扫描（用户 ~/.dsh/skills + 项目内置 dsh-skills）、
@@ -433,6 +439,8 @@ export class SkillManager {
       writeFileSync(dest, data);
       installed.push(rel);
     }
+    // 记录来源仓库（供后续同步更新使用）
+    try { this.recordSkillSource(name, url); } catch {}
     return { success: true, name, path: join(target, 'SKILL.md'), source: 'user', installed };
   }
 
@@ -468,6 +476,121 @@ export class SkillManager {
       writeFileSync(dest, data);
     }
     return { success: true, name, path: join(target, 'SKILL.md'), source: 'user' };
+  }
+
+  // ====== 技能仓库（skill sources）管理 ======
+
+  /**
+   * 技能来源注册表路径：~/.dsh/manager/skill-sources.json
+   * 记录用户技能与来源仓库的对应关系，支持后续"一键同步更新"
+   */
+  get sourceRegistryPath() {
+    return join(DSH_PATHS.managerDir, 'skill-sources.json');
+  }
+
+  /**
+   * 读取技能来源注册表
+   * @returns {Record<string, {url: string, owner: string, repo: string, branch: string, subPath: string, installedAt: string}>}
+   */
+  readSkillSources() {
+    try {
+      if (existsSync(this.sourceRegistryPath)) {
+        return JSON.parse(readFileSync(this.sourceRegistryPath, 'utf-8')) || {};
+      }
+    } catch {}
+    return {};
+  }
+
+  /**
+   * 写入技能来源注册表
+   * @param {Record<string, object>} sources
+   * @private
+   */
+  writeSkillSources(sources) {
+    mkdirSync(DSH_PATHS.managerDir, { recursive: true });
+    writeFileSync(this.sourceRegistryPath, JSON.stringify(sources, null, 2) + '\n', 'utf-8');
+  }
+
+  /**
+   * 记录技能的来源仓库（在 importFromGitHub 成功后调用）
+   * @param {string} name - 技能名
+   * @param {string} url - GitHub 仓库 URL
+   */
+  recordSkillSource(name, url) {
+    const sources = this.readSkillSources();
+    try {
+      const parsed = this.parseGitHubUrl(url);
+      sources[name] = {
+        url,
+        owner: parsed.owner,
+        repo: parsed.repo,
+        branch: parsed.branch,
+        subPath: parsed.subPath,
+        installedAt: new Date().toISOString(),
+      };
+      this.writeSkillSources(sources);
+      return { success: true, name, ...sources[name] };
+    } catch {
+      return { success: false, name, error: '无法解析来源 URL' };
+    }
+  }
+
+  /**
+   * 列出所有已记录来源的技能
+   * @returns {Array<{name: string, url: string, owner: string, repo: string, branch: string, subPath: string, installedAt: string}>}
+   */
+  listSkillSources() {
+    const sources = this.readSkillSources();
+    return Object.entries(sources).map(([name, info]) => ({ name, ...info }));
+  }
+
+  /**
+   * 从记录的来源仓库同步更新单个技能（覆盖安装）
+   * @param {string} name - 技能名
+   * @returns {Promise<{success: boolean, name: string, updated: boolean, error?: string}>}
+   */
+  async syncSkillFromSource(name) {
+    const sources = this.readSkillSources();
+    const src = sources[name];
+    if (!src) {
+      return { success: false, name, updated: false, error: '该技能未记录来源仓库（使用"从 GitHub 导入"安装的技能才有来源记录）' };
+    }
+    try {
+      // 复用 importFromGitHub 的下载逻辑，强制覆盖
+      const result = await this.importFromGitHub(src.url, { overwrite: true });
+      return { success: true, name, updated: true, ...result };
+    } catch (error) {
+      return { success: false, name, updated: false, error: error.message };
+    }
+  }
+
+  /**
+   * 同步所有已记录来源的技能
+   * @param {object} [options]
+   * @param {function} [options.onProgress] - 进度回调 (name, result) => void
+   * @returns {Promise<{synced: Array, failed: Array, skipped: Array}>}
+   */
+  async syncAllSkills(options = {}) {
+    const sources = this.readSkillSources();
+    const names = Object.keys(sources);
+    const synced = [];
+    const failed = [];
+    const skipped = [];
+
+    for (const name of names) {
+      const result = await this.syncSkillFromSource(name);
+      if (result.success && result.updated) {
+        synced.push(result);
+        if (options.onProgress) options.onProgress(name, result);
+      } else if (result.error && result.error.includes('未记录来源')) {
+        skipped.push(result);
+      } else {
+        failed.push(result);
+        if (options.onProgress) options.onProgress(name, result);
+      }
+    }
+
+    return { synced, failed, skipped, total: names.length };
   }
 
   /** 技能统计（用于仪表盘/展示） */

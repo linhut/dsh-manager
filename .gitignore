@@ -36,6 +36,8 @@ build/png-temp/
 website/
 DEPLOY.md
 tmp/
+scripts/tmp-*
+NDH6SA~M
 DEPLOY.md
 
 # Old preload (renamed to .cjs)

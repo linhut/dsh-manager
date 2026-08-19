@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - DSH 回复语言管理
  * 
  * 通过注入/替换/移除 ~/.dsh/AGENTS.md 中的语言指令块，

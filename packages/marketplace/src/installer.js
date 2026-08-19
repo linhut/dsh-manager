@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/marketplace - 插件安装器
  * 
  * 从 GitHub/npm 安装 DSH 插件到指定 profile
@@ -102,12 +108,24 @@ export class PluginInstaller {
       this.registry.unregisterLocalPlugin(pluginId);
 
       // 通过 dsh plugin 命令卸载
-      const { stdout, stderr } = await execa(await this._dshCmd(), [
-        'plugin', '--profile', profile, 'remove', pluginId,
-      ], { reject: false });
+      let dshRemoved = false;
+      try {
+        const { stdout, stderr } = await execa(await this._dshCmd(), [
+          'plugin', '--profile', profile, 'remove', pluginId,
+        ], { reject: false, timeout: 60_000 });
+        this._log(stdout || '');
+        if (stderr) this._log(stderr, 'warn');
+        dshRemoved = true;
+      } catch (e) {
+        this._log('dsh plugin remove 失败: ' + e.message, 'warn');
+      }
 
-      this._log(stdout || '');
-      if (stderr) this._log(stderr, 'warn');
+      // 兜底：清理 patch 文件中的条目（兼容非标准插件如 gongwen-skill 等）
+      try {
+        this.registry.cleanupPatchEntries(profile, pluginId);
+      } catch (e) {
+        this._log('清理 patch 文件失败: ' + e.message, 'warn');
+      }
 
       return { success: true };
     } catch (error) {

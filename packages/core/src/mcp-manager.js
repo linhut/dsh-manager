@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - MCP 服务端管理器（增强版）
  *
  * 管理 DSH profile 中配置的 MCP 服务端。

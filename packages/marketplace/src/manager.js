@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/marketplace - 插件管理器
  * 
  * 插件生命周期管理：启用/禁用、列表、状态检查
@@ -13,10 +19,12 @@ export class PluginManager {
    * @param {object} options
    * @param {PluginRegistry} [options.registry]
    * @param {PluginInstaller} [options.installer]
+   * @param {string} [options.profile='web']
    */
   constructor(options = {}) {
     this.registry = options.registry || new PluginRegistry(options);
     this.installer = options.installer || new PluginInstaller({ ...options, registry: this.registry });
+    this.profile = options.profile || 'web';
   }
 
   /**
@@ -81,7 +89,10 @@ export class PluginManager {
       throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
     }
 
+    // 更新本地注册表
     this.registry.updatePluginStatus(pluginId, { enabled: true, enabledAt: new Date().toISOString() });
+    // 实际修改 cordis.patch.yml 移除 disabled 标记
+    this.registry.setPluginDisabled(this.profile, pluginId, false);
     return { success: true };
   }
 
@@ -96,7 +107,10 @@ export class PluginManager {
       throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
     }
 
+    // 更新本地注册表
     this.registry.updatePluginStatus(pluginId, { enabled: false, disabledAt: new Date().toISOString() });
+    // 实际修改 cordis.patch.yml 添加 disabled: true 标记
+    this.registry.setPluginDisabled(this.profile, pluginId, true);
     return { success: true };
   }
 

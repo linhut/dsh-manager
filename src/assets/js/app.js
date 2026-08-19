@@ -1,12 +1,19 @@
 /**
- * DSH Manager - 主应用逻辑
- * 
- * 管理所有页面渲染、DSH 状态、安装流程、插件管理
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
  */
+
+
 
 // ====== 全局状态 ======
 const state = {
   skillsQuery: '',
+  skillsSourceFilter: 'all',
+  skillsSortBy: 'name',
+  skillMarketResults: [],
+  skillMarketCategory: 'all',
+  skillMarketSort: 'stars',
   skillEditingName: null,
   currentPage: 'dashboard',
   dshInstalled: false,
@@ -21,6 +28,7 @@ const state = {
   dshInfo: null,
   marketResults: [],
   marketCategory: 'all',
+  marketScope: 'all',
   marketSort: 'top',
   localPlugins: [],
 };
@@ -225,6 +233,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 30_000))
   ]).catch(() => {});
 
+  // 异步检测依赖完整性（带超时保护）
+  let depsCheckDone = false;
+  Promise.race([
+    checkDepsHealth().then(() => { depsCheckDone = true; }),
+    new Promise(r => setTimeout(() => {
+      if (!depsCheckDone) {
+        console.warn('checkDepsHealth 超时，跳过');
+        const el = document.getElementById('depsHealthStatus');
+        if (el) { el.querySelector('.status-text').textContent = '依赖检测超时'; }
+      }
+      r();
+    }, 30_000))
+  ]).catch(() => {});
+
   // 读取 Manager 设置（自动打开控制台 / 启动时检查更新）
   let autoStartConsole = true;
   let checkUpdatesOnStartup = true;
@@ -238,7 +260,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const rt = (await window.dshManager.getConfig('manager.runtime')) || {};
     const rtPort = Number(rt.port);
     if (rtPort && rtPort !== 3080) {
-      state.dshUrl = `http://127.0.0.1:${rtPort}`;
+      state.dshUrl = 'http://127.0.0.1:' + rtPort;
+    }
+  } catch {}
+
+  // 查询主进程记录的上次实际启动端口（自动切换过端口时同步到 UI）
+  try {
+    const actual = await window.dshManager.getDSHActualPort();
+    if (actual && actual.port && actual.port !== 3080) {
+      state.dshUrl = 'http://127.0.0.1:' + actual.port;
     }
   } catch {}
 
@@ -251,6 +281,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (checkUpdatesOnStartup) {
     setTimeout(() => { try { checkDSHUpdateStartup(); } catch {} }, 15_000);
   }
+
+  // 定期检查 DSH 进程状态（30 秒轮询，确保 sidebar 状态始终准确）
+  setInterval(async () => {
+    try {
+      const info = await window.dshManager.getDSHProcessInfo();
+      state.dshRunning = info && info.portInUse ? true : false;
+      // 更新 sidebar 状态指示
+      const statusEl = document.getElementById('dshStatus');
+      if (statusEl) {
+        const dot = statusEl.querySelector('.status-dot');
+        const text = statusEl.querySelector('.status-text');
+        if (dot) {
+          dot.className = 'status-dot ' + (state.dshRunning ? 'status-online' : (state.dshInstalled ? 'status-ok' : 'status-error'));
+        }
+        if (text) {
+          text.textContent = state.dshRunning ? '运行中' : (state.dshInstalled ? '已安装' : '未安装');
+        }
+      }
+    } catch {}
+  }, 30_000);
 });
 
 // ====== 页面切换 ======
@@ -270,6 +320,7 @@ function switchPage(page) {
   if (page === 'plugins') renderPluginsPage();
   if (page === 'skills') renderSkillsPage();
   if (page === 'versions') renderVersionsPage();
+  if (page === 'prompts') renderPromptsPage();
 }
 
 // ====== 状态更新辅助函数 ======
@@ -416,6 +467,60 @@ async function installPnpm() {
   }
 }
 
+// ====== 依赖完整性检查与修复 ======
+// 检查 DSH profile 的 node_modules 完整性
+async function checkDepsHealth() {
+  const statusEl = document.getElementById('depsHealthStatus');
+  if (!statusEl) return;
+  const dot = statusEl.querySelector('.status-dot');
+  const text = statusEl.querySelector('.status-text');
+  try {
+    const health = await window.dshManager.getDepsHealth('web');
+    if (health.healthy) {
+      dot.className = 'status-dot status-online';
+      text.textContent = '依赖健康 (' + (health.ok || 0) + ')';
+      statusEl.title = '依赖完整性检查通过';
+    } else {
+      dot.className = 'status-dot status-error';
+      text.textContent = '依赖异常 (' + (health.issues || 0) + ')';
+      statusEl.title = '点击查看/修复：' + health.issues + ' 个问题';
+    }
+  } catch (e) {
+    dot.className = 'status-dot status-unknown';
+    text.textContent = '依赖检测失败';
+    statusEl.title = '无法检测依赖完整性：' + (e.message || '');
+  }
+}
+
+// 一键修复依赖（从 UI 触发）
+async function repairDepsFromUI() {
+  try {
+    const health = await window.dshManager.getDepsHealth('web');
+    if (health.healthy) {
+      showToast('依赖完整性检查通过，无需修复', 'success');
+      return;
+    }
+    const issues = health.issues || 0;
+    const ok = confirm('依赖完整性检查发现 ' + issues + ' 个问题。\n\n点击确定将从 DSH 全局安装副本复制缺失/损坏的包文件到当前 profile。\n\n此操作不会影响已安装的插件和配置。');
+    if (!ok) return;
+    showToast('正在修复依赖...', 'info');
+    const result = await window.dshManager.repairDeps('web', {});
+    const fixed = result.repaired ? result.repaired.length : 0;
+    const failed = result.failed ? result.failed.length : 0;
+    const skipped = result.skipped ? result.skipped.length : 0;
+    if (fixed > 0) {
+      showToast('已修复 ' + fixed + ' 个包（失败 ' + failed + '，跳过 ' + skipped + '）', 'success');
+    } else if (failed > 0) {
+      showToast('修复失败：' + failed + ' 个包无法修复，请尝试重新安装 DSH', 'error');
+    } else {
+      showToast('无需修复，所有依赖正常', 'success');
+    }
+    await checkDepsHealth();
+  } catch (e) {
+    showToast('修复失败: ' + (e.message || '未知错误'), 'error');
+  }
+}
+
 // ====== 启动时静默检查 DSH 更新 ======
 async function checkDSHUpdateStartup() {
   try {
@@ -428,31 +533,20 @@ async function checkDSHUpdateStartup() {
 
 // ====== DSH Web 界面加载 ======
 // ====== DSH Web 界面加载 ======
-async function tryLoadDSHWeb() {
-  renderDashToolbar();
-  renderDashInfo();
-  const container = document.getElementById('dshWebviewContainer');
+// 尝试连接 DSH 并加载 webview，支持重试
+async function tryConnectDSH(retriesLeft = 5) {
   const placeholder = document.getElementById('dshPlaceholder');
   const webview = document.getElementById('dshWebview');
-
-  if (!state.dshInstalled) {
-    placeholder.style.display = 'flex';
-    webview.style.display = 'none';
-    return;
-  }
-
-  // 尝试连接 DSH Web（使用运行配置端口）
+  if (!placeholder || !webview) return;
   try {
     const resp = await fetchWithTimeout(state.dshUrl, 3000);
     if (resp.ok) {
       placeholder.style.display = 'none';
       webview.style.display = 'flex';
       state.dshRunning = true;
-      // DSH 运行中：自动收起环境信息
       dashInfoCollapsed = true;
       const dashInfoEl = document.getElementById('dashInfo');
       if (dashInfoEl) dashInfoEl.style.display = 'none';
-
       // 自动刷新 webview
       try {
         if (webview.src === state.dshUrl) {
@@ -464,31 +558,46 @@ async function tryLoadDSHWeb() {
         console.warn('webview 刷新失败:', e.message);
         webview.src = state.dshUrl;
       }
-
-      // 刷新工具栏
       renderDashToolbar();
       renderDashInfo();
       return;
     }
   } catch {}
+  if (retriesLeft > 0) {
+    setTimeout(function() { tryConnectDSH(retriesLeft - 1); }, 2000);
+  } else {
+    // 重试耗尽，显示启动提示
+    state.dshRunning = false;
+    placeholder.style.display = 'flex';
+    webview.style.display = 'none';
+    placeholder.innerHTML = [
+      '<div class="placeholder-content">',
+      '<img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">',
+      '<h2>DSH 已安装但未运行</h2>',
+      '<p>DeepSeek Harness ' + state.dshVersion + ' 已安装，但服务未启动。</p>',
+      '<p class="placeholder-hint">点击下方按钮由管理器托管启动（独立进程，不受终端会话影响）</p>',
+      '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">',
+      '<button class="btn btn-primary btn-lg" onclick="tryStartDSH()">🚀 启动 DSH</button>',
+      '<button class="btn btn-secondary btn-lg" onclick="runDSHDiagnosis()">🩺 诊断服务</button>',
+      '</div></div>',
+    ].join('');
+    renderDashToolbar();
+    renderDashInfo();
+  }
+}
 
-  // DSH 未运行，显示启动提示
-  state.dshRunning = false;
-  placeholder.style.display = 'flex';
-  webview.style.display = 'none';
-  placeholder.innerHTML = `
-    <div class="placeholder-content">
-      <img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">
-      <h2>DSH 已安装但未运行</h2>
-      <p>DeepSeek Harness ${state.dshVersion} 已安装，但服务未启动。</p>
-      <p class="placeholder-hint">请在终端中运行 <code>dsh web</code> 启动 Web 界面</p>
-      <button class="btn btn-primary btn-lg" onclick="tryStartDSH()">
-        🚀 尝试启动 DSH
-      </button>
-    </div>
-  `;
+async function tryLoadDSHWeb(retries = 5) {
   renderDashToolbar();
   renderDashInfo();
+  const placeholder = document.getElementById('dshPlaceholder');
+  const webview = document.getElementById('dshWebview');
+  if (!state.dshInstalled) {
+    if (placeholder) placeholder.style.display = 'flex';
+    if (webview) webview.style.display = 'none';
+    return;
+  }
+  // 启动重试连接
+  tryConnectDSH(retries);
 }
 
 // ====== 尝试启动 DSH ======
@@ -504,6 +613,17 @@ async function tryStartDSH() {
       const detail = data?.stderr
         ? (data.stderr.split('\n').slice(0, 4).join(' ').slice(0, 300))
         : ('exit code ' + (data?.exitCode ?? '?'));
+      
+      // 检查是否有无效插件导致启动失败，提供一键修复
+      const invalidPlugins = data?.invalidPlugins;
+      if (invalidPlugins && invalidPlugins.length > 0) {
+        const names = invalidPlugins.map(function(p) { return p.id; }).join('、');
+        const msg = '检测到 ' + invalidPlugins.length + ' 个无效插件（' + names + '），导致 DSH 无法启动。是否一键移除并重新启动？';
+        if (confirm(msg)) {
+          fixAndRestartDSH();
+          return;
+        }
+      }
       showToast('❌ DSH 启动失败: ' + detail, 'error');
     });
 
@@ -515,36 +635,56 @@ async function tryStartDSH() {
       return;
     }
     
-    showToast('DSH 启动命令已发送，正在等待服务就绪...', 'info');
+    // 使用主进程返回的实际端口（可能因默认端口被占用而自动切换）
+    if (result.port) {
+      state.dshUrl = 'http://127.0.0.1:' + result.port;
+    }
+    if (result.portChanged) {
+      showToast('端口 ' + result.preferredPort + ' 已被占用，已自动切换到 ' + result.port, 'warning');
+    } else {
+      showToast('DSH 启动命令已发送，正在等待服务就绪...', 'info');
+    }
     
-    // 重试连接：每 2 秒尝试一次，最长等待 30 秒
-    let retries = 0;
-    const maxRetries = 15;
-    const retryInterval = 2000;
+    // 如果主进程已确认就绪，直接加载
+    if (result.reachable) {
+      showToast('DSH 已启动！(' + state.dshUrl + ')', 'success');
+      tryLoadDSHWeb(15);
+      return;
+    }
     
-    const tryConnect = async () => {
-      retries++;
-      try {
-        const resp = await fetchWithTimeout(state.dshUrl, 3000);
-        if (resp.ok) {
-          showToast('DSH 已启动！', 'success');
-          tryLoadDSHWeb();
-          return;
-        }
-      } catch {
-        // 连接失败，继续重试
-      }
-      
-      if (retries < maxRetries) {
-        setTimeout(tryConnect, retryInterval);
-      } else {
-        showToast('DSH 启动超时，请手动运行 dsh web 命令，或切换页面重新加载', 'error');
-      }
-    };
-    
-    setTimeout(tryConnect, 2000);
+    // 使用共享重试连接逻辑
+    showToast('正在等待 DSH 服务就绪...', 'info');
+    tryLoadDSHWeb(15);
   } catch (err) {
     showToast('启动失败: ' + err.message, 'error');
+  }
+}
+
+// ====== 一键修复无效插件并重启 DSH ======
+async function fixAndRestartDSH() {
+  showToast('正在修复无效插件并重启 DSH...', 'info');
+  try {
+    const result = await window.dshManager.fixAndRestartDSH();
+    if (result.success) {
+      if (result.fixResult && result.fixResult.fixed && result.fixResult.fixed.length > 0) {
+        showToast('已移除 ' + result.fixResult.fixed.length + ' 个无效插件，DSH 重新启动', 'success');
+      } else {
+        showToast('DSH 已重新启动', 'success');
+      }
+      if (result.reachable) {
+        state.dshUrl = result.webUrl || state.dshUrl;
+        showToast('DSH 已启动', 'success');
+        tryLoadDSHWeb(15);
+      } else {
+        if (result.port) state.dshUrl = 'http://127.0.0.1:' + result.port;
+        showToast('正在等待 DSH 服务就绪...', 'info');
+        tryLoadDSHWeb(15);
+      }
+    } else {
+      showToast('修复失败: ' + (result.error || '未知错误'), 'error');
+    }
+  } catch (err) {
+    showToast('修复失败: ' + err.message, 'error');
   }
 }
 
@@ -589,6 +729,7 @@ function renderDashToolbar() {
         ${state.dshRunning
           ? '<button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>'
           : (state.dshInstalled ? '<button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>' : '')}
+        <button class="btn btn-sm btn-ghost" onclick="runDSHDiagnosis()" title="诊断 DSH 端口/进程/HTTP 可达性">🩺 诊断</button>
         <button class="btn btn-sm btn-secondary" onclick="checkAppUpdateUI()" title="检查 DSH Manager 新版本">🔄 检查更新</button>
         <button class="btn btn-sm btn-secondary" onclick="switchPage('install')" title="安装/升级 DSH">📥 安装/升级</button>
         <button class="btn btn-sm ${!dashInfoCollapsed ? 'btn-primary' : 'btn-ghost'}" onclick="toggleDashInfo()" data-toggle-dashinfo title="展开/收起环境信息">📋 环境信息</button>
@@ -604,18 +745,89 @@ async function stopDSH() {
     const result = await window.dshManager.stopDSH();
     if (result.success) {
       showToast('DSH 已停止', 'success');
+      state.dshRunning = false;
+      renderDashToolbar();
+      // 已确认停止：立即刷新 webview 显示"未运行"占位（0 重试，不等待）
+      tryLoadDSHWeb(0);
     } else {
       showToast('停止失败: ' + (result.error || '未知错误'), 'error');
+      state.dshRunning = false;
+      renderDashToolbar();
+      // 停止可能未生效：按正常流程刷新（带重试，若 DSH 仍在运行则继续显示页面）
+      tryLoadDSHWeb();
     }
+  } catch (err) {
+    showToast('停止失败: ' + err.message, 'error');
     state.dshRunning = false;
     renderDashToolbar();
     tryLoadDSHWeb();
+  }
+}
+
+// ====== DSH 服务诊断 ======
+async function runDSHDiagnosis() {
+  try {
+    showToast('正在诊断 DSH 服务...', 'info');
+    const result = await window.dshManager.diagnoseDSH();
+    
+    // 构建诊断结果模态框
+    const issuesHtml = result.issues && result.issues.length > 0
+      ? result.issues.map(function(i) { return '<div style="color:var(--error);padding:4px 0;">⚠️ ' + i + '</div>'; }).join('')
+      : '<div style="color:var(--success);padding:4px 0;">✅ 未发现问题</div>';
+    
+    const suggestionsHtml = result.suggestions && result.suggestions.length > 0
+      ? '<div style="margin-top:8px;"><strong style="color:var(--text-secondary);font-size:13px;">💡 建议：</strong>' +
+        result.suggestions.map(function(s) { return '<div style="padding:3px 0;font-size:12px;color:var(--text-muted);">• ' + s + '</div>'; }).join('') +
+        '</div>'
+      : '';
+    
+    const healthHtml = result.health
+      ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">HTTP 探测: ' +
+        (result.health.reachable
+          ? '<span style="color:var(--success);">可达（' + result.health.url + '）</span>'
+          : '<span style="color:var(--error);">不可达' + (result.health.error ? '（' + result.health.error + '）' : '') + '</span>') +
+        '</div>'
+      : '';
+    
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    modal.innerHTML = '<div class="modal" style="min-width:460px;max-width:560px;">' +
+      '<div class="modal-header"><h3>🩺 DSH 服务诊断报告</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">×</button></div>' +
+      '<div class="modal-body">' +
+        '<div style="margin-bottom:12px;font-size:13px;">' +
+          '<div>端口: <strong>' + result.port + '</strong></div>' +
+          '<div>端口状态: ' + (result.portFree ? '<span class="badge badge-green">空闲</span>' : '<span class="badge badge-red">占用中</span>') + '</div>' +
+          (result.pid ? '<div>进程 PID: <strong>' + result.pid + '</strong>' + (result.command ? ' (' + result.command + ')' : '') + '</div>' : '') +
+        '</div>' +
+        '<div style="border-top:1px solid var(--border);padding-top:8px;">' + issuesHtml + suggestionsHtml + healthHtml + '</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+        '<button class="btn btn-primary" onclick="this.closest(\'.modal-overlay\').remove()">我知道了</button>' +
+      '</div>' +
+    '</div>';
+    document.body.appendChild(modal);
+    
+    if (result.issues && result.issues.length > 0) {
+      showToast('⚠️ 发现 ' + result.issues.length + ' 个问题，请查看诊断报告', 'warning');
+    } else {
+      showToast('✅ DSH 服务运行正常', 'success');
+    }
   } catch (err) {
-    showToast('停止失败: ' + err.message, 'error');
+    showToast('诊断失败: ' + err.message, 'error');
   }
 }
 
 // ====== DSH 控制台环境信息栏（自动折叠） ======
+// ====== 获取当前 DSH Web 端口（从 state.dshUrl 提取） ======
+function getCurrentDSHPort() {
+  try {
+    const url = new URL(state.dshUrl);
+    const port = Number(url.port);
+    if (port) return port;
+  } catch {}
+  return 3080;
+}
+
 async function renderDashInfo() {
   const el = document.getElementById('dashInfo');
   if (!el) return;
@@ -644,14 +856,14 @@ async function renderDashInfo() {
         <div>🏠 主目录: <strong title="${info.home || ''}" style="word-break:break-all;">${info.home || '-'}</strong></div>
         <div>📡 全局路径: <strong title="${info.npmGlobalPath || ''}" style="word-break:break-all;">${info.npmGlobalPath || '-'}</strong></div>
         <div>🌐 Web 地址: <strong>${state.dshUrl}</strong></div>
-        <div id="processStatusCell">🔌 端口 3080: <strong>检测中...</strong></div>
+        <div id="processStatusCell">🔌 端口 ${getCurrentDSHPort()}: <strong>检测中...</strong></div>
       </div>
     </div>
   `;
 
   // 异步检测
   try {
-    const proc = await window.dshManager.getDSHProcessInfo();
+    const proc = await window.dshManager.getDSHProcessInfo(getCurrentDSHPort());
     const cell = document.getElementById('processStatusCell');
     if (cell) {
       if (proc.portInUse) {
@@ -1211,7 +1423,7 @@ async function renderPluginsPage() {
     </tr>
     ${items.map(p => `
       <tr class="plugin-item-row" data-bundle-body="${groupId}" style="${defaultCollapsed ? 'display:none;' : ''}">
-        <td><strong>${escapeHtml(p.name || p.id)}</strong>${p.core ? ' <span class="badge badge-gray">核心</span>' : ''}</td>
+        <td><strong>${escapeHtml(p.name || p.id)}</strong>${p.core ? ' <span class="badge badge-gray">核心</span>' : ''}${p.category === 'external' ? ' <span class="badge badge-yellow">外部</span>' : ''}${p.category === 'user' && !p.core ? ' <span class="badge badge-blue">用户</span>' : ''}</td>
         <td><span class="badge badge-blue">${p.version || '-'}</span></td>
         <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : p.type === 'core' ? '框架' : 'npm'}</td>
         <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
@@ -1305,13 +1517,21 @@ async function renderPluginsPage() {
             </svg>
             <input type="text" id="marketplaceSearch" placeholder="搜索插件 (如: agent, file, web)..." onkeydown="if(event.key==='Enter')loadMarketplace(this.value)">
           </div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:center;">
             <span style="font-size:12px;color:var(--text-dim);">分类:</span>
             <button class="btn btn-sm market-cat ${state.marketCategory === 'all' ? 'btn-primary' : 'btn-secondary'}" data-cat="all" onclick="setMarketCategory('all')">全部</button>
             <button class="btn btn-sm market-cat ${state.marketCategory === 'recommended' ? 'btn-primary' : 'btn-secondary'}" data-cat="recommended" onclick="setMarketCategory('recommended')">⭐ 推荐</button>
             <button class="btn btn-sm market-cat ${state.marketCategory === 'ui' ? 'btn-primary' : 'btn-secondary'}" data-cat="ui" onclick="setMarketCategory('ui')">🖥️ UI 皮肤</button>
             <button class="btn btn-sm market-cat ${state.marketCategory === 'tool' ? 'btn-primary' : 'btn-secondary'}" data-cat="tool" onclick="setMarketCategory('tool')">🔧 工具</button>
             <button class="btn btn-sm market-cat ${state.marketCategory === 'writing' ? 'btn-primary' : 'btn-secondary'}" data-cat="writing" onclick="setMarketCategory('writing')">📝 写作</button>
+            <button class="btn btn-sm market-cat ${state.marketCategory === 'skill' ? 'btn-primary' : 'btn-secondary'}" data-cat="skill" onclick="setMarketCategory('skill')">🧠 技能</button>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">
+            <span style="font-size:12px;color:var(--text-dim);">命名空间:</span>
+            <button class="btn btn-sm market-scope ${state.marketScope === 'all' ? 'btn-primary' : 'btn-secondary'}" data-scope="all" onclick="setMarketScope('all')">全部</button>
+            <button class="btn btn-sm market-scope ${state.marketScope === '@deepseek-ai/' ? 'btn-primary' : 'btn-secondary'}" data-scope="@deepseek-ai/" onclick="setMarketScope('@deepseek-ai/')">🔵 DSH 官方</button>
+            <button class="btn btn-sm market-scope ${state.marketScope === '@linxin666/' ? 'btn-primary' : 'btn-secondary'}" data-scope="@linxin666/" onclick="setMarketScope('@linxin666/')">🟣 社区插件</button>
+            <button class="btn btn-sm market-scope ${state.marketScope === 'other' ? 'btn-primary' : 'btn-secondary'}" data-scope="other" onclick="setMarketScope('other')">🟢 其他</button>
             <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">
               <span style="font-size:12px;color:var(--text-dim);">排序:</span>
               <select class="input" id="marketSort" style="width:auto;padding:4px 8px;" onchange="setMarketSort(this.value)">
@@ -1359,11 +1579,19 @@ function closeMarketplace() {
   document.getElementById('marketplaceSection').style.display = 'none';
 }
 
-// ====== 市场分类/排序 ======
+// ====== 市场分类/排序/范围筛选 ======
 function setMarketCategory(cat) {
   state.marketCategory = cat;
   document.querySelectorAll('.market-cat').forEach(b => {
     b.className = `btn btn-sm market-cat ${b.dataset.cat === cat ? 'btn-primary' : 'btn-secondary'}`;
+  });
+  renderMarketplaceGrid();
+}
+
+function setMarketScope(scope) {
+  state.marketScope = scope;
+  document.querySelectorAll('.market-scope').forEach(b => {
+    b.className = `btn btn-sm market-scope ${b.dataset.scope === scope ? 'btn-primary' : 'btn-secondary'}`;
   });
   renderMarketplaceGrid();
 }
@@ -1394,7 +1622,20 @@ function renderMarketplaceGrid() {
       if (state.marketCategory === 'ui') return (p.topics || []).some(t => /web-ui|skin|theme|ui/i.test(t));
       if (state.marketCategory === 'tool') return (p.topics || []).some(t => /tool|util|helper|cli|ssh/i.test(t));
       if (state.marketCategory === 'writing') return (p.topics || []).some(t => /writ|gongwen|doc|article|report/i.test(t));
+      if (state.marketCategory === 'skill') return (p.topics || []).some(t => /skill|agent|method|brainstorm|tdd|review/i.test(t));
       return true;
+    });
+  }
+
+  // 命名空间/scope 过滤
+  if (state.marketScope !== 'all') {
+    filtered = filtered.filter(p => {
+      const fullName = p.fullName || '';
+      if (state.marketScope === 'other') {
+        // 不属于任何已知命名空间的插件
+        return !fullName.startsWith('@deepseek-ai/') && !fullName.startsWith('@linxin666/') && !fullName.startsWith('@dsh-manager/') && !fullName.startsWith('@dsh/');
+      }
+      return fullName.startsWith(state.marketScope);
     });
   }
 
@@ -1419,14 +1660,33 @@ async function loadMarketplace(query) {
   grid.innerHTML = '<div class="skeleton" style="height:120px;"></div><div class="skeleton" style="height:120px;"></div><div class="skeleton" style="height:120px;"></div>';
 
   // 本地预置的精选插件（当 GitHub API 不可用时作为降级展示）
+  // 用户自研插件优先推荐（linhut 组织）
   const FALLBACK_PLUGINS = [
     {
       fullName: 'linhut/gongwen-skill',
-      stars: 128,
-      forks: 34,
-      description: '公文写作辅助技能 - 支持各类公文格式（通知、报告、请示、函件等），智能生成符合国家标准的公文内容，大幅提升办公效率。',
+      stars: 6,
+      forks: 0,
+      description: '中文公文全流程处理工具——基于 GB/T 9704《党政机关公文格式》国家标准，支持格式检查与修复、内容优化（Word/WPS 文档），面向公文写作与企事业单位材料编制。',
+      language: 'Python',
+      topics: ['dsh-plugin', 'gongwen', 'writing', 'docx', 'deepseek-harness', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'linhut/dsh-stock-terminal',
+      stars: 3,
+      forks: 0,
+      description: '股市行情皮肤+功能插件：DSH Web GUI 全局交易终端视觉 + 实时行情面板（A股/港股/美股/加密/外汇），自选跑马灯、首字母模糊搜索、持仓盈亏管理。',
       language: 'JavaScript',
-      topics: ['dsh-plugin', 'gongwen', 'writing', 'recommended'],
+      topics: ['dsh-plugin', 'deepseek-harness', 'skin', 'stock', 'trading-terminal', 'web-ui', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'linhut/dsh-market',
+      stars: 0,
+      forks: 0,
+      description: 'The plugin market inside DeepSeek Harness — browse, search, one-click install 插件市场界面。',
+      language: 'TypeScript',
+      topics: ['dsh-plugin', 'deepseek-harness', 'market', 'recommended'],
       recommended: true,
     },
     {
@@ -1901,7 +2161,34 @@ async function renderSkillsPage() {
       window.dshManager.skillsStats()
     ]);
     const q = (state.skillsQuery || '').toLowerCase();
-    const filtered = skills.filter(s => !q || s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q) || (s.whenToUse || '').toLowerCase().includes(q));
+    const sourceFilter = state.skillsSourceFilter || 'all';
+    const sortBy = state.skillsSortBy || 'name';
+
+    // 搜索过滤
+    let filtered = skills.filter(s => !q || s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q) || (s.whenToUse || '').toLowerCase().includes(q));
+
+    // 来源过滤
+    if (sourceFilter !== 'all') {
+      filtered = filtered.filter(s => s.source === sourceFilter);
+    }
+
+    // 排序
+    filtered.sort((a, b) => {
+      if (sortBy === 'name') return a.name.localeCompare(b.name);
+      if (sortBy === 'name-desc') return b.name.localeCompare(a.name);
+      if (sortBy === 'source') return (a.sourceLabel || a.source || '').localeCompare(b.sourceLabel || b.source || '');
+      if (sortBy === 'invocations') return (b.invocationCount || 0) - (a.invocationCount || 0);
+      return 0;
+    });
+
+    // 搜索高亮函数（全局，供 skillCardHtml 使用）
+    window.highlightSkillMatch = function(text) {
+      if (!q || !text) return escSkillHtml(text || '');
+      const escaped = escSkillHtml(text);
+      const regex = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+      return escaped.replace(regex, '<mark style="background:#ffd70033;color:inherit;padding:0 2px;border-radius:2px;">$1</mark>');
+    };
+
     const userSkills = filtered.filter(s => s.source === 'user' || s.source === 'custom');
     const bundledSkills = filtered.filter(s => s.source === 'bundled' || s.source === 'project');
     el.innerHTML = [
@@ -1914,7 +2201,25 @@ async function renderSkillsPage() {
       '    <button class="btn btn-primary" onclick="openCreateSkill()">＋ 新建技能</button>',
       '    <button class="btn" onclick="openImportSkillDialog()">⬇ GitHub 导入</button>',
       '    <button class="btn" onclick="importSkillFromDir()">📂 目录导入</button>',
+      '    <button class="btn btn-secondary" onclick="showSkillMarketplace()">🛒 技能市场</button>',
       '  </div>',
+      '</div>',
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:8px 12px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border);">',
+      '  <span style="font-size:12px;color:var(--text-dim);">来源:</span>',
+      '  <select class="input" style="width:auto;padding:4px 8px;" onchange="state.skillsSourceFilter=this.value; renderSkillsPage()">',
+      '    <option value="all"' + (sourceFilter === 'all' ? ' selected' : '') + '>全部</option>',
+      '    <option value="user"' + (sourceFilter === 'user' ? ' selected' : '') + '>👤 用户</option>',
+      '    <option value="bundled"' + (sourceFilter === 'bundled' ? ' selected' : '') + '>📦 内置</option>',
+      '    <option value="project"' + (sourceFilter === 'project' ? ' selected' : '') + '>📁 项目</option>',
+      '  </select>',
+      '  <span style="font-size:12px;color:var(--text-dim);margin-left:12px;">排序:</span>',
+      '  <select class="input" style="width:auto;padding:4px 8px;" onchange="state.skillsSortBy=this.value; renderSkillsPage()">',
+      '    <option value="name"' + (sortBy === 'name' ? ' selected' : '') + '>🔤 名称 A→Z</option>',
+      '    <option value="name-desc"' + (sortBy === 'name-desc' ? ' selected' : '') + '>🔤 名称 Z→A</option>',
+      '    <option value="source"' + (sortBy === 'source' ? ' selected' : '') + '>📂 来源顺序</option>',
+      '    <option value="invocations"' + (sortBy === 'invocations' ? ' selected' : '') + '>📊 调用次数</option>',
+      '  </select>',
+      '  <span style="font-size:12px;color:var(--text-dim);margin-left:auto;">' + filtered.length + ' / ' + skills.length + ' 个</span>',
       '</div>',
       '<div class="card skill-usage-card">',
       '  <div class="card-header"><span class="card-title">💡 技能如何使用</span></div>',
@@ -1932,6 +2237,36 @@ async function renderSkillsPage() {
       '  <span class="inline-stat"><b>' + (stats.bySource.user || 0) + '</b> 用户</span>',
       '  <span class="inline-stat"><b>' + (stats.bySource.bundled || 0) + '</b> 内置</span>',
       '</div>',
+      // ====== 技能市场 ======
+      '<div id="skillMarketSection" style="display:none;margin-top:16px;">',
+      '  <div class="card">',
+      '    <div class="card-header">',
+      '      <span class="card-title">🛒 技能市场</span>',
+      '      <button class="btn btn-sm btn-ghost" onclick="closeSkillMarketplace()">✕ 关闭</button>',
+      '    </div>',
+      '    <div class="card-body">',
+      '      <div class="search-box" style="max-width:100%;margin-bottom:12px;">',
+      '        <input type="text" id="skillMarketSearch" placeholder="搜索技能 (如: brainstorming, writing, review)..." onkeydown="if(event.key===\'Enter\')loadSkillMarketplace(this.value)">',
+      '      </div>',
+      '      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">',
+      '        <span style="font-size:12px;color:var(--text-dim);">来源:</span>',
+      '        <button class="btn btn-sm skill-market-cat ${state.skillMarketCategory === \'all\' ? \'btn-primary\' : \'btn-secondary\'}" data-cat="all" onclick="setSkillMarketCategory(\'all\')">全部</button>',
+      '        <button class="btn btn-sm skill-market-cat ${state.skillMarketCategory === \'skill\' ? \'btn-primary\' : \'btn-secondary\'}" data-cat="skill" onclick="setSkillMarketCategory(\'skill\')">🧠 技能合集</button>',
+      '        <button class="btn btn-sm skill-market-cat ${state.skillMarketCategory === \'superpowers\' ? \'btn-primary\' : \'btn-secondary\'}" data-cat="superpowers" onclick="setSkillMarketCategory(\'superpowers\')">⚡ Superpowers</button>',
+      '        <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">',
+      '          <span style="font-size:12px;color:var(--text-dim);">排序:</span>',
+      '          <select class="input" id="skillMarketSort" style="width:auto;padding:4px 8px;" onchange="setSkillMarketSort(this.value)">',
+      '            <option value="stars">⭐ 热门优先</option>',
+      '            <option value="updated">🆕 最新优先</option>',
+      '          </select>',
+      '        </span>',
+      '      </div>',
+      '      <div id="skillMarketGrid" class="grid-3">',
+      '        <div class="skeleton" style="height:120px;"></div>',
+      '      </div>',
+      '    </div>',
+      '  </div>',
+      '</div>',
       renderSkillSection('用户 / 自定义技能', userSkills, true),
       renderSkillSection('内置 / 项目技能', bundledSkills, false),
     ].join('\n');
@@ -1948,10 +2283,42 @@ function renderSkillSection(title, skills, editable) {
     return '<div class="card"><div class="card-header"><span class="card-title">' + escSkillHtml(title) + '</span></div>'
       + '<div class="empty-state"><p>暂无技能</p></div></div>';
   }
+  // 通过闭包将 editable 传入 skillCardHtml
+  const cardHtml = s => {
+    const shadowed = s.shadowed ? ' skill-shadowed' : '';
+    const shadowBadge = s.shadowed ? '<span class="badge badge-warning">被覆盖</span>' : '';
+    const sourceBadge = '<span class="badge badge-' + escSkillHtml(s.source) + '">' + escSkillHtml(s.sourceLabel || s.source) + '</span>';
+    const disabled = s.shadowed ? ' disabled' : '';
+    const hl = (typeof window.highlightSkillMatch === 'function') ? window.highlightSkillMatch : escSkillHtml;
+    const whenHtml = s.whenToUse ? '<div class="skill-when"><strong>适用：</strong>' + hl(s.whenToUse) + '</div>' : '';
+    const delBtn = editable && !s.shadowed ? '<button class="btn btn-sm btn-danger" onclick="deleteSkill(\'' + s.name + '\')">删除</button>' : '';
+    return '<div class="skill-card' + shadowed + '">'
+      + '<div class="skill-card-main">'
+      + '  <div class="skill-card-head">'
+      + '    <span class="skill-name">' + hl(s.name) + '</span>'
+      + '    ' + sourceBadge + shadowBadge
+      + '  </div>'
+      + '  <div class="skill-desc">' + hl(s.description || '暂无描述') + '</div>'
+      + '  ' + whenHtml
+      + '  <div class="skill-preview">' + hl(s.bodyPreview || '') + '</div>'
+      + '</div>'
+      + '<div class="skill-card-actions">'
+      + '  <label class="switch-label"><input type="checkbox" ' + (s.modelInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'model\', this.checked)">'
+      + '    <span class="switch"></span> 模型可调用</label>'
+      + '  <label class="switch-label"><input type="checkbox" ' + (s.userInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'user\', this.checked)">'
+      + '    <span class="switch"></span> 用户可调用</label>'
+      + '  <div class="btn-group">'
+      + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="viewSkillDetail(\'' + s.name + '\')">📖 详情</button>'
+      + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="openEditSkill(\'' + s.name + '\')">编辑</button>'
+      + '    ' + delBtn
+      + '  </div>'
+      + '</div>'
+      + '</div>';
+  };
   return '<div class="card">'
     + '<div class="card-header"><span class="card-title">' + escSkillHtml(title) + '</span>'
     + '<span class="badge badge-info">' + skills.length + '</span></div>'
-    + skills.map(skillCardHtml).join('')
+    + skills.map(cardHtml).join('')
     + '</div>';
 }
 function skillCardHtml(s) {
@@ -1959,17 +2326,19 @@ function skillCardHtml(s) {
   const shadowBadge = s.shadowed ? '<span class="badge badge-warning">被覆盖</span>' : '';
   const sourceBadge = '<span class="badge badge-' + escSkillHtml(s.source) + '">' + escSkillHtml(s.sourceLabel || s.source) + '</span>';
   const disabled = s.shadowed ? ' disabled' : '';
-  const whenHtml = s.whenToUse ? '<div class="skill-when"><strong>适用：</strong>' + escSkillHtml(s.whenToUse) + '</div>' : '';
+  // 使用全局高亮函数（如果存在）
+  const hl = (typeof window.highlightSkillMatch === 'function') ? window.highlightSkillMatch : escSkillHtml;
+  const whenHtml = s.whenToUse ? '<div class="skill-when"><strong>适用：</strong>' + hl(s.whenToUse) + '</div>' : '';
   const delBtn = editable && !s.shadowed ? '<button class="btn btn-sm btn-danger" onclick="deleteSkill(\'' + s.name + '\')">删除</button>' : '';
   return '<div class="skill-card' + shadowed + '">'
     + '<div class="skill-card-main">'
     + '  <div class="skill-card-head">'
-    + '    <span class="skill-name">' + escSkillHtml(s.name) + '</span>'
+    + '    <span class="skill-name">' + hl(s.name) + '</span>'
     + '    ' + sourceBadge + shadowBadge
     + '  </div>'
-    + '  <div class="skill-desc">' + escSkillHtml(s.description || '暂无描述') + '</div>'
+    + '  <div class="skill-desc">' + hl(s.description || '暂无描述') + '</div>'
     + '  ' + whenHtml
-    + '  <div class="skill-preview">' + escSkillHtml(s.bodyPreview || '') + '</div>'
+    + '  <div class="skill-preview">' + hl(s.bodyPreview || '') + '</div>'
     + '</div>'
     + '<div class="skill-card-actions">'
     + '  <label class="switch-label"><input type="checkbox" ' + (s.modelInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'model\', this.checked)">'
@@ -2083,9 +2452,37 @@ async function deleteSkill(name) {
 }
 // ====== 导入技能 ======
 function openImportSkillDialog() {
-  const url = prompt('输入 GitHub 技能仓库链接：\n支持仓库根、/tree/分支/路径、/blob/分支/file.md');
-  if (!url || !url.trim()) return;
-  importSkillFromGitHub(url.trim());
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = '<div class="modal" style="min-width:480px;">' +
+    '<h3 class="modal-title">从 GitHub 导入技能</h3>' +
+    '<div class="modal-body">' +
+    '<div style="margin-bottom:12px;">' +
+    '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">GitHub 仓库链接</label>' +
+    '<input class="input" id="skillImportUrl" placeholder="例如: https://github.com/owner/repo 或 owner/repo" style="width:100%;">' +
+    '</div>' +
+    '<p style="font-size:11px;color:var(--text-dim);line-height:1.5;">支持格式：仓库根目录、/tree/分支/路径、/blob/分支/SKILL.md</p>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="importSkillFromGitHubModal()">导入</button>' +
+    '</div></div>';
+  document.body.appendChild(modal);
+  setTimeout(() => { const inp = document.getElementById('skillImportUrl'); if (inp) inp.focus(); }, 100);
+}
+async function importSkillFromGitHubModal() {
+  const input = document.getElementById('skillImportUrl');
+  const url = input ? input.value.trim() : '';
+  if (!url) { showToast('请输入 GitHub 仓库链接', 'error'); return; }
+  document.querySelector('.modal-overlay')?.remove();
+  showToast('正在从 GitHub 下载技能...', 'info');
+  try {
+    const r = await window.dshManager.skillsImportGitHub(url, { overwrite: false });
+    showToast('导入成功: ' + r.name, 'success');
+    renderSkillsPage();
+  } catch (e) {
+    showToast('导入失败: ' + e.message, 'error');
+  }
 }
 async function importSkillFromGitHub(url) {
   showToast('正在从 GitHub 下载技能...', 'info');
@@ -2100,6 +2497,196 @@ async function importSkillFromDir() {
     const r = await window.dshManager.skillsImportDir(res.path, { overwrite: false });
     showToast('导入成功: ' + r.name, 'success'); renderSkillsPage();
   } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
+}
+
+// ====== 技能市场 ======
+function showSkillMarketplace() {
+  const section = document.getElementById('skillMarketSection');
+  if (!section) return;
+  section.style.display = 'block';
+  loadSkillMarketplace('');
+}
+
+function closeSkillMarketplace() {
+  const section = document.getElementById('skillMarketSection');
+  if (section) section.style.display = 'none';
+}
+
+function setSkillMarketCategory(cat) {
+  state.skillMarketCategory = cat;
+  document.querySelectorAll('.skill-market-cat').forEach(b => {
+    b.className = 'btn btn-sm skill-market-cat ' + (b.dataset.cat === cat ? 'btn-primary' : 'btn-secondary');
+  });
+  renderSkillMarketGrid();
+}
+
+function setSkillMarketSort(sort) {
+  state.skillMarketSort = sort;
+  renderSkillMarketGrid();
+}
+
+async function loadSkillMarketplace(query) {
+  const grid = document.getElementById('skillMarketGrid');
+  if (!grid) return;
+  grid.innerHTML = '<div class="skeleton" style="height:120px;"></div><div class="skeleton" style="height:120px;"></div><div class="skeleton" style="height:120px;"></div>';
+
+  // 预置精选技能仓库（当 GitHub API 不可用时降级展示）
+  // 用户自研技能项目优先推荐（linhut 组织）
+  const FALLBACK_SKILLS = [
+    {
+      fullName: 'linhut/gongwen-skill',
+      name: 'gongwen-skill',
+      description: '中文公文全流程处理工具——基于 GB/T 9704《党政机关公文格式》国家标准，支持格式检查与修复、内容优化（Word/WPS 文档），面向公文写作与企事业单位材料编制',
+      stars: 6, forks: 0, topics: ['dsh-plugin', 'gongwen', 'writing', 'docx', 'deepseek-harness', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'linhut/dsh-skills',
+      name: 'dsh-skills',
+      description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能',
+      stars: 0, forks: 0, topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'codeAnqiang-ma/dsh-superpowers',
+      name: 'dsh-superpowers',
+      description: 'Superpowers 作为 DeepSeek Harness 插件：内置 14 个方法论技能，在会话中持续注入 using-superpowers 引导',
+      stars: 3, forks: 0, topics: ['agent-skills', 'dsh-skill', 'superpowers', 'tdd', 'code-review', 'recommended'],
+      recommended: true,
+    },
+  ];
+
+  try {
+    let results;
+    try {
+      // 使用已有的 searchGitHubSkills IPC 搜索技能仓库
+      const resp = await window.dshManager.searchGitHubSkills(query || 'skill', 1);
+      results = resp.success ? resp.items : null;
+    } catch (e) {
+      console.warn('技能市场 API 请求失败，使用精选技能降级:', e.message);
+      results = null;
+    }
+
+    if (!results || results.length === 0) {
+      const fallback = query
+        ? FALLBACK_SKILLS.filter(p => (p.fullName || '').toLowerCase().includes(query.toLowerCase()))
+        : FALLBACK_SKILLS;
+
+      if (fallback.length === 0) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">🔍</div><div class="empty-state-title">未找到匹配的技能</div><div class="empty-state-desc">请更换关键词搜索，或检查网络连接后刷新</div></div>';
+        return;
+      }
+      state.skillMarketResults = fallback;
+      renderSkillMarketGrid();
+      grid.innerHTML += '<div style="grid-column:1/-1;text-align:center;padding:12px;color:var(--text-dim);font-size:12px;border-top:1px solid var(--border);margin-top:8px;">⚠️ 无法连接到 GitHub API，以上为精选技能推荐。请检查网络后 <a href="javascript:void(0)" onclick="showSkillMarketplace()" style="color:var(--primary-light);">刷新重试</a></div>';
+      return;
+    }
+
+    state.skillMarketResults = results;
+    renderSkillMarketGrid();
+  } catch (err) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">加载失败</div><div class="empty-state-desc">' + escSkillHtml(err.message || '请检查网络连接后刷新') + '</div></div>';
+  }
+}
+
+function renderSkillMarketGrid() {
+  const grid = document.getElementById('skillMarketGrid');
+  if (!grid) return;
+  const results = state.skillMarketResults || [];
+  const query = (document.getElementById('skillMarketSearch')?.value || '').trim().toLowerCase();
+  const cat = state.skillMarketCategory || 'all';
+  const sort = state.skillMarketSort || 'stars';
+
+  // 关键词过滤
+  let filtered = query
+    ? results.filter(p =>
+        (p.fullName || '').toLowerCase().includes(query) ||
+        (p.description || '').toLowerCase().includes(query) ||
+        (p.topics || []).some(t => t.toLowerCase().includes(query)))
+    : [...results];
+
+  // 分类过滤
+  if (cat !== 'all') {
+    filtered = filtered.filter(p => {
+      const topics = (p.topics || []).join(' ').toLowerCase();
+      if (cat === 'skill') return /skill|agent|method|brainstorm|tdd|review/i.test(topics);
+      if (cat === 'superpowers') return /superpowers|superpower/i.test(topics) || (p.fullName || '').toLowerCase().includes('superpower');
+      return true;
+    });
+  }
+
+  // 排序
+  if (sort === 'updated') {
+    filtered.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+  } else {
+    filtered.sort((a, b) => (b.stars || 0) - (a.stars || 0));
+  }
+
+  if (filtered.length === 0) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">🔍</div><div class="empty-state-title">没有符合条件的技能</div><div class="empty-state-desc">试试切换分类或调整搜索关键词</div></div>';
+    return;
+  }
+
+  grid.innerHTML = filtered.map(p => renderSkillMarketCard(p)).join('') +
+    '<div style="grid-column:1/-1;text-align:center;padding:10px;color:var(--text-dim);font-size:12px;border-top:1px solid var(--border);margin-top:8px;">共 ' + filtered.length + ' 个技能仓库</div>';
+}
+
+function renderSkillMarketCard(p) {
+  const updated = p.updatedAt || '';
+  const updatedStr = updated ? new Date(updated).toLocaleDateString() : '';
+  const q = String.fromCharCode(39); // single quote
+  return [
+    '<div class="card" style="cursor:pointer;" onclick="viewSkillMarketDetail(' + q + escapeAttr(p.fullName) + q + ')">',
+    '  <div class="card-header" style="margin-bottom:8px;flex-wrap:wrap;">',
+    '    <span class="card-title" style="font-size:13px;display:flex;align-items:center;gap:6px;">',
+    '      ' + escSkillHtml(p.fullName),
+    '      ' + (p.recommended ? '<span class="badge badge-recommended" style="background:linear-gradient(135deg,#F59E0B,#D97706);color:white;font-size:10px;padding:1px 6px;border-radius:3px;">⭐ 推荐</span>' : ''),
+    '    </span>',
+    '    <span style="font-size:13px;color:var(--warning);font-weight:700;">★ ' + (p.stars || 0) + '</span>',
+    '  </div>',
+    '  <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.4;">' + escSkillHtml((p.description || '暂无描述').slice(0, 80)) + '</p>',
+    '  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px;">',
+    '    ' + (p.topics || []).slice(0, 3).map(function(t) { return '<span class="badge badge-blue">' + escSkillHtml(t) + '</span>'; }).join(''),
+    '  </div>',
+    '  <div style="display:flex;justify-content:space-between;align-items:center;">',
+    '    <span style="font-size:11px;color:var(--text-dim);">🍴 ' + (p.forks || 0) + (updatedStr ? '  · 更新 ' + updatedStr : '') + '</span>',
+    '    <span style="display:flex;gap:6px;">',
+    '      <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();importSkillFromGitHub(' + q + escapeAttr(p.fullName) + q + ')">⬇ 导入技能</button>',
+    '    </span>',
+    '  </div>',
+    '</div>',
+  ].join('\n');
+}
+
+function viewSkillMarketDetail(fullName) {
+  var repo = (state.skillMarketResults || []).find(function(p) { return p.fullName === fullName; });
+  if (!repo) return;
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  var q = String.fromCharCode(39);
+  overlay.innerHTML = [
+    '<div class="modal" style="min-width:480px;max-width:640px;">',
+    '  <div class="modal-header"><h3>📖 ' + escSkillHtml(repo.fullName) + '</h3>',
+    '    <button class="modal-close" onclick="this.parentElement.parentElement.remove()">×</button></div>',
+    '  <div class="modal-body">',
+    '    <p style="font-size:13px;line-height:1.6;color:var(--text-muted);">' + escSkillHtml(repo.description || '暂无描述') + '</p>',
+    '    <div style="display:flex;gap:4px;flex-wrap:wrap;margin:12px 0;">',
+    '      ' + (repo.topics || []).map(function(t) { return '<span class="badge badge-blue">' + escSkillHtml(t) + '</span>'; }).join(''),
+    '    </div>',
+    '    <div style="display:flex;gap:16px;font-size:12px;color:var(--text-dim);">',
+    '      <span>⭐ ' + (repo.stars || 0) + '</span>',
+    '      <span>🍴 ' + (repo.forks || 0) + '</span>',
+    '      ' + (repo.language ? '<span>🔤 ' + escSkillHtml(repo.language) + '</span>' : ''),
+    '    </div>',
+    '    ' + (repo.updatedAt ? '<p style="font-size:11px;color:var(--text-dim);margin-top:8px;">最近更新: ' + new Date(repo.updatedAt).toLocaleDateString() + '</p>' : ''),
+    '  </div>',
+    '  <div class="modal-footer">',
+    '    <button class="btn btn-ghost" onclick="this.parentElement.parentElement.parentElement.remove()">关闭</button>',
+    '    <button class="btn btn-primary" onclick="this.parentElement.parentElement.parentElement.remove();importSkillFromGitHub(' + q + escapeAttr(repo.fullName) + q + ')">⬇ 导入技能</button>',
+    '  </div>',
+    '</div>',
+  ].join('\n');
+  document.body.appendChild(overlay);
 }
 
 // ====== 版本管理页面 ======
@@ -2719,6 +3306,173 @@ async function renderAboutPage() {
   `;
 }
 
+// ====== 总提示词管理页面 ======
+async function renderPromptsPage() {
+  const el = document.getElementById('promptsContent');
+  if (!el) return;
+  try {
+    const [prompts, stats] = await Promise.all([
+      window.dshManager.promptList({}),
+      window.dshManager.promptStats(),
+    ]);
+    const isEnabled = (p) => p.enabled !== false;
+    const enabledCount = prompts.filter(isEnabled).length;
+    const disabledCount = prompts.length - enabledCount;
+    const itemsHtml = prompts.length === 0
+      ? '<p style="color:var(--text-dim);padding:24px;text-align:center;">暂无提示词，点击"添加提示词"创建</p>'
+      : prompts.map((p, i) => {
+          const catLabel = p.category || 'general';
+          return '<div class="card" style="margin-bottom:8px;border-left:3px solid ' + (isEnabled(p) ? 'var(--success)' : 'var(--border)') + ';">' +
+            '<div class="card-body" style="display:flex;align-items:flex-start;gap:12px;padding:12px;">' +
+            '<div style="flex:1;min-width:0;">' +
+            '<div style="font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(p.content) + '</div>' +
+            (p.description ? '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' + escapeHtml(p.description) + '</div>' : '') +
+            '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">' +
+            '<span class="badge badge-gray">' + escapeHtml(catLabel) + '</span>' +
+            '<span class="badge ' + (isEnabled(p) ? 'badge-green' : 'badge-gray') + '">' + (isEnabled(p) ? '启用' : '禁用') + '</span>' +
+            '</div>' +
+            '</div>' +
+            '<div style="display:flex;gap:4px;flex-shrink:0;">' +
+            '<button class="btn btn-xs btn-ghost" onclick="togglePrompt(\'' + p.id + '\', ' + !isEnabled(p) + ')">' + (isEnabled(p) ? '禁用' : '启用') + '</button>' +
+            '<button class="btn btn-xs btn-ghost" onclick="editPrompt(\'' + p.id + '\')">编辑</button>' +
+            '<button class="btn btn-xs btn-ghost" onclick="deletePrompt(\'' + p.id + '\')">删除</button>' +
+            '</div>' +
+            '</div></div>';
+        }).join('');
+    el.innerHTML = '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">' +
+      '<button class="btn btn-primary" onclick="showAddPromptDialog()">＋ 添加提示词</button>' +
+      '<button class="btn btn-secondary" onclick="renderPromptsPage()">🔄 刷新</button>' +
+      '<span style="font-size:12px;color:var(--text-dim);">共 ' + prompts.length + ' 条（启用 ' + enabledCount + '，禁用 ' + disabledCount + '）</span>' +
+      (stats && stats.categories ? '<span style="font-size:11px;color:var(--text-dim);">分类: ' + Object.keys(stats.categories).join(', ') + '</span>' : '') +
+      '</div>' +
+      '<div style="margin-bottom:16px;"><div class="card" style="border-color:var(--primary);"><div class="card-body" style="padding:12px;font-size:12px;color:var(--text-secondary);line-height:1.6;">' +
+      '渲染输出（启用中的提示词将注入 Agent 上下文）：<br><code style="display:block;padding:8px;margin-top:4px;background:var(--bg-secondary);border-radius:4px;white-space:pre-wrap;font-size:11px;">' +
+      escapeHtml(prompts.filter(isEnabled).map(p => p.content).join('\n')) +
+      '</code></div></div></div>' +
+      '<div id="promptItems">' + itemsHtml + '</div>';
+  } catch (e) {
+    el.innerHTML = '<div class="card" style="border-color:var(--error);"><div class="card-body"><p style="color:var(--error);">加载失败: ' + escapeHtml(e.message) + '</p><button class="btn btn-sm btn-ghost" onclick="renderPromptsPage()">重试</button></div></div>';
+  }
+}
+async function showAddPromptDialog() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = '<div class="modal" style="min-width:500px;">' +
+    '<h3 class="modal-title">添加提示词</h3>' +
+    '<div class="modal-body">' +
+    '<div style="margin-bottom:12px;">' +
+    '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">提示词内容 *</label>' +
+    '<textarea class="input" id="newPromptContent" rows="4" placeholder="例如：所做的操作要有结果报告" style="width:100%;resize:vertical;"></textarea>' +
+    '</div>' +
+    '<div style="margin-bottom:12px;">' +
+    '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">描述（可选）</label>' +
+    '<input class="input" id="newPromptDesc" placeholder="简短描述此提示词的作用" style="width:100%;">' +
+    '</div>' +
+    '<div style="margin-bottom:12px;">' +
+    '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">分类</label>' +
+    '<select class="input" id="newPromptCategory" style="width:100%;">' +
+    '<option value="general">通用</option>' +
+    '<option value="behavior">行为规范</option>' +
+    '<option value="reporting">报告要求</option>' +
+    '<option value="workflow">工作流程</option>' +
+    '<option value="custom">自定义</option>' +
+    '</select>' +
+    '</div>' +
+    '<div style="margin-bottom:12px;">' +
+    '<label><input type="checkbox" id="newPromptEnabled" checked> 创建后即启用</label>' +
+    '</div>' +
+    '</div>' +
+    '<div class="modal-footer">' +
+    '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="createPrompt()">创建</button>' +
+    '</div></div>';
+  document.body.appendChild(modal);
+}
+async function createPrompt() {
+  const content = document.getElementById('newPromptContent');
+  const desc = document.getElementById('newPromptDesc');
+  const cat = document.getElementById('newPromptCategory');
+  const enabled = document.getElementById('newPromptEnabled');
+  if (!content || !content.value.trim()) { showToast('提示词内容不能为空', 'error'); return; }
+  try {
+    await window.dshManager.promptCreate({
+      content: content.value.trim(),
+      description: desc ? desc.value.trim() : '',
+      category: cat ? cat.value : 'general',
+      enabled: enabled ? enabled.checked : true,
+    });
+    showToast('提示词已创建', 'success');
+    document.querySelector('.modal-overlay')?.remove();
+    renderPromptsPage();
+  } catch (e) { showToast('创建失败: ' + e.message, 'error'); }
+}
+async function togglePrompt(id, enabled) {
+  try {
+    await window.dshManager.promptToggle(id, enabled);
+    showToast(enabled ? '已启用' : '已禁用', 'success');
+    renderPromptsPage();
+  } catch (e) { showToast('操作失败: ' + e.message, 'error'); }
+}
+async function deletePrompt(id) {
+  if (!confirm('确定删除此提示词？')) return;
+  try {
+    await window.dshManager.promptDelete(id);
+    showToast('已删除', 'success');
+    renderPromptsPage();
+  } catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+async function editPrompt(id) {
+  try {
+    const prompt = await window.dshManager.promptGet(id);
+    if (!prompt) { showToast('提示词不存在', 'error'); return; }
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    modal.innerHTML = '<div class="modal" style="min-width:500px;">' +
+      '<h3 class="modal-title">编辑提示词</h3>' +
+      '<div class="modal-body">' +
+      '<div style="margin-bottom:12px;">' +
+      '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">提示词内容 *</label>' +
+      '<textarea class="input" id="editPromptContent" rows="4" style="width:100%;resize:vertical;">' + escapeHtml(prompt.content) + '</textarea>' +
+      '</div>' +
+      '<div style="margin-bottom:12px;">' +
+      '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">描述</label>' +
+      '<input class="input" id="editPromptDesc" value="' + escapeAttr(prompt.description || '') + '" style="width:100%;">' +
+      '</div>' +
+      '<div style="margin-bottom:12px;">' +
+      '<label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">分类</label>' +
+      '<select class="input" id="editPromptCategory" style="width:100%;">' +
+      '<option value="general"' + (prompt.category === 'general' ? ' selected' : '') + '>通用</option>' +
+      '<option value="behavior"' + (prompt.category === 'behavior' ? ' selected' : '') + '>行为规范</option>' +
+      '<option value="reporting"' + (prompt.category === 'reporting' ? ' selected' : '') + '>报告要求</option>' +
+      '<option value="workflow"' + (prompt.category === 'workflow' ? ' selected' : '') + '>工作流程</option>' +
+      '<option value="custom"' + (prompt.category === 'custom' ? ' selected' : '') + '>自定义</option>' +
+      '</select>' +
+      '</div>' +
+      '</div>' +
+      '<div class="modal-footer">' +
+      '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>' +
+      '<button class="btn btn-primary" onclick="updatePrompt(\'' + id + '\')">保存</button>' +
+      '</div></div>';
+    document.body.appendChild(modal);
+  } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
+}
+async function updatePrompt(id) {
+  const content = document.getElementById('editPromptContent');
+  const desc = document.getElementById('editPromptDesc');
+  const cat = document.getElementById('editPromptCategory');
+  if (!content || !content.value.trim()) { showToast('提示词内容不能为空', 'error'); return; }
+  try {
+    await window.dshManager.promptUpdate(id, {
+      content: content.value.trim(),
+      description: desc ? desc.value.trim() : '',
+      category: cat ? cat.value : 'general',
+    });
+    showToast('已保存', 'success');
+    document.querySelector('.modal-overlay')?.remove();
+    renderPromptsPage();
+  } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
 // ====== Toast 通知 ======
 function showToast(message, type = 'info') {
   const container = document.getElementById('toastContainer');
@@ -2915,6 +3669,13 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
           </div>
           <input class="input" type="number" min="1024" max="65535" value="${rtPort}" style="width:120px;flex-shrink:0;" onchange="setRuntimeConfig('port', Number(this.value))">
         </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>对话重试次数</strong>
+            <p class="setting-desc">Agent 对话失败时的最大重试次数（0=不重试，默认 3）</p>
+          </div>
+          <input class="input" type="number" min="0" max="20" step="1" value="${typeof runtime?.retryCount === 'number' ? runtime.retryCount : 3}" style="width:80px;flex-shrink:0;" onchange="setRuntimeConfig('retryCount', Number(this.value))">
+        </div>
       </div>
     </div>
   `;
@@ -2991,7 +3752,7 @@ async function renderLLMProvidersTab() {
                 <tr>
                   <td><strong>${name}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
                   <td><span class="badge badge-blue">${conf.provider || 'unknown'}</span></td>
-                  <td><code>${conf.model || '-'}</code></td>
+                  <td><code>${conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-')}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return m.id; }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
                   <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
                     <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${name}')">✏️ 编辑</button>
@@ -3084,14 +3845,25 @@ async function setReplyLanguage(lang) {
 }
 
 async function showLLMProviderForm(editName) {
-  let name = '', provider = 'openai', model = '', apiKey = '', baseUrl = '';
+  let name = '', provider = 'openai', model = '', apiKey = '', baseUrl = '', confModels = null;
   if (editName) {
     try {
       const config = await window.dshManager.getAllConfig();
       const conf = config.settings?.llm?.[editName];
-      if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; }
+      if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; confModels = Array.isArray(conf.models) ? conf.models : null; }
     } catch {}
   }
+  // 如果已有模型列表，在异步渲染后恢复下拉
+  setTimeout(function() {
+    if (confModels && confModels.length > 0) {
+      var select = document.getElementById('llm-model-select');
+      var results = document.getElementById('llm-model-results');
+      if (select && results) {
+        select.innerHTML = confModels.map(function(m) { return '<option value="' + (m.id||'').replace(/"/g,'&quot;') + '">' + (m.id||'') + (m.ownedBy ? ' (' + m.ownedBy + ')' : '') + '</option>'; }).join('');
+        results.style.display = 'block';
+      }
+    }
+  }, 100);
   const modal = document.createElement('div');
   modal.className = 'modal-overlay active';
   modal.innerHTML = `
@@ -3146,9 +3918,19 @@ async function saveLLMProvider() {
   const providerConfig = { provider, model };
   if (apiKey) providerConfig.apiKey = apiKey;
   if (baseUrl) providerConfig.baseUrl = baseUrl;
+  // 保存完整模型列表（如果已获取）—— 对齐 DSH 官方 format
+  const modelSelect = document.getElementById('llm-model-select');
+  if (modelSelect && modelSelect.options.length > 0) {
+    providerConfig.models = Array.from(modelSelect.options).map(opt => {
+      const id = opt.value;
+      const text = opt.text || '';
+      const ownedBy = text.includes('(') ? text.match(/\(([^)]+)\)/)?.[1] : '';
+      return { id, ownedBy: ownedBy || '' };
+    });
+  }
   try {
     await window.dshManager.updateLLMProvider(name, providerConfig);
-    showToast(`✅ LLM 提供商 "${name}" 已保存`, 'success');
+    showToast('✅ LLM 提供商 "' + name + '" 已保存（' + (providerConfig.models ? providerConfig.models.length + ' 个模型' : '1 个模型') + '）', 'success');
     document.querySelector('.modal-overlay.active')?.remove();
     openSettingsTab('llm');
   } catch (err) { showToast('保存失败: ' + err.message, 'error'); }
@@ -3522,6 +4304,34 @@ async function exportDebugLog() {
 async function copyDebugLog() {
   try {
     const log = await window.dshManager.getDebugLog();
+    if (!log) { showToast('日志为空，无可复制内容', 'warning'); return; }
+    // 方法一：使用 textarea + execCommand (最可靠，兼容所有 Electron 环境)
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = log;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, log.length); // 兼容移动端
+      const success = document.execCommand('copy');
+      textarea.remove();
+      if (success) {
+        showToast('调试日志已复制到剪贴板（' + log.length + ' 字符）', 'success');
+        return;
+      }
+    } catch (e) { /* 降级到 IPC 方法 */ }
+    // 方法二：通过 IPC 调用主进程剪贴板
+    if (window.dshManager.copyToClipboard) {
+      const result = await window.dshManager.copyToClipboard(log);
+      if (result.success) {
+        showToast('调试日志已复制到剪贴板（' + log.length + ' 字符）', 'success');
+        return;
+      }
+      throw new Error(result.error || '复制失败');
+    }
+    // 方法三：Clipboard API 兜底（可能因 file:// 协议受限）
     await navigator.clipboard.writeText(log);
     showToast('调试日志已复制到剪贴板', 'success');
   } catch (e) {

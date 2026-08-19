@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 便携版 Node.js 安装
  * 
  * 低配置电脑最小化安装方案：
@@ -215,5 +221,6 @@ export async function getRuntimeConfig() {
     lowMemory: rt.lowMemory !== false,
     maxOldSpace: Number(rt.maxOldSpace) || 512,
     port: Number(rt.port) || 3080,
+    retryCount: Number(rt.retryCount) || 3,
   };
 }

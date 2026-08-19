@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - pnpm 检测工具
  * 
  * DSH 的插件管理依赖 pnpm（通过 `dsh plugin --profile <name> add <package>` 间接使用）。

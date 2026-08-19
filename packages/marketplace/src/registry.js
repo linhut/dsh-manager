@@ -1,14 +1,20 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/marketplace - 插件注册表
  * 
  * 管理本地插件注册信息、缓存、搜索
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execa } from 'execa';
-import { resolveDSHCommand } from '../../core/src/index.js';
+import { resolveDSHCommand, isSystemComponent, isExternalPlugin, classifyPackage } from '../../core/src/index.js';
 import { GitHubAPI } from './github-api.js';
 
 const DSH_HOME = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -159,6 +165,50 @@ export class PluginRegistry {
     if (page === 1) {
       this._writeCache('search', results);
     }
+
+    return results;
+  }
+
+  /**
+   * 搜索技能市场（GitHub）
+   * 搜索标记了 dsh-skill / agent-skills 等技能相关标签的仓库
+   * @param {object} [options]
+   * @param {string} [options.query] - 搜索关键词
+   * @param {number} [options.page=1]
+   * @param {number} [options.perPage=30]
+   * @returns {Promise<Array<object>>}
+   */
+  async searchSkillMarket(options = {}) {
+    const { query, page = 1, perPage = 30 } = options;
+
+    let results = [];
+
+    // 构建 GitHub 搜索查询：技能相关标签 + 可选关键词
+    const queries = [
+      `topic:dsh-skill OR topic:agent-skills OR topic:skill ${query || ''} sort:stars-desc`,
+      `${query ? query + ' ' : ''}in:name,description,readme sort:stars-desc`,
+    ];
+    for (const q of queries) {
+      try {
+        const hits = await this.github.searchRepositories(q, { page, perPage });
+        for (const h of hits) {
+          // 标记为技能来源
+          h._source = 'skill-market';
+          results.push(h);
+        }
+      } catch (e) {
+        console.warn('GitHub 技能搜索失败:', e.message);
+      }
+    }
+
+    // 去重（按 fullName）
+    const seen = new Set();
+    results = results.filter(r => {
+      const key = r.fullName || r.name;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 
     return results;
   }
@@ -342,6 +392,9 @@ export class PluginRegistry {
       }
     } catch {}
 
+    // 分类：系统组件 / 外部插件 / 用户插件
+    const category = classifyPackage(name);
+
     // 来源判断：dependencies 的原始 spec 以 github:/git: 开头则为 GitHub 安装
     const isGitSource = /^(github:|git:|https?:\/\/github\.com\/)/.test(depSpec);
     const source = isGitSource
@@ -356,6 +409,7 @@ export class PluginRegistry {
       source,
       profile,
       type,
+      category,
       installedAt: null,
       description: description || '（DSH 已安装）',
     };
@@ -384,18 +438,64 @@ export class PluginRegistry {
 
         // 收集所有 bundles 名称（按 bundles 顺序，保留依赖 spec 判断来源）
         for (const bundle of bundles) {
-          if (bundle.startsWith('@deepseek-ai/dsh-base') || bundle.startsWith('@deepseek-ai/dsh-web-app')) continue;
+          if (isSystemComponent(bundle)) continue;
           const depSpec = deps[bundle] || '';
           result.push(this._buildProfilePluginEntry(profile, bundle, depSpec));
         }
 
         // 收集所有 dependencies（去重）
         for (const [name, depSpec] of Object.entries(deps)) {
-          // 排除 DSH 核心包
-          if (name.startsWith('@deepseek-ai/dsh')) continue;
+          // 排除系统组件（DSH 核心框架）
+          if (isSystemComponent(name)) continue;
           // 排除已在 bundles 中的
           if (bundles.includes(name)) continue;
           result.push(this._buildProfilePluginEntry(profile, name, depSpec));
+        }
+
+        // ④ cordis.patch.yml 中的 include/insert 条目（profile 级 + 机器级）
+        // 这是 @linxin666 全家桶等插件常见的注册方式，不在 dependencies 中
+        const patchFiles = [
+          join(profilesDir, profile, 'cordis.patch.yml'),
+          join(DSH_HOME(), 'cordis.patch.yml'),
+        ];
+        const seenIds = new Set(result.map(p => p.id));
+        for (const patchFile of patchFiles) {
+          if (!existsSync(patchFile)) continue;
+          try {
+            const patchLines = readFileSync(patchFile, 'utf-8').split(/\r?\n/);
+            let inBlock = false;
+            for (const rawLine of patchLines) {
+              const line = rawLine.trim();
+              if (!line) continue;
+              if (/^-\s*(include|insert)\s*:\s*$/.test(line)) { inBlock = true; continue; }
+              if (/^-\s*(?:include|insert)\s*:\s*(\S+)\s*$/.test(line)) {
+                const id = line.replace(/^-\s*(?:include|insert)\s*:\s*/, '').replace(/['"]/g, '').trim();
+                if (id && !isSystemComponent(id) && !seenIds.has(id)) {
+                  seenIds.add(id);
+                  result.push(this._buildProfilePluginEntry(profile, id, ''));
+                }
+                inBlock = false;
+                continue;
+              }
+              if (inBlock && /^-\s*(\S+)\s*$/.test(line)) {
+                const id = line.replace(/^-\s*/, '').replace(/['"]/g, '').trim();
+                if (id && !isSystemComponent(id) && !seenIds.has(id)) {
+                  seenIds.add(id);
+                  result.push(this._buildProfilePluginEntry(profile, id, ''));
+                }
+                continue;
+              }
+              const nameMatch = /^name:\s*['"]?([^'"\n]+)['"]?\s*$/.exec(line);
+              if (nameMatch) {
+                const id = nameMatch[1].trim();
+                if (id && !isSystemComponent(id) && !seenIds.has(id)) {
+                  seenIds.add(id);
+                  result.push(this._buildProfilePluginEntry(profile, id, ''));
+                }
+              }
+              if (!/^\s/.test(rawLine) && !line.startsWith('-')) inBlock = false;
+            }
+          } catch {}
         }
       } catch {}
     }
@@ -437,9 +537,10 @@ export class PluginRegistry {
    * 无效条目（如 gongwen-skill 已注册但包缺失/无 apply）会导致 `dsh web` 启动失败，
    * 此诊断用于定位这类问题。
    * @param {string} [profile='web']
+   * @param {string} [stderr] - DSH 启动失败时的 stderr（从中提取运行时报错的插件 ID）
    * @returns {{total: number, invalid: Array<{id: string, reason: string}>}}
    */
-  diagnoseInvalidPlugins(profile = 'web') {
+  diagnoseInvalidPlugins(profile = 'web', stderr) {
     const profilesDir = join(DSH_HOME(), 'profiles');
     const pkgFile = join(profilesDir, profile, 'package.json');
     if (!existsSync(pkgFile)) {
@@ -454,6 +555,26 @@ export class PluginRegistry {
       invalid.push({ id, reason });
     };
 
+    // 从 stderr 提取运行时加载失败的插件（最可靠信号：DSH 自己报错说哪个插件无效）
+    if (stderr) {
+      const re = /failed to apply loader entry [^(]+\(([^)]+)\)/g;
+      let m;
+      while ((m = re.exec(stderr)) !== null) {
+        const id = m[1].trim();
+        if (id && !isSystemComponent(id)) {
+          addIssue(id, '启动时加载失败（stderr 指示）');
+        }
+      }
+      // ERR_MODULE_NOT_FOUND 中的包名
+      const re2 = /ERR_MODULE_NOT_FOUND[^\"]*"([^\"]+)"/g;
+      while ((m = re2.exec(stderr)) !== null) {
+        const id = m[1].trim();
+        if (id && !isSystemComponent(id)) {
+          addIssue(id, '模块缺失（stderr 指示）');
+        }
+      }
+    }
+
     try {
       const pkg = JSON.parse(readFileSync(pkgFile, 'utf-8'));
       const bundles = pkg.dsh?.profile?.bundles || [];
@@ -462,12 +583,12 @@ export class PluginRegistry {
 
       // ① bundles 列表（用户插件）
       for (const b of bundles) {
-        if (b.startsWith('@deepseek-ai/dsh-base') || b.startsWith('@deepseek-ai/dsh-web-app')) continue;
+        if (isSystemComponent(b)) continue;
         candidates.set(b, 'bundles');
       }
       // ② dependencies 中的非核心依赖
       for (const [name, spec] of Object.entries(deps)) {
-        if (name.startsWith('@deepseek-ai/dsh')) continue;
+        if (isSystemComponent(name)) continue;
         if (!candidates.has(name)) candidates.set(name, spec || 'dependencies');
       }
 
@@ -492,20 +613,20 @@ export class PluginRegistry {
             if (/^-\s*(include|insert)\s*:\s*$/.test(line)) { inIncludeBlock = true; continue; }
             if (/^-\s*(?:include|insert)\s*:\s*(\S+)\s*$/.test(line)) {
               const id = line.replace(/^-\s*(?:include|insert)\s*:\s*/, '').replace(/['"]/g, '').trim();
-              if (id && !id.startsWith('@deepseek-ai/') && !candidates.has(id)) candidates.set(id, 'patch include/insert');
+              if (id && !isSystemComponent(id) && !candidates.has(id)) candidates.set(id, 'patch include/insert');
               inIncludeBlock = false;
               continue;
             }
             // 块内的子列表项（多行 include 列表）与 name: 标记
             if (inIncludeBlock && /^-\s*(\S+)\s*$/.test(line)) {
               const id = line.replace(/^-\s*/, '').replace(/['"]/g, '').trim();
-              if (id && !id.startsWith('@deepseek-ai/') && !candidates.has(id)) candidates.set(id, 'patch include 列表');
+              if (id && !isSystemComponent(id) && !candidates.has(id)) candidates.set(id, 'patch include 列表');
               continue;
             }
             const nameMatch = /^name:\s*['"]?([^'"\n]+)['"]?\s*$/.exec(line);
             if (nameMatch) {
               const id = nameMatch[1].trim();
-              if (id && !id.startsWith('@deepseek-ai/') && !candidates.has(id)) candidates.set(id, 'patch insert name');
+              if (id && !isSystemComponent(id) && !candidates.has(id)) candidates.set(id, 'patch insert name');
             }
             // 缩进恢复 → 离开块
             if (!/^\s/.test(rawLine) && !line.startsWith('-')) inIncludeBlock = false;
@@ -600,29 +721,10 @@ export class PluginRegistry {
         } catch {}
       }
 
-      // ③ 清理 cordis.patch.yml 中的 insert / include 条目（profile 级 + 机器级）
-      const patchFiles = [
-        join(profilesDir, profile, 'cordis.patch.yml'),
-        join(DSH_HOME(), 'cordis.patch.yml'),
-      ];
-      for (const patchFile of patchFiles) {
-        if (!existsSync(patchFile)) continue;
-        try {
-          let content = readFileSync(patchFile, 'utf-8');
-          const escaped = item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          // 移除包含该 id 的 insert 块（- insert: ... name: <id> ...）
-          const insertRe = new RegExp(`-\\s*insert:\\s*\\n(?:[ \\t]+[^\\n]*\\n)*[ \\t]+name:\\s*['"]?${escaped}['"]?[^\\n]*\\n(?:[ \\t]+[^\\n]*\\n)*`, 'g');
-          // 移除 include 块中指向该 id 的条目（- include: <id> 或 - <id> 裸列表项）
-          const includeRe = new RegExp(`^\\s*-\\s*(?:include:\\s*)?['"]?${escaped}['"]?\\s*\\n`, 'gm');
-          let newContent = content.replace(insertRe, '').replace(includeRe, '');
-          // 清理 include 子列表中裸项：形如 "    - <id>"（include 后多行列表）
-          const nestedRe = new RegExp(`^\\s+-\\s*['"]?${escaped}['"]?\\s*\\n`, 'gm');
-          newContent = newContent.replace(nestedRe, '');
-          if (newContent !== content) {
-            writeFileSync(patchFile, newContent, 'utf-8');
-          }
-        } catch {}
-      }
+      // ③ 清理 cordis.patch.yml 中的条目（使用共享方法）
+      try {
+        this.cleanupPatchEntries(profile, item.id);
+      } catch {}
 
       if (removed) {
         fixed.push({ id: item.id, method: 'dsh plugin remove / 配置移除' });
@@ -861,5 +963,192 @@ export class PluginRegistry {
     const dir = join(DSH_HOME(), 'manager');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(REGISTRY_PATH(), JSON.stringify(plugins, null, 2), 'utf-8');
+  }
+
+  /**
+   * 从 cordis.patch.yml 中移除指定插件 ID 的条目（profile 级 + 机器级）
+   * 兼容 include/insert 单行、嵌套列表、多行块等格式，同时清理兄弟项与空块头。
+   * @param {string} profile
+   * @param {string|string[]} pluginIds - 要移除的插件 ID 或 ID 数组
+   */
+  cleanupPatchEntries(profile, pluginIds) {
+    const ids = Array.isArray(pluginIds) ? pluginIds : [pluginIds];
+    const profilesDir = join(DSH_HOME(), 'profiles');
+    const patchFiles = [
+      join(profilesDir, profile, 'cordis.patch.yml'),
+      join(DSH_HOME(), 'cordis.patch.yml'),
+    ];
+    for (const patchFile of patchFiles) {
+      if (!existsSync(patchFile)) continue;
+      try {
+        const original = readFileSync(patchFile, 'utf-8');
+        const lines = original.split(/\r?\n/);
+        const isTarget = (text) => ids.some(id => text.includes(id));
+
+        let result = [];
+        let i = 0;
+        while (i < lines.length) {
+          const line = lines[i];
+          const trimmed = line.trim();
+
+          // 单行 include/insert: <id>
+          if (/^-\s*(?:include|insert)\s*:\s*['"]?\S+['"]?\s*$/.test(trimmed)) {
+            if (isTarget(trimmed)) { i++; continue; }
+            result.push(line); i++; continue;
+          }
+
+          // 裸列表项 - <id>（顶层或嵌套）
+          if (/^-\s+\S+/.test(trimmed) && !/^-\s*(include|insert)\s*:\s*$/.test(trimmed)) {
+            if (isTarget(trimmed)) { i++; continue; }
+            result.push(line); i++; continue;
+          }
+
+          // 块头 - include:/insert:（单独一行，冒号后无值）
+          if (/^-\s*(include|insert)\s*:\s*$/.test(trimmed)) {
+            let j = i + 1;
+            const blockLines = [line];
+            let anyRemoved = false;
+            while (j < lines.length && /^\s+/.test(lines[j])) {
+              const childTrimmed = lines[j].trim();
+              if (isTarget(childTrimmed)) {
+                j++;
+                while (j < lines.length && /^\s+/.test(lines[j]) && !/^-\s+/.test(lines[j].trim())) {
+                  j++;
+                }
+                anyRemoved = true;
+              } else {
+                blockLines.push(lines[j]);
+                j++;
+              }
+            }
+            if (blockLines.length > 1) {
+              result.push(...blockLines);
+            }
+            i = j;
+            continue;
+          }
+
+          result.push(line);
+          i++;
+        }
+        const newContent = result.join('\n');
+        if (newContent !== original) {
+          writeFileSync(patchFile, newContent, 'utf-8');
+        }
+      } catch (e) {
+        console.warn('清理 patch 文件失败:', patchFile, e.message);
+      }
+    }
+  }
+
+  /**
+   * 在 cordis.patch.yml 中设置插件的 disabled 标记（禁用/启用插件）
+   * 兼容 include/insert 单行与多行块格式
+   * @param {string} profile
+   * @param {string} pluginId
+   * @param {boolean} disabled
+   * @returns {{success: boolean, message?: string}}
+   */
+  setPluginDisabled(profile, pluginId, disabled) {
+    const profilesDir = join(DSH_HOME(), 'profiles');
+    const patchFiles = [
+      join(profilesDir, profile, 'cordis.patch.yml'),
+      join(DSH_HOME(), 'cordis.patch.yml'),
+    ];
+    let touched = false;
+    for (const patchFile of patchFiles) {
+      if (!existsSync(patchFile)) continue;
+      try {
+        const original = readFileSync(patchFile, 'utf-8');
+        const lines = original.split(/\r?\n/);
+        const out = [];
+        let inBlock = null; // 'include' | 'insert' | null
+        let blockIndent = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const trimmed = line.trim();
+
+          // 单行 include/insert: <id>
+          const singleMatch = /^-\s*(include|insert):\s*['"]?([^'"\s]+)['"]?\s*$/.exec(trimmed);
+          if (singleMatch && !inBlock) {
+            const [, type, id] = singleMatch;
+            if (id === pluginId) {
+              if (disabled) {
+                // 改为两行：- include: <id>\n  disabled: true
+                out.push(line);
+                const indent = (line.match(/^\s*/) || [''])[0] + '  ';
+                out.push(indent + 'disabled: true');
+              } else {
+                // 移除紧随的 disabled: true 行（若存在）
+                out.push(line);
+                const nextLine = lines[i + 1] || '';
+                if (nextLine.trim().startsWith('disabled:')) {
+                  i++; // 跳过下一行
+                }
+              }
+              touched = touched || true;
+            } else {
+              out.push(line);
+            }
+            continue;
+          }
+
+          // 块头：- include:/insert:（冒号后无值）
+          const blockMatch = /^-\s*(include|insert):\s*$/.exec(trimmed);
+          if (blockMatch && !inBlock) {
+            inBlock = blockMatch[1];
+            blockIndent = (line.match(/^\s*/) || [''])[0].length;
+            out.push(line);
+            continue;
+          }
+
+          // 块内行
+          if (inBlock) {
+            const indentLen = (line.match(/^\s*/) || [''])[0].length;
+            if (/^\s+/.test(line)) {
+              // 子项行：- <id> / - id: <id> / name: <id> / disabled: <bool>
+              const childMatch = /^\s*-(?:\s*(?:id|name)\s*:\s*)?['"]?([^'"\s]+)['"]?/.exec(trimmed);
+              if (childMatch && childMatch[1] === pluginId) {
+                // 找到目标条目：在条目末尾添加/移除 disabled
+                out.push(line);
+                // 查找并处理该条目的后续兄弟行（name:, disabled: 等）
+                let j = i + 1;
+                let itemLines = [line];
+                while (j < lines.length && /^\s+/.test(lines[j]) && indentLen === (lines[j].match(/^\s*/) || [''])[0].length) {
+                  // 同层级缩进的键值行属于当前条目
+                  break;
+                }
+                if (disabled && !/disabled\s*:/.test(itemLines.join('\n'))) {
+                  out.push(' '.repeat(blockIndent + 2) + 'disabled: true');
+                }
+                touched = true;
+                continue;
+              }
+              if (/^\s*disabled\s*:/.test(trimmed) && !disabled) {
+                // 删除前面的 disabled 行（已在 if 中通过 itemLines 处理）
+                continue; // 直接跳过
+              }
+              out.push(line);
+              continue;
+            }
+            // 块结束
+            inBlock = null;
+            out.push(line);
+            continue;
+          }
+
+          // 普通行
+          out.push(line);
+        }
+        const newContent = out.join('\n');
+        if (newContent !== original) {
+          writeFileSync(patchFile, newContent, 'utf-8');
+          touched = true;
+        }
+      } catch (e) {
+        console.warn('设置插件 disabled 失败:', patchFile, e.message);
+      }
+    }
+    return { success: touched, message: touched ? (disabled ? '已禁用' : '已启用') : '未找到对应条目' };
   }
 }

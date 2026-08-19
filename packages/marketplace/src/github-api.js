@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/marketplace - GitHub API 封装
  * 
  * 搜索 dsh-plugin 主题仓库、获取仓库详情、README 等
@@ -71,7 +77,7 @@ export class GitHubAPI {
     this.token = options.token || process.env.GITHUB_TOKEN || null;
     this.headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'dsh-manager/1.3.0',
+      'User-Agent': 'dsh-manager/1.3.3',
       ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
     };
   }

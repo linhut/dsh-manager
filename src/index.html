@@ -1,3 +1,9 @@
+<!--
+  DSH Manager
+  Copyright (c) 2026 linhut (https://github.com/linhut)
+  MIT License
+-->
+
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -82,6 +88,10 @@
           <span class="nav-icon">⚙️</span>
           <span class="nav-label">设置</span>
         </button>
+        <button class="nav-item" data-page="prompts" onclick="switchPage('prompts')">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">总提示词</span>
+        </button>
       </div>
 
       <div class="sidebar-footer">
@@ -92,6 +102,10 @@
         <div class="dsh-status" id="npmStatus">
           <span class="status-dot status-unknown"></span>
           <span class="status-text">npm 检测中...</span>
+        </div>
+        <div class="dsh-status" id="depsHealthStatus" style="cursor:pointer;" onclick="repairDepsFromUI()" title="点击查看/修复依赖完整性">
+          <span class="status-dot status-unknown"></span>
+          <span class="status-text">依赖检测中...</span>
         </div>
         <div class="dsh-status" id="pnpmStatus">
           <span class="status-dot status-unknown"></span>
@@ -177,6 +191,17 @@
           <p class="page-desc">DSH 配置管理</p>
         </div>
         <div id="settingsContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: 总提示词管理 ====== -->
+      <div class="page" id="page-prompts">
+        <div class="page-header">
+          <h1 class="page-title">📋 总提示词管理</h1>
+          <p class="page-desc">全局工作指令：注入 Agent 上下文的持久化提示词</p>
+        </div>
+        <div id="promptsContent">
           <!-- 由 JS 动态渲染 -->
         </div>
       </div>

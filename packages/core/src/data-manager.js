@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 数据管理
  * 
  * 统计 DSH 各数据目录占用，按需清理会话/缓存/存储。

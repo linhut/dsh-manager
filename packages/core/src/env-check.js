@@ -1,4 +1,10 @@
 /**
+ * DSH Manager
+ * Copyright (c) 2026 linhut (https://github.com/linhut)
+ * MIT License
+ */
+
+/**
  * @dsh-manager/core - 基础环境检测
  * 
  * 面向"基础空白环境"（可能连 Node.js/npm 都未安装）的部署检测：
