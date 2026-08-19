@@ -978,10 +978,61 @@ async function renderPluginsPage() {
   if (!el) return;
 
   let localPlugins = [];
+  let composedPlugins = [];
   try {
     // 强制刷新：读取 DSH profile 中实际安装的插件（版本/描述/来源）
     localPlugins = await window.dshManager.getLocalPlugins(true);
   } catch {}
+  try {
+    // 完整组合插件树（等同 DSH 设置页展示：含核心框架 + bundle 展开子插件 + 启用状态）
+    composedPlugins = await window.dshManager.getComposedPlugins('web', true);
+  } catch {}
+
+  // 版本信息合并：composed 条目无版本号，从 localPlugins 按 id 补齐
+  const localById = new Map(localPlugins.map(p => [p.id, p]));
+  const merged = composedPlugins.map(c => {
+    const lp = localById.get(c.id);
+    return { ...c, version: lp?.version || null, type: lp?.type || (c.core ? 'core' : 'dsh') };
+  });
+
+  // 按 bundle 分组：用户 bundle（非核心）在前，核心框架在后
+  const byBundle = new Map();
+  for (const p of merged) {
+    const key = p.bundle || (p.core ? '@deepseek-ai/dsh-base' : 'unknown');
+    if (!byBundle.has(key)) byBundle.set(key, []);
+    byBundle.get(key).push(p);
+  }
+  const bundleGroups = [...byBundle.entries()].sort((a, b) => {
+    const aCore = a[0].startsWith('@deepseek-ai/');
+    const bCore = b[0].startsWith('@deepseek-ai/');
+    return (aCore === bCore) ? 0 : (aCore ? 1 : -1);
+  });
+  const totalPlugins = merged.length;
+  const userBundles = bundleGroups.filter(([b]) => !b.startsWith('@deepseek-ai/'));
+  const coreBundles = bundleGroups.filter(([b]) => b.startsWith('@deepseek-ai/'));
+
+  const renderBundleRows = (groups) => groups.map(([bundle, items]) => `
+    <tr class="plugin-bundle-row">
+      <td colspan="5" style="font-weight:600;font-size:12px;color:var(--text-secondary);background:var(--bg-hover);">
+        📦 ${escapeHtml(bundle)}
+        <span style="font-weight:400;color:var(--text-dim);">（${items.length}）</span>
+      </td>
+    </tr>
+    ${items.map(p => `
+      <tr>
+        <td><strong>${escapeHtml(p.name || p.id)}</strong>${p.core ? ' <span class="badge badge-gray">核心</span>' : ''}</td>
+        <td><span class="badge badge-blue">${p.version || '-'}</span></td>
+        <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : p.type === 'core' ? '框架' : 'npm'}</td>
+        <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
+        <td>
+          ${p.core
+            ? '<span style="font-size:11px;color:var(--text-dim);">系统插件</span>'
+            : `<button class="btn btn-sm btn-ghost" onclick="togglePlugin('${escapeAttr(p.id)}', ${p.enabled !== false})">${p.enabled !== false ? '禁用' : '启用'}</button>
+               <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${escapeAttr(p.id)}')">卸载</button>`}
+        </td>
+      </tr>
+    `).join('')}
+  `).join('');
 
   el.innerHTML = `
     <div style="margin-bottom:20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
@@ -991,6 +1042,7 @@ async function renderPluginsPage() {
       <button class="btn btn-secondary" onclick="checkPluginUpdates()">
         🔄 检查更新
       </button>
+      <span style="font-size:12px;color:var(--text-dim);">共 ${totalPlugins} 个插件（用户 bundle ${userBundles.length} 组 · 核心框架 ${coreBundles.length} 组）</span>
       <div class="search-box" style="margin-left:auto;">
         <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
@@ -1019,7 +1071,7 @@ async function renderPluginsPage() {
       </div>
     </div>
     <div id="pluginList">
-      ${localPlugins.length === 0
+      ${totalPlugins === 0
         ? `<div class="empty-state">
              <div class="empty-state-icon">🔌</div>
              <div class="empty-state-title">暂无已安装的插件</div>
@@ -1038,18 +1090,8 @@ async function renderPluginsPage() {
                  </tr>
                </thead>
                <tbody>
-                 ${localPlugins.map(p => `
-                   <tr>
-                     <td><strong>${p.name || p.id}</strong></td>
-                     <td><span class="badge badge-blue">${p.version}</span></td>
-                     <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : 'npm'}</td>
-                     <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
-                     <td>
-                       <button class="btn btn-sm btn-ghost" onclick="togglePlugin('${escapeAttr(p.id)}', ${p.enabled !== false})">${p.enabled !== false ? '禁用' : '启用'}</button>
-                       <button class="btn btn-sm btn-ghost" onclick="uninstallPlugin('${escapeAttr(p.id)}')">卸载</button>
-                     </td>
-                   </tr>
-                 `).join('')}
+                 ${renderBundleRows(userBundles)}
+                 ${renderBundleRows(coreBundles)}
                </tbody>
              </table>
            </div>`

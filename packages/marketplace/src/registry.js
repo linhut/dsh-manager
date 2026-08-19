@@ -7,6 +7,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { execa } from 'execa';
+import { resolveDSHCommand } from '../../core/src/index.js';
 import { GitHubAPI } from './github-api.js';
 
 const DSH_HOME = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -16,6 +18,10 @@ const CACHE_PATH = () => join(DSH_HOME(), 'manager', 'marketplace-cache.json');
 let profilePluginsCache = null;
 let profilePluginsCacheTime = 0;
 const PROFILE_CACHE_TTL = 15_000; // 15 秒，覆盖安装/卸载后的同步窗口
+/** 完整插件树缓存（来自 dsh --dump-config，执行成本高，TTL 更长） */
+let composedCache = null;
+let composedCacheTime = 0;
+const COMPOSED_CACHE_TTL = 60_000; // 60 秒
 
 export class PluginRegistry {
   /**
@@ -421,6 +427,67 @@ export class PluginRegistry {
       }
     }
     return local;
+  }
+
+  /**
+   * 获取 DSH profile 的完整组合插件树（等同 DSH 设置页展示内容）
+   * 通过执行 `dsh --profile <name> --dump-config` 解析，包含：
+   *   - 核心框架插件（@deepseek-ai/dsh-base / dsh-web-app）
+   *   - 用户安装的 bundle 及其展开的子插件（如 dsh-web-ui-all → web-ui-* 系列）
+   * 每个插件带 bundle 来源与 disabled 状态。
+   * @param {string} [profile='web'] - profile 名称
+   * @param {boolean} [forceRefresh=false] - 强制绕过缓存重新执行
+   * @returns {Promise<Array<{id: string, name: string, bundle: string, enabled: boolean, core: boolean}>>}
+   */
+  async getComposedPlugins(profile = 'web', forceRefresh = false) {
+    const now = Date.now();
+    if (composedCache && !forceRefresh && (now - composedCacheTime) < COMPOSED_CACHE_TTL) {
+      return composedCache;
+    }
+
+    const result = [];
+    let bundle = '';
+    try {
+      const dshCmd = await resolveDSHCommand();
+      const { stdout } = await execa(dshCmd, ['--profile', profile, '--dump-config'], {
+        reject: false,
+        timeout: 30_000,
+      });
+      if (!stdout) throw new Error('dump-config 无输出');
+
+      // 解析格式：
+      //   # == <bundle>                     → 当前插件来源 bundle（可能带 ", patched by xxx"）
+      //   - id: <id>                        → 插件 id
+      //   - id: <id> 后跟 "  disabled: true" → 禁用状态（下一行）
+      const lines = stdout.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        const bundleMatch = /^# ==\s*(.+)$/.exec(line);
+        if (bundleMatch) {
+          // 取第一个 bundle（patched by 前的部分）
+          bundle = bundleMatch[1].split(',')[0].trim();
+          continue;
+        }
+        const idMatch = /^- id:\s*(\S+)$/.exec(line);
+        if (idMatch) {
+          const id = idMatch[1];
+          // 检查下一行是否为 disabled: true
+          const nextLine = (lines[i + 1] || '').trim();
+          const disabled = /^disabled:\s*true$/.test(nextLine);
+          const isCore = bundle.startsWith('@deepseek-ai/');
+          result.push({ id, name: id, bundle, enabled: !disabled, core: isCore });
+        }
+      }
+    } catch (error) {
+      // 执行失败时返回空并提示（调用方可降级到 getLocalPlugins）
+      composedCache = result;
+      composedCacheTime = now;
+      return result;
+    }
+
+    composedCache = result;
+    composedCacheTime = now;
+    return result;
   }
 
   /**

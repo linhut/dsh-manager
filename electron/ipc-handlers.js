@@ -383,6 +383,12 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return registry.getLocalPlugins(forceRefresh);
   });
 
+  ipcMain.handle('marketplace:composed-plugins', async (_, profile = 'web', forceRefresh = false) => {
+    const { PluginRegistry } = await loadMarketplace();
+    const registry = new PluginRegistry();
+    return await registry.getComposedPlugins(profile, forceRefresh);
+  });
+
   ipcMain.handle('marketplace:check-updates', async () => {
     const { PluginRegistry } = await loadMarketplace();
     const registry = new PluginRegistry();
