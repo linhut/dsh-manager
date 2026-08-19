@@ -1,6 +1,6 @@
 {
   "name": "dsh-manager",
-  "version": "1.2.0",
+  "version": "1.2.4",
   "description": "🐳 DeepSeek Harness 安装与管理工具 — 一键安装、插件市场、版本管理",
   "author": {
     "name": "DSH Manager Team",
@@ -36,7 +36,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico"
@@ -52,7 +54,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "build/icon.png",
@@ -62,7 +67,9 @@
       "target": [
         {
           "target": "AppImage",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.png",
@@ -72,7 +79,9 @@
       {
         "from": "packages",
         "to": "packages",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ]
   },
