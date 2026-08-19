@@ -471,16 +471,44 @@ export class PluginRegistry {
         if (!candidates.has(name)) candidates.set(name, spec || 'dependencies');
       }
 
-      // ③ cordis.patch.yml 中的 insert 条目
-      const patchFile = join(profilesDir, profile, 'cordis.patch.yml');
-      if (existsSync(patchFile)) {
+      // ③ cordis.patch.yml 中的 insert / include 条目（profile 级 + 机器级）
+      // 逐行解析，覆盖多种写法：
+      //   - insert: / include: 单行（- include: <id>）
+      //   - insert: / include: 多行子列表（- include: \n   - <id>）
+      //   - name: <id>（insert 条目标记）
+      const patchFiles = [
+        join(profilesDir, profile, 'cordis.patch.yml'),
+        join(DSH_HOME(), 'cordis.patch.yml'), // 机器级，对所有 profile 生效
+      ];
+      for (const patchFile of patchFiles) {
+        if (!existsSync(patchFile)) continue;
         try {
-          const patchContent = readFileSync(patchFile, 'utf-8');
-          const insertNames = [...patchContent.matchAll(/name:\s*['"]?([^'"\n]+)['"]?/g)]
-            .map(m => m[1].trim())
-            .filter(n => n && !n.startsWith('@deepseek-ai/'));
-          for (const n of insertNames) {
-            if (!candidates.has(n)) candidates.set(n, 'cordis.patch.yml insert');
+          const patchLines = readFileSync(patchFile, 'utf-8').split(/\r?\n/);
+          let inIncludeBlock = false;
+          for (const rawLine of patchLines) {
+            const line = rawLine.trim();
+            if (!line) continue;
+            // 进入 include/insert 块（单行或多行形式）
+            if (/^-\s*(include|insert)\s*:\s*$/.test(line)) { inIncludeBlock = true; continue; }
+            if (/^-\s*(?:include|insert)\s*:\s*(\S+)\s*$/.test(line)) {
+              const id = line.replace(/^-\s*(?:include|insert)\s*:\s*/, '').replace(/['"]/g, '').trim();
+              if (id && !id.startsWith('@deepseek-ai/') && !candidates.has(id)) candidates.set(id, 'patch include/insert');
+              inIncludeBlock = false;
+              continue;
+            }
+            // 块内的子列表项（多行 include 列表）与 name: 标记
+            if (inIncludeBlock && /^-\s*(\S+)\s*$/.test(line)) {
+              const id = line.replace(/^-\s*/, '').replace(/['"]/g, '').trim();
+              if (id && !id.startsWith('@deepseek-ai/') && !candidates.has(id)) candidates.set(id, 'patch include 列表');
+              continue;
+            }
+            const nameMatch = /^name:\s*['"]?([^'"\n]+)['"]?\s*$/.exec(line);
+            if (nameMatch) {
+              const id = nameMatch[1].trim();
+              if (id && !id.startsWith('@deepseek-ai/') && !candidates.has(id)) candidates.set(id, 'patch insert name');
+            }
+            // 缩进恢复 → 离开块
+            if (!/^\s/.test(rawLine) && !line.startsWith('-')) inIncludeBlock = false;
           }
         } catch {}
       }
@@ -572,12 +600,24 @@ export class PluginRegistry {
         } catch {}
       }
 
-      // ③ 清理 cordis.patch.yml 中的 insert 条目
-      if (existsSync(patchFile)) {
+      // ③ 清理 cordis.patch.yml 中的 insert / include 条目（profile 级 + 机器级）
+      const patchFiles = [
+        join(profilesDir, profile, 'cordis.patch.yml'),
+        join(DSH_HOME(), 'cordis.patch.yml'),
+      ];
+      for (const patchFile of patchFiles) {
+        if (!existsSync(patchFile)) continue;
         try {
           let content = readFileSync(patchFile, 'utf-8');
-          const blockRe = new RegExp(`-\\s*insert:\\s*\\n(?:[ \\t]+[^\\n]*\\n)*[ \\t]+name:\\s*['"]?${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]?[^\\n]*\\n(?:[ \\t]+[^\\n]*\\n)*`, 'g');
-          const newContent = content.replace(blockRe, '');
+          const escaped = item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          // 移除包含该 id 的 insert 块（- insert: ... name: <id> ...）
+          const insertRe = new RegExp(`-\\s*insert:\\s*\\n(?:[ \\t]+[^\\n]*\\n)*[ \\t]+name:\\s*['"]?${escaped}['"]?[^\\n]*\\n(?:[ \\t]+[^\\n]*\\n)*`, 'g');
+          // 移除 include 块中指向该 id 的条目（- include: <id> 或 - <id> 裸列表项）
+          const includeRe = new RegExp(`^\\s*-\\s*(?:include:\\s*)?['"]?${escaped}['"]?\\s*\\n`, 'gm');
+          let newContent = content.replace(insertRe, '').replace(includeRe, '');
+          // 清理 include 子列表中裸项：形如 "    - <id>"（include 后多行列表）
+          const nestedRe = new RegExp(`^\\s+-\\s*['"]?${escaped}['"]?\\s*\\n`, 'gm');
+          newContent = newContent.replace(nestedRe, '');
           if (newContent !== content) {
             writeFileSync(patchFile, newContent, 'utf-8');
           }
