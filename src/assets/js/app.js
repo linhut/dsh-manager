@@ -174,10 +174,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // 首次渲染页面（让用户尽快看到内容，不因检测阻塞）
+  // 低配置优化：plugins/skills/versions 为重型页面（会执行 dsh 命令/网络请求），
+  // 改为进入对应页面时由 switchPage 懒加载，避免启动时全部跑一遍拖慢应用
   renderInstallPage();
-  renderPluginsPage();
-  renderSkillsPage();
-  renderVersionsPage();
   renderSettingsPage();
   renderAboutPage();
 
@@ -225,8 +224,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // (已移至 Promise.race .then() 中)
 
   // 开启"启动时检查 DSH 更新"则静默检查一次
+  // 低配置优化：延迟 15 秒执行，避开启动高峰期（dsh 状态检测等子进程并发），
+  // 避免低配机器在启动瞬间因多个子进程争抢 CPU/IO 而卡顿
   if (checkUpdatesOnStartup) {
-    checkDSHUpdateStartup();
+    setTimeout(() => { try { checkDSHUpdateStartup(); } catch {} }, 15_000);
   }
 });
 
