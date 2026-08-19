@@ -212,12 +212,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 30_000))
   ]).catch(() => {});
 
+  // 异步检测 npm 状态（带超时保护）
+  let npmCheckDone = false;
+  Promise.race([
+    checkNpmStatus().then(() => { npmCheckDone = true; }),
+    new Promise(r => setTimeout(() => {
+      if (!npmCheckDone) {
+        console.warn('checkNpmStatus 超时，跳过');
+        updateStatusToError('npmStatus', 'npm 检测超时');
+      }
+      r();
+    }, 30_000))
+  ]).catch(() => {});
+
   // 读取 Manager 设置（自动打开控制台 / 启动时检查更新）
   let autoStartConsole = true;
   let checkUpdatesOnStartup = true;
   try {
     autoStartConsole = (await window.dshManager.getConfig('manager.auto-start-dsh')) !== false;
     checkUpdatesOnStartup = (await window.dshManager.getConfig('manager.check-updates')) !== false;
+  } catch {}
+
+  // 运行配置：自定义 DSH Web 端口 → 同步 state.dshUrl（控制台区域用）
+  try {
+    const rt = (await window.dshManager.getConfig('manager.runtime')) || {};
+    const rtPort = Number(rt.port);
+    if (rtPort && rtPort !== 3080) {
+      state.dshUrl = `http://127.0.0.1:${rtPort}`;
+    }
   } catch {}
 
   //   // 等 checkDSHStatus 完成后再尝试加载 DSH Web
@@ -293,6 +315,36 @@ async function checkDSHStatus() {
   } catch (err) {
     console.error('状态检测失败:', err);
     updateStatusToError('dshStatus', 'DSH 检测失败');
+  }
+}
+
+// ====== npm 状态检测 ======
+async function checkNpmStatus() {
+  const statusEl = document.getElementById('npmStatus');
+  if (!statusEl) return;
+
+  try {
+    const env = await window.dshManager.checkEnvironment();
+    const npm = env?.npm || {};
+    const dot = statusEl.querySelector('.status-dot');
+    const text = statusEl.querySelector('.status-text');
+
+    if (npm.installed) {
+      dot.className = 'status-dot status-ok';
+      text.textContent = `npm ${(npm.version || '').replace(/^v/, '')}`;
+      statusEl.style.cursor = 'default';
+      statusEl.title = '';
+      statusEl.onclick = null;
+    } else {
+      dot.className = 'status-dot status-error';
+      text.textContent = 'npm 未安装';
+      statusEl.style.cursor = 'pointer';
+      statusEl.title = 'npm 随 Node.js 一起提供，请先安装 Node.js';
+      statusEl.onclick = null;
+    }
+  } catch (err) {
+    console.error('npm 检测失败:', err);
+    updateStatusToError('npmStatus', 'npm 检测失败');
   }
 }
 
@@ -389,9 +441,9 @@ async function tryLoadDSHWeb() {
     return;
   }
 
-  // 尝试连接 DSH Web
+  // 尝试连接 DSH Web（使用运行配置端口）
   try {
-    const resp = await fetchWithTimeout('http://127.0.0.1:3080', 3000);
+    const resp = await fetchWithTimeout(state.dshUrl, 3000);
     if (resp.ok) {
       placeholder.style.display = 'none';
       webview.style.display = 'flex';
@@ -403,14 +455,14 @@ async function tryLoadDSHWeb() {
 
       // 自动刷新 webview
       try {
-        if (webview.src === 'http://127.0.0.1:3080') {
+        if (webview.src === state.dshUrl) {
           webview.reload();
         } else {
-          webview.src = 'http://127.0.0.1:3080';
+          webview.src = state.dshUrl;
         }
       } catch (e) {
         console.warn('webview 刷新失败:', e.message);
-        webview.src = 'http://127.0.0.1:3080';
+        webview.src = state.dshUrl;
       }
 
       // 刷新工具栏
@@ -473,7 +525,7 @@ async function tryStartDSH() {
     const tryConnect = async () => {
       retries++;
       try {
-        const resp = await fetchWithTimeout('http://127.0.0.1:3080', 3000);
+        const resp = await fetchWithTimeout(state.dshUrl, 3000);
         if (resp.ok) {
           showToast('DSH 已启动！', 'success');
           tryLoadDSHWeb();
@@ -728,20 +780,23 @@ async function renderEnvStatus() {
   if (!el) return;
   let env = null;
   try {
-    // 带超时保护的环境检测（30秒超时，防止挂死）
+    // 带超时保护的环境检测（15秒超时，低配机器更快反馈；防止挂死）
     env = await Promise.race([
       window.dshManager.checkEnvironment(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('环境检测超时')), 30_000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('环境检测超时')), 15_000))
     ]);
   } catch (e) {
     console.warn('环境检测失败:', e.message);
   }
   if (!env) {
-    el.innerHTML = '<p style="color:var(--error);font-size:13px;">⚠️ 环境检测失败</p>';
+    el.innerHTML = '<p style="color:var(--error);font-size:13px;">⚠️ 环境检测失败，请点击「🔄 重新检测」重试</p>';
     return;
   }
 
-  const { node, npm, pnpm, git } = env;
+  const node = env.node || {};
+  const npm = env.npm || {};
+  const pnpm = env.pnpm || {};
+  const git = env.git || {};
   const row = (icon, label, info) => `
     <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
       <span>${icon}</span>
@@ -749,31 +804,33 @@ async function renderEnvStatus() {
       <span>${info}</span>
     </div>`;
 
+  const nodeVersion = (node.version || '').replace(/^v/, '');
   const nodeRow = node.installed
-    ? row('✅', 'Node.js', `<strong>${node.version}</strong>`)
+    ? row('✅', 'Node.js', `<strong>${nodeVersion}</strong>${node.source === 'portable' ? ' <span class="badge badge-blue">便携版</span>' : ''}`)
     : row('❌', 'Node.js', '<span style="color:var(--error);">未安装（DSH 依赖 Node.js 18+）</span>');
   const npmRow = npm.installed
-    ? row('✅', 'npm', `<strong>${npm.version}</strong>`)
+    ? row('✅', 'npm', `<strong>${(npm.version || '').replace(/^v/, '')}</strong>${npm.source === 'portable' ? ' <span class="badge badge-blue">便携版</span>' : ''}`)
     : row('❌', 'npm', '<span style="color:var(--error);">未安装（随 Node.js 一起提供）</span>');
   const pnpmRow = pnpm.installed
-    ? row('✅', 'pnpm', `<strong>${pnpm.version}</strong>`)
+    ? row('✅', 'pnpm', `<strong>${(pnpm.version || '').replace(/^v/, '')}</strong>`)
     : row('⚠️', 'pnpm', '<span style="color:var(--warning);">未安装（插件管理需要，可一键安装）</span>');
-  const gitRow = git?.installed
-    ? row('✅', 'git', `<strong>${git.version}</strong>`)
+  const gitRow = git.installed
+    ? row('✅', 'git', `<strong>${(git.version || '').replace(/^git version /, '')}</strong>`)
     : row('❌', 'git', '<span style="color:var(--error);">未安装（GitHub 插件安装需要，可一键安装）</span>');
 
   const missingNode = !node.installed;
   const missingNpm = !npm.installed;
-  const missingGit = !git?.installed;
-  // 便携版 Node 状态（低配置最小化安装）
+  const missingGit = !git.installed;
+  // 便携版 Node 状态（低配置最小化安装）与 env 检测并行获取，减少等待
   let portable = { installed: false, version: null };
   try { portable = await window.dshManager.getPortableNode(); } catch {}
   const portableRow = portable.installed
-    ? row('📦', '便携版 Node', `<strong>${portable.version}</strong> <span class="badge badge-blue">低配推荐</span>`)
+    ? row('📦', '便携版 Node', `<strong>${(portable.version || '').replace(/^v/, '')}</strong> <span class="badge badge-blue">低配推荐</span>`)
     : row('📦', '便携版 Node', '<span style="color:var(--text-dim);">未安装（镜像下载、免安装、不污染系统）</span>');
   el.innerHTML = `
     ${nodeRow}${npmRow}${pnpmRow}${gitRow}${portableRow}
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
+      <button class="btn btn-sm btn-ghost" onclick="renderEnvStatus()" title="重新检测基础环境">🔄 重新检测</button>
       ${(missingNode || missingNpm) ? `
         <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://nodejs.org')">🌐 官网下载</button>` : ''}

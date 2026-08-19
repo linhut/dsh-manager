@@ -571,20 +571,20 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           headers: { 'Authorization': 'Bearer ' + (apiKey || ''), 'Accept': 'application/json' },
           signal: AbortSignal.timeout(15000),
         });
-        if (!resp.ok) { lastErr = 'HTTP ' + resp.status + ': ' + resp.statusText; continue; }
+        if (!resp.ok) { lastErr = 'HTTP ' + resp.status + ' ' + resp.statusText + '（' + url + '）'; continue; }
         const data = await resp.json();
         const models = (data.data || []).map(m => ({
           id: m.id,
           ownedBy: m.owned_by || '',
           created: m.created ? new Date(m.created * 1000).toISOString() : '',
         })).sort((a, b) => a.id.localeCompare(b.id));
-        return { success: true, models, count: models.length };
+        return { success: true, models, count: models.length, sourceUrl: url };
       } catch (e) {
-        lastErr = e.message;
+        lastErr = e.message + '（' + url + '）';
         // 继续尝试下一个候选 URL
       }
     }
-    return { success: false, error: lastErr || '无法连接到模型服务，请检查 API Base URL 和 Key' };
+    return { success: false, error: lastErr || '无法连接到模型服务，请检查 API Base URL 和 Key', candidates };
   });
 
   // ====== MCP 服务端管理 ======
