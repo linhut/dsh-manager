@@ -67,6 +67,13 @@ export function parseYAML(yaml) {
       const key = content.slice(0, -1).trim();
       parent[key] = {};
       stack.push({ indent, obj: parent[key] });
+    } else if (content.startsWith('- ')) {
+      // 列表项（须在键值对判断之前：`- Y:/path` 含冒号但应为列表项字符串）
+      const item = content.slice(2).trim();
+      if (!Array.isArray(parent._items)) {
+        parent._items = [];
+      }
+      parent._items.push(parseScalar(item));
     } else if (content.includes(':')) {
       // 键值对
       const colonIdx = content.indexOf(':');
@@ -78,13 +85,6 @@ export function parseYAML(yaml) {
       } else {
         parent[key] = parseScalar(value);
       }
-    } else if (content.startsWith('- ')) {
-      // 列表项
-      const item = content.slice(2).trim();
-      if (!Array.isArray(parent._items)) {
-        parent._items = [];
-      }
-      parent._items.push(parseScalar(item));
     }
   }
 

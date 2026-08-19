@@ -143,6 +143,18 @@ export class SkillManager {
     this.customDirs = options.customDirs || [];
     this.bundledDir = options.bundledDir || '';
     this.projectDir = options.projectDir || '';
+    // 参考项目模式：DSH settings.yaml 的 customSkillDirs 允许直接挂载技能库目录（克隆后配置即用，无需复制）。
+    // 未显式传入 customDirs 时，从 ~/.dsh/settings.yaml 读取 customSkillDirs。
+    if (!options.customDirs) {
+      try {
+        const text = readFileSync(DSH_PATHS.settings, 'utf8');
+        const parsed = parseYAML(text) || {};
+        const dirs = Array.isArray(parsed.customSkillDirs) ? parsed.customSkillDirs : [];
+        this.customDirs = dirs.filter(d => typeof d === 'string' && d.trim());
+      } catch {
+        this.customDirs = [];
+      }
+    }
   }
 
   /** 内置技能根：显式指定 > 环境变量 > 项目 cwd 下的 dsh-skills/skills */
