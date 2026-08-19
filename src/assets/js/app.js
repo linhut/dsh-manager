@@ -6,6 +6,8 @@
 
 // ====== 全局状态 ======
 const state = {
+  skillsQuery: '',
+  skillEditingName: null,
   currentPage: 'dashboard',
   dshInstalled: false,
   dshVersion: null,
@@ -174,6 +176,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 首次渲染页面（让用户尽快看到内容，不因检测阻塞）
   renderInstallPage();
   renderPluginsPage();
+  renderSkillsPage();
   renderVersionsPage();
   renderSettingsPage();
   renderAboutPage();
@@ -242,6 +245,7 @@ function switchPage(page) {
   // 刷新页面数据
   if (page === 'dashboard') tryLoadDSHWeb();
   if (page === 'plugins') renderPluginsPage();
+  if (page === 'skills') renderSkillsPage();
   if (page === 'versions') renderVersionsPage();
 }
 
@@ -1772,6 +1776,178 @@ async function checkPluginUpdates() {
   }
 }
 
+// ====== 技能管理页面 ======
+async function renderSkillsPage() {
+  const el = document.getElementById('skillsContent');
+  if (!el) return;
+  try {
+    const [skills, stats] = await Promise.all([
+      window.dshManager.skillsList({}),
+      window.dshManager.skillsStats()
+    ]);
+    const q = (state.skillsQuery || '').toLowerCase();
+    const filtered = skills.filter(s => !q || s.name.toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q) || (s.whenToUse || '').toLowerCase().includes(q));
+    const userSkills = filtered.filter(s => s.source === 'user' || s.source === 'custom');
+    const bundledSkills = filtered.filter(s => s.source === 'bundled' || s.source === 'project');
+    el.innerHTML = [
+      '<div class="page-toolbar">',
+      '  <div class="search-box">',
+      '    <input id="skillsSearch" type="text" placeholder="搜索技能..." value="' + escSkillHtml(state.skillsQuery || '') + '"',
+      '      oninput="state.skillsQuery=this.value; renderSkillsPage()">',
+      '  </div>',
+      '  <div class="btn-group">',
+      '    <button class="btn btn-primary" onclick="openCreateSkill()">＋ 新建技能</button>',
+      '    <button class="btn" onclick="openImportSkillDialog()">⬇ GitHub 导入</button>',
+      '    <button class="btn" onclick="importSkillFromDir()">📂 目录导入</button>',
+      '  </div>',
+      '</div>',
+      '<div class="inline-stats">',
+      '  <span class="inline-stat"><b>' + stats.total + '</b> 全部</span>',
+      '  <span class="inline-stat"><b>' + stats.active + '</b> 生效</span>',
+      '  <span class="inline-stat"><b>' + stats.shadowed + '</b> 被覆盖</span>',
+      '  <span class="inline-stat"><b>' + (stats.bySource.user || 0) + '</b> 用户</span>',
+      '  <span class="inline-stat"><b>' + (stats.bySource.bundled || 0) + '</b> 内置</span>',
+      '</div>',
+      renderSkillSection('用户 / 自定义技能', userSkills, true),
+      renderSkillSection('内置 / 项目技能', bundledSkills, false),
+    ].join('\n');
+  } catch (err) {
+    el.innerHTML = '<div class="empty-state"><p>❌ 技能加载失败: ' + escSkillHtml(err.message) + '</p>'
+      + '<button class="btn btn-primary" onclick="renderSkillsPage()">重试</button></div>';
+  }
+}
+function escSkillHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function renderSkillSection(title, skills, editable) {
+  if (!skills.length) {
+    return '<div class="card"><div class="card-header"><span class="card-title">' + escSkillHtml(title) + '</span></div>'
+      + '<div class="empty-state"><p>暂无技能</p></div></div>';
+  }
+  return '<div class="card">'
+    + '<div class="card-header"><span class="card-title">' + escSkillHtml(title) + '</span>'
+    + '<span class="badge badge-info">' + skills.length + '</span></div>'
+    + skills.map(skillCardHtml).join('')
+    + '</div>';
+}
+function skillCardHtml(s) {
+  const shadowed = s.shadowed ? ' skill-shadowed' : '';
+  const shadowBadge = s.shadowed ? '<span class="badge badge-warning">被覆盖</span>' : '';
+  const sourceBadge = '<span class="badge badge-' + escSkillHtml(s.source) + '">' + escSkillHtml(s.sourceLabel || s.source) + '</span>';
+  const disabled = s.shadowed ? ' disabled' : '';
+  const whenHtml = s.whenToUse ? '<div class="skill-when"><strong>适用：</strong>' + escSkillHtml(s.whenToUse) + '</div>' : '';
+  const delBtn = editable && !s.shadowed ? '<button class="btn btn-sm btn-danger" onclick="deleteSkill(\'' + s.name + '\')">删除</button>' : '';
+  return '<div class="skill-card' + shadowed + '">'
+    + '<div class="skill-card-main">'
+    + '  <div class="skill-card-head">'
+    + '    <span class="skill-name">' + escSkillHtml(s.name) + '</span>'
+    + '    ' + sourceBadge + shadowBadge
+    + '  </div>'
+    + '  <div class="skill-desc">' + escSkillHtml(s.description || '暂无描述') + '</div>'
+    + '  ' + whenHtml
+    + '  <div class="skill-preview">' + escSkillHtml(s.bodyPreview || '') + '</div>'
+    + '</div>'
+    + '<div class="skill-card-actions">'
+    + '  <label class="switch-label"><input type="checkbox" ' + (s.modelInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'model\', this.checked)">'
+    + '    <span class="switch"></span> 模型可调用</label>'
+    + '  <label class="switch-label"><input type="checkbox" ' + (s.userInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'user\', this.checked)">'
+    + '    <span class="switch"></span> 用户可调用</label>'
+    + '  <div class="btn-group">'
+    + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="openEditSkill(\'' + s.name + '\')">编辑</button>'
+    + '    ' + delBtn
+    + '  </div>'
+    + '</div>'
+    + '</div>';
+}
+// ====== 技能弹窗 ======
+function openCreateSkill() { openSkillModal(null); }
+function openEditSkill(name) {
+  window.dshManager.skillsGet(name).then(function(s) { openSkillModal(s); }).catch(function(e) { showToast('读取失败: ' + e.message, 'error'); });
+}
+function openSkillModal(existing) {
+  state.skillEditingName = existing ? existing.name : null;
+  const nameValue = existing ? existing.name : '';
+  const descValue = existing ? (existing.meta.description || '') : '';
+  const whenValue = existing ? (existing.meta['when-to-use'] || '') : '';
+  const bodyValue = existing ? (existing.body || '') : '';
+  let overlay = document.getElementById('skillModal');
+  if (!overlay) {
+    const div = document.createElement('div');
+    div.id = 'skillModal'; div.className = 'modal-overlay';
+    div.innerHTML = '<div class="modal">'
+      + '<div class="modal-header"><h3 id="skillModalTitle">新建技能</h3><button class="modal-close" onclick="closeSkillModal()">×</button></div>'
+      + '<div class="modal-body">'
+      + '  <label class="field-label">技能名（kebab-case）</label>'
+      + '  <input id="skillName" placeholder="如 my-skill" class="input-text">'
+      + '  <label class="field-label">描述</label>'
+      + '  <textarea id="skillDesc" placeholder="一句话描述技能用途" rows="2" class="input-text"></textarea>'
+      + '  <label class="field-label">何时使用（可选）</label>'
+      + '  <input id="skillWhen" placeholder="when-to-use" class="input-text">'
+      + '  <label class="field-label">技能正文（Markdown）</label>'
+      + '  <textarea id="skillBody" placeholder="# 技能标题\\n\\n正文内容..." rows="8" class="input-text code-textarea"></textarea>'
+      + '</div>'
+      + '<div class="modal-footer"><button class="btn btn-ghost" onclick="closeSkillModal()">取消</button><button class="btn btn-primary" onclick="saveSkill()">保存</button></div>'
+      + '</div>';
+    document.body.appendChild(div);
+  } else {
+    document.getElementById('skillName').value = nameValue;
+    document.getElementById('skillDesc').value = descValue;
+    document.getElementById('skillWhen').value = whenValue;
+    document.getElementById('skillBody').value = bodyValue;
+  }
+  document.getElementById('skillName').disabled = !!existing;
+  document.getElementById('skillModalTitle').textContent = existing ? '编辑技能: ' + nameValue : '新建技能';
+  document.getElementById('skillModal').style.display = 'flex';
+}
+function closeSkillModal() { const el = document.getElementById('skillModal'); if (el) el.style.display = 'none'; }
+async function saveSkill() {
+  const name = document.getElementById('skillName').value.trim();
+  const description = document.getElementById('skillDesc').value.trim();
+  const whenToUse = document.getElementById('skillWhen').value.trim();
+  const body = document.getElementById('skillBody').value;
+  if (!name || !description) { showToast('技能名和描述必填', 'warning'); return; }
+  try {
+    if (state.skillEditingName) {
+      await window.dshManager.skillsUpdate(name, { description: description, whenToUse: whenToUse, body: body });
+      showToast('技能已更新: ' + name, 'success');
+    } else {
+      await window.dshManager.skillsCreate({ name: name, description: description, whenToUse: whenToUse, body: body });
+      showToast('技能已创建: ' + name, 'success');
+    }
+    closeSkillModal(); renderSkillsPage();
+  } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+// ====== 可见性切换 / 删除 ======
+async function toggleSkillInvocation(name, kind, value) {
+  try { await window.dshManager.skillsToggle(name, kind, value); showToast('已更新调用权限', 'success'); renderSkillsPage(); }
+  catch (e) { showToast('更新失败: ' + e.message, 'error'); renderSkillsPage(); }
+}
+async function deleteSkill(name) {
+  if (!confirm('确定删除技能 ' + name + '？该操作不可恢复。')) return;
+  try { await window.dshManager.skillsDelete(name); showToast('已删除: ' + name, 'success'); renderSkillsPage(); }
+  catch (e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+// ====== 导入技能 ======
+function openImportSkillDialog() {
+  const url = prompt('输入 GitHub 技能仓库链接：\n支持仓库根、/tree/分支/路径、/blob/分支/file.md');
+  if (!url || !url.trim()) return;
+  importSkillFromGitHub(url.trim());
+}
+async function importSkillFromGitHub(url) {
+  showToast('正在从 GitHub 下载技能...', 'info');
+  try { const r = await window.dshManager.skillsImportGitHub(url, { overwrite: false }); showToast('导入成功: ' + r.name, 'success'); renderSkillsPage(); }
+  catch (e) { showToast('导入失败: ' + e.message, 'error'); }
+}
+async function importSkillFromDir() {
+  try {
+    if (!window.dshManager.selectSkillDirectory) throw new Error('当前环境不支持目录选择');
+    const res = await window.dshManager.selectSkillDirectory();
+    if (!res || res.canceled || !res.path) return;
+    const r = await window.dshManager.skillsImportDir(res.path, { overwrite: false });
+    showToast('导入成功: ' + r.name, 'success'); renderSkillsPage();
+  } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
+}
+
 // ====== 版本管理页面 ======
 /**
  * 渲染 DSH Manager 品牌 Logo（图片）
@@ -2036,6 +2212,7 @@ async function mcpRenderList() {
         <div class="empty-state-title">暂无 MCP 服务端</div>
         <div class="empty-state-desc">添加 MCP 服务端，让 DSH Agent 连接外部工具</div>
         <button class="btn btn-primary" onclick="mcpAddDialog()">＋ 添加第一个服务端</button>
+        <button class="btn btn-sm" style="margin-top:8px;" onclick="mcpImportJsonDialog()">📄 从 JSON 导入</button>
       </div>`;
     return;
   }
@@ -2066,6 +2243,101 @@ async function mcpRenderList() {
         </tbody>
       </table>
     </div>`;
+  // 增强工具栏
+  el.innerHTML += `<div class="page-toolbar" style="margin-top:12px;gap:8px;">
+    <button class="btn btn-sm" onclick="mcpImportJsonDialog()">📄 从 JSON 导入</button>
+    <button class="btn btn-sm" onclick="mcpExportJson()">📤 导出 JSON</button>
+    <button class="btn btn-sm" onclick="mcpBackup()">💾 备份</button>
+    <button class="btn btn-sm" onclick="mcpListBackups()">📋 备份列表</button>
+  </div>`;
+}
+
+// ====== MCP 增强：JSON 导入 ======
+function mcpImportJsonDialog() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active'; modal.id = 'mcpImportModal';
+  modal.innerHTML = `<div class="modal" style="min-width:560px;">
+    <div class="modal-header"><h3>从 JSON 导入 MCP 服务端</h3><button class="modal-close" onclick="mcpImportModalClose()">×</button></div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">粘贴 Claude Code / Cursor 风格的 MCP 配置 JSON</p>
+      <textarea id="mcpJsonInput" class="input-text code-textarea" rows="8" placeholder={'{"mcpServers":{"filesystem":{"command":"npx"}}}'}></textarea>
+      <div id="mcpJsonPreview" style="margin-top:12px;font-size:12px;color:var(--text-dim);"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="mcpImportModalClose()">取消</button>
+      <button class="btn btn-ghost" onclick="mcpPreviewJsonImport()">预览转换</button>
+      <button class="btn btn-primary" onclick="mcpApplyJsonImport()">导入并合并</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+function mcpImportModalClose() {
+  const el = document.getElementById('mcpImportModal');
+  if (el) el.remove();
+}
+async function mcpPreviewJsonImport() {
+  const text = document.getElementById('mcpJsonInput')?.value;
+  if (!text || !text.trim()) { showToast('请输入 JSON 配置', 'warning'); return; }
+  try {
+    const result = await window.dshManager.mcpImportJson(text, 'web');
+    const preview = document.getElementById('mcpJsonPreview');
+    if (!result.ok) {
+      preview.innerHTML = `<span style="color:var(--error);">转换失败: ${result.error || '未知错误'}</span>`;
+      return;
+    }
+    let html = `<div style="color:var(--success);">✅ 转换成功，检测到 ${result.servers} 个服务端</div>`;
+    if (result.warnings && result.warnings.length) {
+      html += result.warnings.map(w => `<div style="color:var(--warning);font-size:11px;">⚠ ${w}</div>`).join('');
+    }
+    html += `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:11px;max-height:200px;overflow:auto;">${result.yaml || ''}</pre>`;
+    preview.innerHTML = html;
+  } catch (e) {
+    showToast('转换失败: ' + e.message, 'error');
+  }
+}
+async function mcpApplyJsonImport() {
+  const text = document.getElementById('mcpJsonInput')?.value;
+  if (!text || !text.trim()) { showToast('请输入 JSON 配置', 'warning'); return; }
+  try {
+    const result = await window.dshManager.mcpImportJson(text, 'web');
+    if (!result.ok) { showToast('转换失败: ' + (result.error || ''), 'error'); return; }
+    if (!result.rows || !result.rows.length) { showToast('未检测到服务端', 'warning'); return; }
+    await window.dshManager.mcpApplyImport(result.rows, { __profile: 'web', mode: 'merge' });
+    showToast('导入成功，已添加 ' + result.rows.length + ' 个服务端', 'success');
+    mcpImportModalClose();
+    mcpRenderList();
+  } catch (e) {
+    showToast('导入失败: ' + e.message, 'error');
+  }
+}
+// ====== MCP 增强：导出 / 备份 ======
+async function mcpExportJson() {
+  try {
+    const json = await window.dshManager.mcpExportJson('web');
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'mcp-config.json'; a.click();
+    URL.revokeObjectURL(url);
+    showToast('已导出 MCP 配置', 'success');
+  } catch (e) { showToast('导出失败: ' + e.message, 'error'); }
+}
+async function mcpBackup() {
+  try {
+    const result = await window.dshManager.mcpBackup('web');
+    showToast('备份成功: ' + (result.backupPath || '无文件可备份'), 'success');
+  } catch (e) { showToast('备份失败: ' + e.message, 'error'); }
+}
+async function mcpListBackups() {
+  try {
+    const backups = await window.dshManager.mcpListBackups('web');
+    if (!backups || backups.length === 0) {
+      showToast('暂无备份', 'info');
+      return;
+    }
+    const info = backups.map(b => b.name + ' (' + new Date(b.mtime).toLocaleString() + ')').join('\n');
+    showToast('备份列表:\n' + info, 'info', 5000);
+  } catch (e) { showToast('获取备份列表失败: ' + e.message, 'error'); }
 }
 
 // ====== MCP 添加/编辑对话框 ======

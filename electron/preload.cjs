@@ -82,6 +82,24 @@ contextBridge.exposeInMainWorld('dshManager', {
   mcpGet: (serverName, profile) => ipcRenderer.invoke('mcp:get', serverName, profile),
   mcpAdd: (config) => ipcRenderer.invoke('mcp:add', config),
   mcpRemove: (serverName, profile) => ipcRenderer.invoke('mcp:remove', serverName, profile),
+  // ====== MCP 增强 ======
+  mcpImportJson: (jsonText, profile) => ipcRenderer.invoke('mcp:import-json', jsonText, profile),
+  mcpApplyImport: (servers, options) => ipcRenderer.invoke('mcp:apply-import', servers, options),
+  mcpExportJson: (profile) => ipcRenderer.invoke('mcp:export-json', profile),
+  mcpBackup: (profile) => ipcRenderer.invoke('mcp:backup', profile),
+  mcpListBackups: (profile) => ipcRenderer.invoke('mcp:list-backups', profile),
+
+  // ====== 技能管理 ======
+  skillsList: (filter) => ipcRenderer.invoke('skills:list', filter),
+  skillsGet: (name) => ipcRenderer.invoke('skills:get', name),
+  skillsCreate: (input) => ipcRenderer.invoke('skills:create', input),
+  skillsUpdate: (name, patch) => ipcRenderer.invoke('skills:update', name, patch),
+  skillsDelete: (name) => ipcRenderer.invoke('skills:delete', name),
+  skillsToggle: (name, kind, value) => ipcRenderer.invoke('skills:toggle', name, kind, value),
+  skillsImportGitHub: (url, options) => ipcRenderer.invoke('skills:import-github', url, options),
+  skillsImportDir: (srcPath, options) => ipcRenderer.invoke('skills:import-dir', srcPath, options),
+  skillsStats: () => ipcRenderer.invoke('skills:stats'),
+
 
   // ====== 系统 ======
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),

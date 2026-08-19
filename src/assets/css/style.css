@@ -584,3 +584,132 @@ pre code { background: none; padding: 0; }
 .form-group { margin-bottom: 14px; }
 .form-label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--text-secondary); font-weight: 500; }
 .form-hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+/* ====== 技能管理页面 ====== */
+/* 内联统计 */
+.inline-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.inline-stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+.inline-stat b {
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+/* 技能卡片 */
+.skill-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  transition: background 0.2s;
+}
+.skill-card:last-child { border-bottom: 1px solid var(--border); }
+.skill-card:hover { background: var(--bg-hover); }
+.skill-card.skill-shadowed { opacity: 0.55; }
+.skill-card.skill-shadowed:hover { opacity: 0.7; }
+.skill-card-main { flex: 1; min-width: 0; }
+.skill-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.skill-name { font-weight: 600; font-size: 0.95rem; color: var(--text-primary); }
+.skill-desc { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 4px; }
+.skill-when { font-size: 0.82rem; color: var(--text-dim); margin-bottom: 4px; }
+.skill-preview { font-size: 0.8rem; color: var(--text-dim); white-space: pre-wrap; overflow: hidden; text-overflow: ellipsis; max-height: 2.4em; }
+.skill-card-actions { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+
+/* 开关（Switch） */
+.switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+.switch-label input[type="checkbox"] { display: none; }
+.switch-label .switch {
+  position: relative;
+  width: 32px; height: 18px;
+  background: var(--border);
+  border-radius: 9px;
+  transition: background 0.2s;
+}
+.switch-label .switch::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 14px; height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+.switch-label input:checked + .switch { background: var(--primary); }
+.switch-label input:checked + .switch::after { transform: translateX(14px); }
+.switch-label input:disabled + .switch { opacity: 0.4; cursor: not-allowed; }
+
+/* 表单字段 */
+.field-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  margin-top: 12px;
+}
+.field-label:first-child { margin-top: 0; }
+.input-text {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  box-sizing: border-box;
+}
+.input-text:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-bg); }
+.code-textarea { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.85rem; tab-size: 2; }
+
+/* 弹窗头部（技能管理 + MCP 增强） */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 { margin: 0; font-size: 1.05rem; }
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.3rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 0 4px;
+  line-height: 1;
+}
+.modal-close:hover { color: var(--text-primary); }
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+

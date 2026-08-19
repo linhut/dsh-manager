@@ -70,6 +70,10 @@
           <span class="nav-icon">🔌</span>
           <span class="nav-label">插件管理</span>
         </button>
+        <button class="nav-item" data-page="skills" onclick="switchPage('skills')">
+          <span class="nav-icon">🧠</span>
+          <span class="nav-label">技能管理</span>
+        </button>
         <button class="nav-item" data-page="versions" onclick="switchPage('versions')">
           <span class="nav-icon">📦</span>
           <span class="nav-label">版本管理</span>
@@ -136,6 +140,17 @@
           <p class="page-desc">管理已安装的插件，浏览插件市场</p>
         </div>
         <div id="pluginsContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: 技能管理 ====== -->
+      <div class="page" id="page-skills">
+        <div class="page-header">
+          <h1 class="page-title">🧠 技能管理</h1>
+          <p class="page-desc">管理 DSH Agent 技能（SKILL.md）</p>
+        </div>
+        <div id="skillsContent">
           <!-- 由 JS 动态渲染 -->
         </div>
       </div>

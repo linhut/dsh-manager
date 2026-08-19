@@ -35,6 +35,7 @@ build/png-temp/
 # Website (local deployment only, not synced to GitHub)
 website/
 DEPLOY.md
+tmp/
 DEPLOY.md
 
 # Old preload (renamed to .cjs)

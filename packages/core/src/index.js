@@ -18,6 +18,7 @@ export { DSHError, DSHErrorCodes } from './errors.js';
 export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
 export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT } from './process-manager.js';
 export { DSHProfileManager } from './profile-manager.js';
+export { SkillManager } from './skill-manager.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 
 /**

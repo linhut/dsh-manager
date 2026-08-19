@@ -1,279 +1,161 @@
 /**
- * @dsh-manager/core - MCP 服务端管理器
- * 
- * 管理 DSH profile 中配置的 MCP 服务端（@deepseek-ai/dsh-mcp-client 插件）。
- * 
- * DSH 的 MCP 配置位于 ~/.dsh/profiles/<profile>/cordis.patch.yml，
- * 每个服务端对应一个 insert 条目：
- * 
- *   - insert:
- *       - id: mcp-<serverName>
- *         name: '@deepseek-ai/dsh-mcp-client'
- *         config:
- *           transport: stdio | streamable-http
- *           serverName: xxx
- *           command: npx
- *           args: [...]
- *           env: {...}
- *           url: https://...
- *           headers: {...}
- *           reconnect: {...}
- * 
- * 采用"文本级操作"策略：读取时轻量解析；写入时追加/替换块，
- * 以保留文件中的注释和其他用户配置（js-yaml 序列化会破坏 !!js 表达式）。
+ * @dsh-manager/core - MCP 服务端管理器（增强版）
+ *
+ * 管理 DSH profile 中配置的 MCP 服务端。
+ * 支持 JSON 导入、环境变量转换、原子写入备份。
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, copyFileSync, statSync, chmodSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
 
-/** MCP 客户端插件名 */
 const MCP_PLUGIN_NAME = '@deepseek-ai/dsh-mcp-client';
-/** 合法 serverName 正则（与 DSH 一致） */
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
+const ENV_REF_PATTERN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
-/**
- * 将 JS 字符串安全地表示为 YAML 标量
- */
 function yamlString(value) {
   const str = String(value);
-  // 含特殊字符时加引号
+  const envMatch = str.match(ENV_REF_PATTERN);
+  if (envMatch) return '!!js process.env.' + envMatch[1];
   if (/^[A-Za-z0-9_\-./:@]*$/.test(str)) return str;
-  return `"${str.replace(/"/g, '\\"')}"`;
+  return '"' + str.replace(/"/g, '\\"') + '"';
 }
-
-/**
- * 将 args 数组格式化为 YAML 序列
- */
 function yamlList(indent, items) {
   const pad = ' '.repeat(indent);
-  return items.map(item => `${pad}- ${yamlString(item)}`).join('\n');
+  return items.map(i => pad + '- ' + yamlString(i)).join('\n');
 }
-
-/**
- * 将字符串对象格式化为 YAML 字典
- */
 function yamlDict(indent, obj) {
   const pad = ' '.repeat(indent);
-  return Object.entries(obj)
-    .map(([k, v]) => `${pad}${k}: ${yamlString(v)}`)
-    .join('\n');
+  return Object.entries(obj).map(([k, v]) => pad + k + ': ' + yamlString(v)).join('\n');
 }
-
+function countEnvRefs(text) {
+  const m = text.match(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g);
+  return m ? m.length : 0;
+}
+function getEnvVarNames(text) {
+  const m = text.match(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g);
+  if (!m) return [];
+  return [...new Set(m.map(x => x.slice(2, -1)))];
+}
+function parseKvLine(line) {
+  if (!line || !line.trim() || line.trim().startsWith('#')) return null;
+  const indent = line.length - line.trimStart().length;
+  const content = line.trim();
+  const ci = content.indexOf(':');
+  if (ci < 0) return null;
+  const key = content.slice(0, ci).trim();
+  let value = content.slice(ci + 1).trim();
+  value = value.replace(/^['"]*|['"]*$/g, '');
+  const js = value.match(/^!!js\s+process\.env\.([A-Za-z_][A-Za-z0-9_]*)$/);
+  if (js) value = '\${' + js[1] + '}';
+  return { indent, key, value };
+}
 export class MCPServerManager {
-  /**
-   * @param {object} [options]
-   * @param {string} [options.profile] - 目标 profile，默认 web
-   */
-  constructor(options = {}) {
-    this.profile = options.profile || 'web';
-    this.patchFile = join(DSH_PATHS.home, 'profiles', this.profile, 'cordis.patch.yml');
-  }
-
-  /**
-   * 解析 patch 文件，提取所有 insert 条目
-   * @returns {Array<{raw: string, id: string|null, name: string|null, configName: string|null, block: string}>}
-   */
+  constructor(opts = {}) { this.profile = opts.profile || 'web'; this.patchFile = join(DSH_PATHS.home, 'profiles', this.profile, 'cordis.patch.yml'); }
   _parseBlocks() {
     if (!existsSync(this.patchFile)) return [];
-
     const lines = readFileSync(this.patchFile, 'utf-8').split(/\r?\n/);
-    const blocks = [];
-    let current = null;  // 当前 insert 块的收集
-    let indent = -1;
-
+    const blocks = []; let cur = null;
     for (const line of lines) {
-      const trimmed = line.trim();
-      // 顶层 insert 开始（缩进为 0 且以 "- insert:" 开头）
-      const insertMatch = trimmed.match(/^-\s*insert:\s*$/);
-      if (insertMatch && line.startsWith('- ')) {
-        if (current) blocks.push(current);
-        current = { lines: [line], id: null, name: null, configName: null };
-        indent = line.length - line.trimStart().length;
-        continue;
-      }
-      if (current) {
-        current.lines.push(line);
-        // 提取 id
-        const idMatch = line.match(/^\s*-\s*id:\s*(.+)$/);
-        if (idMatch) current.id = idMatch[1].trim().replace(/^['"]|['"]$/g, '');
-        // 提取 name
-        const nameMatch = line.match(/^\s*name:\s*(.+)$/);
-        if (nameMatch) current.name = nameMatch[1].trim().replace(/^['"]|['"]$/g, '');
-        // 提取 config 下的 serverName（缩进 8+）
-        const snMatch = line.match(/^ {8}serverName:\s*(.+)$/);
-        if (snMatch) current.configName = snMatch[1].trim().replace(/^['"]|['"]$/g, '');
+      const t = line.trim();
+      if (t.match(/^-\s*insert:\s*$/) && line.startsWith('- ')) { if (cur) blocks.push(cur); cur = { lines: [line], id: null, name: null, configName: null }; continue; }
+      if (cur) {
+        cur.lines.push(line);
+        const idM = line.match(/^\s*-\s*id:\s*(.+)$/); if (idM) cur.id = idM[1].trim().replace(/^['"]|['"]$/g, '');
+        const nmM = line.match(/^\s*name:\s*(.+)$/); if (nmM) cur.name = nmM[1].trim().replace(/^['"]|['"]$/g, '');
+        const snM = line.match(/^ {8}serverName:\s*(.+)$/); if (snM) cur.configName = snM[1].trim().replace(/^['"]|['"]$/g, '');
       }
     }
-    if (current) blocks.push(current);
-
+    if (cur) blocks.push(cur);
     return blocks.map(b => ({ ...b, block: b.lines.join('\n') }));
   }
-
-  /**
-   * 列出已配置的 MCP 服务端
-   * @returns {Array<{id: string, serverName: string, pluginName: string, block: string, transport: string|null}>}
-   */
-  list() {
-    const blocks = this._parseBlocks();
-    return blocks
-      .filter(b => b.name === MCP_PLUGIN_NAME && b.configName)
-      .map(b => {
-        // 从原始文本中尝试提取 transport
-        const tMatch = b.block.match(/^\s{8}transport:\s*(.+)$/m);
-        return {
-          id: b.id || `mcp-${b.configName}`,
-          serverName: b.configName,
-          pluginName: b.name,
-          transport: tMatch ? tMatch[1].trim().replace(/^['"]|['"]$/g, '') : 'stdio',
-          block: b.block,
-        };
-      });
+  list() { return this._parseBlocks().filter(b => b.name === MCP_PLUGIN_NAME && b.configName).map(b => { const c = this._parseConfig(b.block); return { id: b.id || ('mcp-' + b.configName), serverName: b.configName, pluginName: b.name, ...c, block: b.block }; }); }
+  _parseConfig(block) {
+    const cfg = {}; let ctr = null; let args = null;
+    for (const line of block.split(/\r?\n/)) {
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      const ind = line.length - line.trimStart().length; const cont = line.trim();
+      if (ctr && ind <= ctr.indent) { if (ctr.type === 'env') cfg.env = ctr.obj; else if (ctr.type === 'headers') cfg.headers = ctr.obj; else if (ctr.type === 'reconnect') cfg.reconnect = ctr.obj; ctr = null; }
+      if (args !== null && ind < 10) { cfg.args = args; args = null; }
+      const kv = parseKvLine(line);
+      if (kv && kv.indent === 8) {
+        if (['env','headers'].includes(kv.key) && kv.value === '') { ctr = { type: kv.key, indent: 8, obj: {} }; continue; }
+        if (kv.key === 'reconnect' && kv.value === '') { ctr = { type: 'reconnect', indent: 8, obj: {} }; continue; }
+        cfg[kv.key] = kv.value; continue;
+      }
+      if (ctr && kv && kv.indent === 10) {
+        if (kv.key === 'enabled' && ctr.type === 'reconnect') ctr.obj.enabled = kv.value === 'true';
+        else if (['initialDelayMs','maxDelayMs','maxAttempts'].includes(kv.key)) { const n = Number(kv.value); ctr.obj[kv.key] = isNaN(n) ? kv.value : n; }
+        else ctr.obj[kv.key] = kv.value; continue;
+      }
+      if (ind === 10 && cont.startsWith('- ') && !kv) { if (!args) args = []; const v = cont.slice(2).trim(); v && args.push(v.replace(/^['"]|['"]$/g, '')); }
+      if (kv && kv.indent === 8) { if (kv.key === 'toolCallTimeoutMs') { const n = Number(kv.value); cfg[kv.key] = isNaN(n) ? kv.value : n; } else if (kv.key === 'failOnStartupError') cfg.failOnStartupError = kv.value === 'true'; else if (kv.key === 'transport' || kv.key === 'serverName') cfg[kv.key] = kv.value; }
+    }
+    if (ctr) { if (ctr.type === 'env') cfg.env = ctr.obj; else if (ctr.type === 'headers') cfg.headers = ctr.obj; else if (ctr.type === 'reconnect') cfg.reconnect = ctr.obj; } if (args !== null) cfg.args = args;
+    if (!cfg.serverName) { const sn = block.match(/^ {8}serverName:\s*(.+)$/m); if (sn) cfg.serverName = sn[1].trim().replace(/^['"]|['"]$/g, ''); }
+    if (!cfg.transport) { const tr = block.match(/^ {8}transport:\s*(.+)$/m); if (tr) cfg.transport = tr[1].trim().replace(/^['"]|['"]$/g, ''); } return cfg;
   }
-
-  /**
-   * 获取单个服务端配置
-   * @param {string} serverName
-   * @returns {object|null}
-   */
-  get(serverName) {
-    const servers = this.list();
-    return servers.find(s => s.serverName === serverName) || null;
-  }
-
-  /**
-   * 生成 MCP insert 块的 YAML 文本
-   * @param {object} config - 服务端配置（transport/serverName/...）
-   * @param {string} [idSuffix] - 可选 id 后缀
-   * @returns {string}
-   */
-  _buildBlock(config, idSuffix = '') {
-    const id = `mcp-${config.serverName}${idSuffix}`;
-    const lines = [`- insert:`, `    - id: ${id}`, `      name: '@deepseek-ai/dsh-mcp-client'`];
-
-    if (config.transport === 'streamable-http') {
-      lines.push(`      config:`);
-      lines.push(`        transport: streamable-http`);
-      lines.push(`        serverName: ${yamlString(config.serverName)}`);
-      lines.push(`        url: ${yamlString(config.url)}`);
-      if (config.headers && Object.keys(config.headers).length > 0) {
-        lines.push(`        headers:`);
-        lines.push(yamlDict(10, config.headers));
-      }
-    } else {
-      lines.push(`      config:`);
-      lines.push(`        transport: stdio`);
-      lines.push(`        serverName: ${yamlString(config.serverName)}`);
-      lines.push(`        command: ${yamlString(config.command)}`);
-      if (config.args && config.args.length > 0) {
-        lines.push(`        args:`);
-        lines.push(yamlList(10, config.args));
-      }
-      if (config.env && Object.keys(config.env).length > 0) {
-        lines.push(`        env:`);
-        lines.push(yamlDict(10, config.env));
-      }
-      if (config.cwd) {
-        lines.push(`        cwd: ${yamlString(config.cwd)}`);
-      }
-    }
-
-    // 可选高级配置
-    if (config.toolCallTimeoutMs !== undefined) {
-      lines.push(`        toolCallTimeoutMs: ${Number(config.toolCallTimeoutMs)}`);
-    }
-    if (config.failOnStartupError !== undefined) {
-      lines.push(`        failOnStartupError: ${config.failOnStartupError}`);
-    }
-    // reconnect
-    if (config.reconnect && typeof config.reconnect === 'object') {
-      lines.push(`        reconnect:`);
-      lines.push(`          enabled: ${config.reconnect.enabled ?? true}`);
-      if (config.reconnect.initialDelayMs !== undefined) lines.push(`          initialDelayMs: ${Number(config.reconnect.initialDelayMs)}`);
-      if (config.reconnect.maxDelayMs !== undefined) lines.push(`          maxDelayMs: ${Number(config.reconnect.maxDelayMs)}`);
-      if (config.reconnect.maxAttempts !== undefined) lines.push(`          maxAttempts: ${Number(config.reconnect.maxAttempts)}`);
-    }
-
+  get(serverName) { const s = this.list(); return s.find(x => x.serverName === serverName) || null; }
+  _buildBlock(cfg, idSuffix = '') {
+    const id = 'mcp-' + cfg.serverName + idSuffix;
+    const lines = ['- insert:', '    - id: ' + id, "      name: '@deepseek-ai/dsh-mcp-client'"];
+    if (cfg.transport === 'streamable-http') { lines.push('      config:'); lines.push('        transport: streamable-http'); lines.push('        serverName: ' + yamlString(cfg.serverName)); lines.push('        url: ' + yamlString(cfg.url)); if (cfg.headers) { lines.push('        headers:'); lines.push(yamlDict(10, cfg.headers)); } }
+    else { lines.push('      config:'); lines.push('        transport: stdio'); lines.push('        serverName: ' + yamlString(cfg.serverName)); lines.push('        command: ' + yamlString(cfg.command)); if (cfg.args) { lines.push('        args:'); lines.push(yamlList(10, cfg.args)); } if (cfg.env) { lines.push('        env:'); lines.push(yamlDict(10, cfg.env)); } if (cfg.cwd) lines.push('        cwd: ' + yamlString(cfg.cwd)); }
+    if (cfg.toolCallTimeoutMs !== undefined) lines.push('        toolCallTimeoutMs: ' + Number(cfg.toolCallTimeoutMs));
+    if (cfg.failOnStartupError !== undefined) lines.push('        failOnStartupError: ' + cfg.failOnStartupError);
+    if (cfg.reconnect) { lines.push('        reconnect:'); lines.push('          enabled: ' + (cfg.reconnect.enabled ?? true)); if (cfg.reconnect.initialDelayMs !== undefined) lines.push('          initialDelayMs: ' + Number(cfg.reconnect.initialDelayMs)); if (cfg.reconnect.maxDelayMs !== undefined) lines.push('          maxDelayMs: ' + Number(cfg.reconnect.maxDelayMs)); if (cfg.reconnect.maxAttempts !== undefined) lines.push('          maxAttempts: ' + Number(cfg.reconnect.maxAttempts)); }
     return lines.join('\n');
   }
-
-  /**
-   * 添加或更新一个 MCP 服务端
-   * @param {object} config - 服务端配置
-   * @returns {Promise<{success: boolean, serverName: string}>}
-   */
-  async add(config) {
-    if (!config || !config.serverName) {
-      throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'serverName 不能为空');
-    }
-    if (!SERVER_NAME_PATTERN.test(config.serverName)) {
-      throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'serverName 只能包含字母、数字、下划线、连字符且不超过32字符');
-    }
-    if (config.transport === 'streamable-http') {
-      if (!config.url) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'URL 不能为空');
-    } else {
-      if (!config.command) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'command 不能为空');
-      config.transport = 'stdio';
-    }
-
-    const dir = join(DSH_PATHS.home, 'profiles', this.profile);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    if (!existsSync(this.patchFile)) {
-      writeFileSync(this.patchFile, '# dsh profile patch layer\n[]\n', 'utf-8');
-    }
-
-    // 检查同名 serverName 是否已存在
-    const existing = this.get(config.serverName);
-    const rawContent = readFileSync(this.patchFile, 'utf-8');
-    let newContent;
-
-    if (existing) {
-      // 替换已有块
-      newContent = rawContent.replace(existing.block, this._buildBlock(config));
-    } else {
-      // 空 patch 文件（[] 占位）→ 替换占位为真实条目；否则在末尾追加新块
-      const placeholderMatch = rawContent.match(/^# dsh profile patch layer\n\[\s*\]/);
-      if (placeholderMatch) {
-        newContent = rawContent.replace(/\[\s*\]/, this._buildBlock(config));
-      } else {
-        newContent = rawContent.trimEnd() + '\n\n' + this._buildBlock(config) + '\n';
-      }
-    }
-
-    writeFileSync(this.patchFile, newContent, 'utf-8');
-    return { success: true, serverName: config.serverName };
+  _atomicWrite(nc) {
+    let bk = ''; if (existsSync(this.patchFile)) { try { const ts = Date.now(); bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch {} } catch (e) { console.warn('[mcp] 备份失败:', e.message); } }
+    const dir = dirname(this.patchFile); if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tmp = this.patchFile + '.tmp-' + Date.now();
+    try { writeFileSync(tmp, nc, 'utf-8'); renameSync(tmp, this.patchFile); } catch (err) { try { if (existsSync(tmp)) renameSync(tmp, this.patchFile); } catch {} throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'MCP 写入失败: ' + err.message); }
+    return bk;
   }
-
-  /**
-   * 删除一个 MCP 服务端
-   * @param {string} serverName
-   * @returns {Promise<{success: boolean}>}
-   */
+  async add(cfg) {
+    if (!cfg || !cfg.serverName) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'serverName 不能为空');
+    if (!SERVER_NAME_PATTERN.test(cfg.serverName)) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'serverName 命名不规范');
+    if (cfg.transport === 'streamable-http') { if (!cfg.url) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'URL 不能为空'); } else { if (!cfg.command) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'command 不能为空'); cfg.transport = 'stdio'; }
+    const dir = join(DSH_PATHS.home, 'profiles', this.profile); if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(this.patchFile)) writeFileSync(this.patchFile, '# dsh profile patch layer\n[]\n', 'utf-8');
+    const ex = this.get(cfg.serverName); const raw = readFileSync(this.patchFile, 'utf-8'); let nc;
+    if (ex) { nc = raw.replace(ex.block, this._buildBlock(cfg)); } else { const pm = raw.match(/^# dsh profile patch layer\n\[\s*\]/); if (pm) nc = raw.replace(/\[\s*\]/, this._buildBlock(cfg)); else nc = raw.trimEnd() + '\n\n' + this._buildBlock(cfg) + '\n'; }
+    return { success: true, serverName: cfg.serverName, backupPath: this._atomicWrite(nc) };
+  }
   async remove(serverName) {
-    if (!existsSync(this.patchFile)) return { success: true };
-    const existing = this.get(serverName);
-    if (!existing) return { success: true };
-
-    const rawContent = readFileSync(this.patchFile, 'utf-8');
-    // 删除块及其前的空行
-    const newContent = rawContent
-      .replace(new RegExp(`\\n?\\n?${escapeRegExp(existing.block)}`), '\n')
-      .replace(/\n{3,}/g, '\n\n');
-
-    writeFileSync(this.patchFile, newContent, 'utf-8');
-    return { success: true };
+    if (!existsSync(this.patchFile)) return { success: true }; const ex = this.get(serverName); if (!ex) return { success: true };
+    const raw = readFileSync(this.patchFile, 'utf-8');
+    const nc = raw.replace(new RegExp('\\n?\\n?' + escapeRegExp(ex.block)), '\n').replace(/\n{3,}/g, '\n\n');
+    return { success: true, backupPath: this._atomicWrite(nc) };
   }
-
-  /**
-   * 生成安装 MCP 客户端插件的提示命令
-   */
-  getInstallHint() {
-    return `dsh plugin --profile ${this.profile} add ${MCP_PLUGIN_NAME}`;
+  parseMcpJson(jsonText) {
+    let data; try { data = JSON.parse(jsonText); } catch (e) { throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'JSON 解析失败: ' + e.message); }
+    const ms = data && data.mcpServers ? data.mcpServers : null;
+    if (!ms) { if (Array.isArray(data)) { const s = []; const w = []; for (const item of data) { if (item && item.name && (item.command || item.url)) s.push(this._normalizeServer(item)); else w.push('跳过无效: ' + JSON.stringify(item)); } return { servers: s, warnings: w }; } throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '需要 { mcpServers: { ... } } 或数组'); }
+    const w = []; const s = [];
+    for (const [name, rc] of Object.entries(ms)) {
+      if (!SERVER_NAME_PATTERN.test(name)) { w.push('serverName「' + name + '」不符合命名规范，已跳过'); continue; }
+      const r = (rc && typeof rc === 'object') ? rc : {};
+      if (typeof r.command === 'string' && r.command.trim()) { const sv = { serverName: name, transport: 'stdio', command: r.command.trim() }; if (Array.isArray(r.args)) sv.args = r.args.map(String); if (r.env) sv.env = Object.fromEntries(Object.entries(r.env).map(([k, v]) => [k, String(v)])); if (r.cwd) sv.cwd = String(r.cwd); s.push(sv); }
+      else { const type = String(r.type || 'http').toLowerCase(); const url = (typeof r.url === 'string' && r.url.trim()) ? r.url.trim() : (typeof r.baseUrl === 'string' && r.baseUrl.trim() ? r.baseUrl.trim() : ''); if (type === 'sse') w.push('「' + name + '」type=sse：只支持 streamable-http'); if (!url) { w.push('「' + name + '」缺少 url，已跳过'); continue; } const sv = { serverName: name, transport: 'streamable-http', url }; if (r.headers) sv.headers = Object.fromEntries(Object.entries(r.headers).map(([k, v]) => [k, String(v)])); s.push(sv); }
+    }
+    return { servers: s, warnings: w };
   }
+  _normalizeServer(s) { const sv = { serverName: String(s.name) }; if (typeof s.command === 'string' && s.command.trim()) { sv.transport = 'stdio'; sv.command = s.command.trim(); if (Array.isArray(s.args)) sv.args = s.args.map(String); if (s.env) sv.env = Object.fromEntries(Object.entries(s.env).map(([k, v]) => [k, String(v)])); if (s.cwd) sv.cwd = String(s.cwd); } else { sv.transport = 'streamable-http'; sv.url = String(s.url || s.baseUrl || ''); if (s.headers) sv.headers = Object.fromEntries(Object.entries(s.headers).map(([k, v]) => [k, String(v)])); } return sv; }
+  convertJsonToYaml(jsonText) {
+    try { const { servers, warnings } = this.parseMcpJson(jsonText); if (servers.length === 0) return { ok: false, error: '没有可转换的服务器', warnings }; const yamlText = servers.map(s => this._buildBlock({ ...s })).join('\n'); const envVars = getEnvVarNames(yamlText); if (envVars.length > 0) warnings.push('检测到环境变量引用，已转换为 !!js process.env.*'); return { ok: true, rows: servers, yaml: yamlText, warnings, envVars }; } catch (err) { return { ok: false, error: err.message }; }
+  }
+  async importServers(servers, opts = {}) {
+    const mode = opts.mode || 'merge'; const w = []; const add = []; const upd = []; const skip = [];
+    if (mode === 'replace') { const es = this.list(); for (const s of es) { try { await this.remove(s.serverName); } catch (e) { w.push('移除 ' + s.serverName + ' 失败: ' + e.message); } } }
+    for (const sv of servers) { try { if (!sv.serverName) { skip.push('(unnamed)'); continue; } if (sv.transport !== 'streamable-http') sv.transport = 'stdio'; const ex = this.get(sv.serverName); await this.add(sv); if (ex) upd.push(sv.serverName); else add.push(sv.serverName); } catch (e) { skip.push(sv.serverName || '?'); w.push(sv.serverName + ': ' + e.message); } }
+    return { success: true, added: add, updated: upd, skipped: skip, warnings: w };
+  }
+  exportJson() { const ms = {}; for (const s of this.list()) { const e = {}; if (s.transport === 'streamable-http') { e.type = 'http'; e.url = s.url || ''; if (s.headers) e.headers = s.headers; } else { e.command = s.command || ''; if (s.args) e.args = s.args; if (s.env) e.env = s.env; if (s.cwd) e.cwd = s.cwd; } ms[s.serverName] = e; } return JSON.stringify({ mcpServers: ms }, null, 2); }
+  async backup() { if (!existsSync(this.patchFile)) return { success: true, backupPath: null }; const ts = Date.now(); const bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch {} return { success: true, backupPath: bk }; }
+  async listBackups() { const dir = dirname(this.patchFile); if (!existsSync(dir)) return []; const entries = []; try { const { readdirSync } = await import('node:fs'); for (const f of readdirSync(dir)) { const m = f.match(/^cordis\.patch\.yml\.bak-(\d+)$/); if (!m) continue; const p = join(dir, f); try { const st = statSync(p); entries.push({ path: p, name: f, mtime: st.mtime.toISOString() }); } catch {} } } catch {} return entries.sort((a, b) => b.mtime.localeCompare(a.mtime)); }
+  getInstallHint() { return 'dsh plugin --profile ' + this.profile + ' add ' + MCP_PLUGIN_NAME; }
 }
-
-/** 正则转义 */
-function escapeRegExp(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+function escapeRegExp(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

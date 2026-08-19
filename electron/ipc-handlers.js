@@ -558,6 +558,95 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await mgr.remove(serverName);
   });
 
+
+  // ====== MCP 增强：JSON 导入 / 导出 / 备份 ======
+  ipcMain.handle('mcp:import-json', async (_, jsonText, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile: profile || 'web' });
+    return mgr.convertJsonToYaml(jsonText);
+  });
+
+  ipcMain.handle('mcp:apply-import', async (_, servers, options) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile: (options && options.__profile) || 'web' });
+    const opts = { ...options };
+    delete opts.__profile;
+    return await mgr.importServers(servers, opts);
+  });
+
+  ipcMain.handle('mcp:export-json', async (_, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile: profile || 'web' });
+    return mgr.exportJson();
+  });
+
+  ipcMain.handle('mcp:backup', async (_, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile: profile || 'web' });
+    return await mgr.backup();
+  });
+
+  ipcMain.handle('mcp:list-backups', async (_, profile) => {
+    const { MCPServerManager } = await loadCore();
+    const mgr = new MCPServerManager({ profile: profile || 'web' });
+    return await mgr.listBackups();
+  });
+
+  // ====== 技能管理 ======
+  ipcMain.handle('skills:list', async (_, filter) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.list(filter || {});
+  });
+
+  ipcMain.handle('skills:get', async (_, name) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.get(name);
+  });
+
+  ipcMain.handle('skills:create', async (_, input) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.create(input);
+  });
+
+  ipcMain.handle('skills:update', async (_, name, patch) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.update(name, patch);
+  });
+
+  ipcMain.handle('skills:delete', async (_, name) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.remove(name);
+  });
+
+  ipcMain.handle('skills:toggle', async (_, name, kind, value) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.toggleInvocation(name, kind, value);
+  });
+
+  ipcMain.handle('skills:import-github', async (_, url, options) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return await mgr.importFromGitHub(url, options || {});
+  });
+
+  ipcMain.handle('skills:import-dir', async (_, srcPath, options) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.importFromDirectory(srcPath, options || {});
+  });
+
+  ipcMain.handle('skills:stats', async () => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.stats();
+  });
+
   // ====== 系统 ======
   ipcMain.handle('shell:open-external', async (_, url) => {
     return shell.openExternal(url);
