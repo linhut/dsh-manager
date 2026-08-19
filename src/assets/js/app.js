@@ -832,17 +832,22 @@ async function renderEnvStatus() {
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
       <button class="btn btn-sm btn-ghost" onclick="renderEnvStatus()" title="重新检测基础环境">🔄 重新检测</button>
       ${(missingNode || missingNpm) ? `
-        <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
+        <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 安装 Node.js（必需）</button>
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://nodejs.org')">🌐 官网下载</button>` : ''}
-      ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">一键安装 pnpm</button>` : ''}
-      ${missingGit ? `
-        <button class="btn btn-sm btn-secondary" onclick="installGit()" id="installGitBtn">⬇️ 一键安装 git</button>
-        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://git-scm.com/downloads')">🌐 官网下载</button>` : ''}
       ${!portable.installed ? `
-        <button class="btn btn-sm btn-primary" onclick="installPortableNode()" id="installPortableBtn" title="低配置推荐：镜像下载官方 Node zip 解压到 ~/.dsh/env/node，免管理员权限">📦 便携版安装 Node（低配推荐）</button>`
+        <button class="btn btn-sm btn-primary" onclick="installPortableNode()" id="installPortableBtn" title="最小化运行环境：仅需镜像下载官方 Node zip 解压到 ~/.dsh/env/node 即可启动 DSH">📦 便携版 Node（最小化，推荐）</button>`
         : `<button class="btn btn-sm btn-ghost" onclick="uninstallPortableNode()" id="uninstallPortableBtn" title="删除 ~/.dsh/env/node，无系统残留">🗑️ 卸载便携版</button>`}
     </div>
-    ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。低配机器推荐「便携版安装」；安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
+    <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);font-size:12px;color:var(--text-dim);">
+      <strong style="color:var(--text-secondary);">按需可选（不影响 DSH 启动）：</strong>
+      <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+        ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">安装 pnpm（插件管理）</button>` : `<span class="badge badge-green">pnpm ${(pnpm.version || '').replace(/^v/, '')} 已安装</span>`}
+        ${missingGit ? `
+          <button class="btn btn-sm btn-secondary" onclick="installGit()" id="installGitBtn">安装 git（GitHub 插件）</button>
+          <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://git-scm.com/downloads')">🌐 官网下载</button>` : `<span class="badge badge-green">git 已安装</span>`}
+      </div>
+      <p style="margin:8px 0 0;">💡 DSH 启动仅需 <strong>Node.js（含 npm）</strong>；pnpm 用于插件安装，git 仅 GitHub 插件需要，均可按需延后安装。低配机器推荐「便携版 Node」最小化安装。</p>
+    </div>
     <div id="envInstallLog" style="display:none;margin-top:10px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
   `;
 }
@@ -1963,12 +1968,42 @@ function skillCardHtml(s) {
     + '  <label class="switch-label"><input type="checkbox" ' + (s.userInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'user\', this.checked)">'
     + '    <span class="switch"></span> 用户可调用</label>'
     + '  <div class="btn-group">'
+    + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="viewSkillDetail(\'' + s.name + '\')">📖 详情</button>'
     + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="openEditSkill(\'' + s.name + '\')">编辑</button>'
     + '    ' + delBtn
     + '  </div>'
     + '</div>'
     + '</div>';
-}
+  }
+  // ====== 技能详情（只读查看完整 SKILL.md，参考 superpowers 技能管理模式） ======
+  function viewSkillDetail(name) {
+    window.dshManager.skillsGet(name).then(function(s) {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay active';
+      overlay.id = 'skillDetailModal';
+      const sourceLabel = s.sourceLabel || s.source || '';
+      const whenHtml = s.whenToUse ? '<p><strong>适用：</strong>' + escSkillHtml(s.whenToUse) + '</p>' : '';
+      const metaHtml = s.meta && Object.keys(s.meta).length
+        ? '<div class="skill-detail-meta">' + Object.entries(s.meta).map(function(e) {
+            return '<code>' + escSkillHtml(e[0]) + '</code>: ' + escSkillHtml(String(e[1]));
+          }).join(' · ') + '</div>'
+        : '';
+      overlay.innerHTML = '<div class="modal" style="min-width:520px;max-width:720px;max-height:80vh;display:flex;flex-direction:column;">'
+        + '<div class="modal-header"><h3>📖 ' + escSkillHtml(s.name) + '</h3>'
+        + '<span class="badge badge-info">' + escSkillHtml(sourceLabel) + '</span>'
+        + '<button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">×</button></div>'
+        + '<div class="modal-body" style="overflow-y:auto;font-size:13px;line-height:1.6;">'
+        + '<p><strong>路径：</strong><code>' + escSkillHtml(s.path || '') + '</code></p>'
+        + whenHtml + metaHtml
+        + '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0;">'
+        + '<pre style="white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:12px;color:var(--text-muted);background:var(--bg-primary);border-radius:var(--radius-sm);padding:12px;margin:0;">' + escSkillHtml(s.body || '') + '</pre>'
+        + '</div>'
+        + '<div class="modal-footer"><button class="btn btn-ghost" onclick="this.closest(\'.modal-overlay\').remove()">关闭</button>'
+        + '<button class="btn btn-primary" onclick="openEditSkill(\'' + escSkillHtml(s.name) + '\'); this.closest(\'.modal-overlay\').remove()">✏️ 编辑</button></div>'
+        + '</div>';
+      document.body.appendChild(overlay);
+    }).catch(function(e) { showToast('读取失败: ' + e.message, 'error'); });
+  }
 // ====== 技能弹窗 ======
 function openCreateSkill() { openSkillModal(null); }
 function openEditSkill(name) {
