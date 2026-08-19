@@ -3,9 +3,13 @@
  * 
  * 面向"基础空白环境"（可能连 Node.js/npm 都未安装）的部署检测：
  * 安装 DSH 前先确认 node/npm/pnpm 是否可用，缺失时给出明确引导。
+ * 低配置场景支持便携版 Node（~/.dsh/env/node），解压即用不污染系统。
  */
 
 import { execa } from 'execa';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { DSH_PATHS } from './dsh-utils.js';
 
 /**
  * 内部：检测命令是否可用（checkNode/checkNpm 共用）
@@ -30,19 +34,64 @@ async function checkCommand(cmd, label) {
 }
 
 /**
- * 检测 Node.js 是否安装
- * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
+ * 便携版 Node 可执行文件路径（存在返回完整路径，否则 null）
+ * Windows: ~/.dsh/env/node/node.exe；POSIX: ~/.dsh/env/node/bin/node
  */
-export async function checkNode() {
-  return checkCommand('node', 'node');
+export function getPortableNodeBin() {
+  const nodeDir = DSH_PATHS.envNodeDir;
+  const bin = process.platform === 'win32'
+    ? join(nodeDir, 'node.exe')
+    : join(nodeDir, 'bin', 'node');
+  return existsSync(bin) ? bin : null;
 }
 
 /**
- * 检测 npm 是否安装
- * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
+ * 检测便携版 Node 是否已安装（低配置最小化安装）
+ * @returns {Promise<{installed: boolean, version: string|null, bin: string|null}>}
+ */
+export async function checkPortableNode() {
+  const bin = getPortableNodeBin();
+  if (!bin) return { installed: false, version: null, bin: null };
+  try {
+    const { stdout } = await execa(bin, ['--version'], { reject: false, timeout: 10_000 });
+    if (stdout && stdout.trim()) {
+      return { installed: true, version: stdout.trim(), bin };
+    }
+  } catch {}
+  return { installed: false, version: null, bin };
+}
+
+/**
+ * 检测 Node.js 是否安装（系统 PATH 优先，便携版兜底）
+ * @returns {Promise<{installed: boolean, version: string|null, error: string|null, source?: string}>}
+ */
+export async function checkNode() {
+  const sys = await checkCommand('node', 'node');
+  if (sys.installed) return { ...sys, source: 'system' };
+  const portable = await checkPortableNode();
+  if (portable.installed) return { installed: true, version: portable.version, error: null, source: 'portable' };
+  return sys;
+}
+
+/**
+ * 检测 npm 是否安装（系统 PATH 优先，便携版兜底）
+ * @returns {Promise<{installed: boolean, version: string|null, error: string|null, source?: string}>}
  */
 export async function checkNpm() {
-  return checkCommand('npm', 'npm');
+  const sys = await checkCommand('npm', 'npm');
+  if (sys.installed) return { ...sys, source: 'system' };
+  // 便携版：node 目录下同级的 npm.cmd / npm
+  const nodeDir = DSH_PATHS.envNodeDir;
+  const npmBin = process.platform === 'win32'
+    ? join(nodeDir, 'npm.cmd')
+    : join(nodeDir, 'bin', 'npm');
+  if (existsSync(npmBin)) {
+    const { stdout } = await execa(npmBin, ['--version'], { reject: false, timeout: 10_000 });
+    if (stdout && stdout.trim()) {
+      return { installed: true, version: stdout.trim(), error: null, source: 'portable' };
+    }
+  }
+  return sys;
 }
 
 /**

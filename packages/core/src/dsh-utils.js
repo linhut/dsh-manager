@@ -47,6 +47,14 @@ export const DSH_PATHS = {
   get managerDir() {
     return join(this.home, 'manager');
   },
+  /** 便携环境目录（低配置最小化安装用） */
+  get envDir() {
+    return join(this.home, 'env');
+  },
+  /** 便携版 Node 目录 */
+  get envNodeDir() {
+    return join(this.envDir, 'node');
+  },
   /** 本地插件缓存目录 */
   get pluginCache() {
     return join(this.managerDir, 'plugin-cache');

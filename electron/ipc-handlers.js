@@ -174,11 +174,20 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
       // 直接启动 node + CLI（绕过 .cmd 包装，避免 Windows 弹窗）
       const isWindows = process.platform === 'win32';
-      const child = execa('node', [cliPath, 'web'], {
+      // 低配置运行配置：便携版 Node PATH 注入 + 低内存参数 + 自定义端口
+      const { buildRuntimeEnv, getRuntimeConfig } = await loadCore();
+      const [{ env }, rt] = await Promise.all([buildRuntimeEnv(), getRuntimeConfig()]);
+      const startArgs = ['web'];
+      if (rt.port && rt.port !== 3080) startArgs.push('--port', String(rt.port));
+      const nodeEnv = { ...env, NO_COLOR: '1' };
+      if (rt.lowMemory) {
+        nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
+      }
+      const child = execa('node', [cliPath, ...startArgs], {
         detached: !isWindows,          // Windows 上 detached 会让子进程拥有自己的控制台窗口
         windowsHide: isWindows,        // Windows 上隐藏控制台窗口（CREATE_NO_WINDOW）
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, NO_COLOR: '1' },
+        env: nodeEnv,
         reject: false,                 // 不抛异常，由下方统一处理失败
       });
       // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
@@ -765,6 +774,37 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   });
 
   // ====== 基础环境检测（空白环境部署支持） ======
+  // ====== 便携版 Node（低配置最小化安装） ======
+  ipcMain.handle('app:install-nodejs-portable', async (_, opts = {}) => {
+    try {
+      const win = getMainWindow();
+      const pushProgress = (data) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('env-install-progress', data);
+        }
+      };
+      pushProgress({ level: 'info', message: '开始安装便携版 Node.js（镜像下载）...' });
+      const { installPortableNode } = await loadCore();
+      const result = await installPortableNode({
+        version: opts.version || undefined,
+        onProgress: (m) => pushProgress({ level: 'info', message: m }),
+      });
+      return { success: true, ...result, message: `便携版 Node ${result.version} 安装成功` };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('app:uninstall-nodejs-portable', async () => {
+    const { uninstallPortableNode } = await loadCore();
+    return await uninstallPortableNode();
+  });
+
+  ipcMain.handle('app:get-portable-node', async () => {
+    const { getPortableNodeInfo } = await loadCore();
+    return await getPortableNodeInfo();
+  });
+
   ipcMain.handle('app:check-env', async () => {
     const { checkEnvironment, getNodeInstallGuide, getPnpmInstallGuide, getGitInstallGuide } = await loadCore();
     const env = await checkEnvironment();

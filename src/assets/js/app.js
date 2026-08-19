@@ -765,8 +765,14 @@ async function renderEnvStatus() {
   const missingNode = !node.installed;
   const missingNpm = !npm.installed;
   const missingGit = !git?.installed;
+  // 便携版 Node 状态（低配置最小化安装）
+  let portable = { installed: false, version: null };
+  try { portable = await window.dshManager.getPortableNode(); } catch {}
+  const portableRow = portable.installed
+    ? row('📦', '便携版 Node', `<strong>${portable.version}</strong> <span class="badge badge-blue">低配推荐</span>`)
+    : row('📦', '便携版 Node', '<span style="color:var(--text-dim);">未安装（镜像下载、免安装、不污染系统）</span>');
   el.innerHTML = `
-    ${nodeRow}${npmRow}${pnpmRow}${gitRow}
+    ${nodeRow}${npmRow}${pnpmRow}${gitRow}${portableRow}
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
       ${(missingNode || missingNpm) ? `
         <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
@@ -775,10 +781,56 @@ async function renderEnvStatus() {
       ${missingGit ? `
         <button class="btn btn-sm btn-secondary" onclick="installGit()" id="installGitBtn">⬇️ 一键安装 git</button>
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://git-scm.com/downloads')">🌐 官网下载</button>` : ''}
+      ${!portable.installed ? `
+        <button class="btn btn-sm btn-primary" onclick="installPortableNode()" id="installPortableBtn" title="低配置推荐：镜像下载官方 Node zip 解压到 ~/.dsh/env/node，免管理员权限">📦 便携版安装 Node（低配推荐）</button>`
+        : `<button class="btn btn-sm btn-ghost" onclick="uninstallPortableNode()" id="uninstallPortableBtn" title="删除 ~/.dsh/env/node，无系统残留">🗑️ 卸载便携版</button>`}
     </div>
-    ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
+    ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。低配机器推荐「便携版安装」；安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
     <div id="envInstallLog" style="display:none;margin-top:10px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
   `;
+}
+
+// ====== 便携版 Node（低配置最小化安装） ======
+async function installPortableNode() {
+  const btn = document.getElementById('installPortableBtn');
+  clearEnvInstallLog();
+  appendEnvInstallLog('开始安装便携版 Node.js（镜像下载）...');
+  showToast('正在下载便携版 Node.js，请稍候...', 'info');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 下载中...'; }
+  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.onEnvInstallProgress((data) => {
+    if (data && data.message) appendEnvInstallLog(data.message, data.level);
+  });
+  try {
+    const result = await window.dshManager.installNodejsPortable({});
+    if (result.success) {
+      appendEnvInstallLog(`✅ ${result.message || '便携版 Node 安装成功'}`, 'info');
+      showToast(`✅ ${result.message || '便携版 Node 安装成功'}`, 'success');
+    } else {
+      appendEnvInstallLog(`❌ ${result.error || result.message || '未知错误'}`, 'error');
+      showToast(`❌ 便携版 Node 安装失败: ${result.error || result.message || '未知错误'}`, 'error');
+    }
+    await renderEnvStatus();
+    await checkDSHStatus();
+  } catch (err) {
+    appendEnvInstallLog(`❌ ${err.message}`, 'error');
+    showToast('❌ 便携版 Node 安装失败: ' + err.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '📦 便携版安装 Node（低配推荐）'; }
+  } finally {
+    window.dshManager.removeAllListeners('env-install-progress');
+  }
+}
+
+async function uninstallPortableNode() {
+  if (!confirm('确定卸载便携版 Node 吗？将删除 ~/.dsh/env/node 目录，无系统残留。')) return;
+  try {
+    await window.dshManager.uninstallNodejsPortable();
+    showToast('✅ 便携版 Node 已卸载', 'success');
+    await renderEnvStatus();
+    await checkDSHStatus();
+  } catch (err) {
+    showToast('卸载失败: ' + err.message, 'error');
+  }
 }
 
 // ====== 安装回显日志（Node/pnpm 安装实时输出） ======
@@ -2638,11 +2690,12 @@ function openSettingsTab(tab) {
       Promise.all([
         window.dshManager.getConfig('manager.auto-start-dsh'),
         window.dshManager.getConfig('manager.check-updates'),
-        window.dshManager.getReplyLanguage()
-      ]).then(([autoStart, checkUpdates, replyLang]) => {
-        tabEl.innerHTML = renderSettingsManagerTab(autoStart !== false, checkUpdates !== false, replyLang || 'default');
+        window.dshManager.getReplyLanguage(),
+        window.dshManager.getConfig('manager.runtime')
+      ]).then(([autoStart, checkUpdates, replyLang, runtime]) => {
+        tabEl.innerHTML = renderSettingsManagerTab(autoStart !== false, checkUpdates !== false, replyLang || 'default', runtime || {});
       }).catch(() => {
-        tabEl.innerHTML = renderSettingsManagerTab(true, true, 'default');
+        tabEl.innerHTML = renderSettingsManagerTab(true, true, 'default', {});
       });
       break;
     case 'llm':
@@ -2665,8 +2718,12 @@ function openSettingsTab(tab) {
   });
 }
 
-function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default') {
+function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default', runtime = {}) {
   const theme = localStorage.getItem('dshm-theme') || 'system';
+  const rtNode = runtime?.node || 'auto';
+  const rtLowMem = runtime?.lowMemory !== false;
+  const rtMaxOld = Number(runtime?.maxOldSpace) || 512;
+  const rtPort = Number(runtime?.port) || 3080;
   return `
     <div class="card">
       <div class="card-header">
@@ -2717,7 +2774,61 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
         </div>
       </div>
     </div>
+    <div class="card" style="margin-top:16px;">
+      <div class="card-header">
+        <span class="card-title">🚀 运行配置（低配置优化）</span>
+      </div>
+      <div class="card-body">
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>Node 运行时选择</strong>
+            <p class="setting-desc">低配机器推荐「便携版」：镜像下载、免安装、不污染系统；自动=有便携版则用便携版</p>
+          </div>
+          <select class="setting-select" onchange="setRuntimeConfig('node', this.value)">
+            <option value="auto" ${rtNode === 'auto' ? 'selected' : ''}>自动（推荐）</option>
+            <option value="portable" ${rtNode === 'portable' ? 'selected' : ''}>便携版</option>
+            <option value="system" ${rtNode === 'system' ? 'selected' : ''}>系统版</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>低资源模式</strong>
+            <p class="setting-desc">为 DSH 注入内存上限（NODE_OPTIONS --max-old-space-size），减少低配机内存压力</p>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" ${rtLowMem ? 'checked' : ''} onchange="setRuntimeConfig('lowMemory', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>内存上限 (MB)</strong>
+            <p class="setting-desc">低资源模式下 DSH 的最大堆内存，默认 512MB（仅低配机器建议调低）</p>
+          </div>
+          <input class="input" type="number" min="128" max="4096" step="64" value="${rtMaxOld}" style="width:120px;flex-shrink:0;" onchange="setRuntimeConfig('maxOldSpace', Number(this.value))">
+        </div>
+        <div class="setting-item">
+          <div class="setting-info">
+            <strong>DSH Web 端口</strong>
+            <p class="setting-desc">自定义 DSH Web 界面端口（默认 3080）</p>
+          </div>
+          <input class="input" type="number" min="1024" max="65535" value="${rtPort}" style="width:120px;flex-shrink:0;" onchange="setRuntimeConfig('port', Number(this.value))">
+        </div>
+      </div>
+    </div>
   `;
+}
+
+// ====== 运行配置（低配置优化） ======
+async function setRuntimeConfig(key, value) {
+  try {
+    const rt = (await window.dshManager.getConfig('manager.runtime')) || {};
+    rt[key] = value;
+    await window.dshManager.setConfig('manager.runtime', rt);
+    showToast('运行配置已保存', 'success');
+  } catch (err) {
+    showToast('保存失败: ' + err.message, 'error');
+  }
 }
 
 async function renderLLMProvidersTab() {

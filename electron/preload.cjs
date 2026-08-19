@@ -110,6 +110,9 @@ contextBridge.exposeInMainWorld('dshManager', {
   installPnpm: () => ipcRenderer.invoke('app:install-pnpm'),
   checkEnvironment: () => ipcRenderer.invoke('app:check-env'),
   installNodejs: () => ipcRenderer.invoke('app:install-nodejs'),
+  installNodejsPortable: (opts) => ipcRenderer.invoke('app:install-nodejs-portable', opts),
+  uninstallNodejsPortable: () => ipcRenderer.invoke('app:uninstall-nodejs-portable'),
+  getPortableNode: () => ipcRenderer.invoke('app:get-portable-node'),
   installGit: () => ipcRenderer.invoke('app:install-git'),
 
   // ====== 事件监听 ======
