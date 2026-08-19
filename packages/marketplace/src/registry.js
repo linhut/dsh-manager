@@ -430,6 +430,173 @@ export class PluginRegistry {
   }
 
   /**
+   * 诊断 profile 插件树中的无效条目
+   * 
+   * 对比 profile 的 package.json（bundles/dependencies）与 cordis.patch.yml 的 insert 条目，
+   * 逐项验证插件是否真实有效（node_modules 中存在且声明 dsh.bundle 的合法 bundle）。
+   * 无效条目（如 gongwen-skill 已注册但包缺失/无 apply）会导致 `dsh web` 启动失败，
+   * 此诊断用于定位这类问题。
+   * @param {string} [profile='web']
+   * @returns {{total: number, invalid: Array<{id: string, reason: string}>}}
+   */
+  diagnoseInvalidPlugins(profile = 'web') {
+    const profilesDir = join(DSH_HOME(), 'profiles');
+    const pkgFile = join(profilesDir, profile, 'package.json');
+    if (!existsSync(pkgFile)) {
+      return { total: 0, invalid: [] };
+    }
+
+    const invalid = [];
+    const seen = new Set();
+    const addIssue = (id, reason) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      invalid.push({ id, reason });
+    };
+
+    try {
+      const pkg = JSON.parse(readFileSync(pkgFile, 'utf-8'));
+      const bundles = pkg.dsh?.profile?.bundles || [];
+      const deps = pkg.dependencies || {};
+      const candidates = new Map();
+
+      // ① bundles 列表（用户插件）
+      for (const b of bundles) {
+        if (b.startsWith('@deepseek-ai/dsh-base') || b.startsWith('@deepseek-ai/dsh-web-app')) continue;
+        candidates.set(b, 'bundles');
+      }
+      // ② dependencies 中的非核心依赖
+      for (const [name, spec] of Object.entries(deps)) {
+        if (name.startsWith('@deepseek-ai/dsh')) continue;
+        if (!candidates.has(name)) candidates.set(name, spec || 'dependencies');
+      }
+
+      // ③ cordis.patch.yml 中的 insert 条目
+      const patchFile = join(profilesDir, profile, 'cordis.patch.yml');
+      if (existsSync(patchFile)) {
+        try {
+          const patchContent = readFileSync(patchFile, 'utf-8');
+          const insertNames = [...patchContent.matchAll(/name:\s*['"]?([^'"\n]+)['"]?/g)]
+            .map(m => m[1].trim())
+            .filter(n => n && !n.startsWith('@deepseek-ai/'));
+          for (const n of insertNames) {
+            if (!candidates.has(n)) candidates.set(n, 'cordis.patch.yml insert');
+          }
+        } catch {}
+      }
+
+      // 逐项验证：node_modules 中包是否存在且为合法 bundle
+      const nmRoot = join(profilesDir, profile, 'node_modules');
+      for (const [name, source] of candidates) {
+        const pkgJsonPath = join(nmRoot, name, 'package.json');
+        if (!existsSync(pkgJsonPath)) {
+          addIssue(name, `已注册（${source}）但未安装到 node_modules`);
+          continue;
+        }
+        try {
+          const nmPkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+          // 入口判断：main 或 exports 至少提供一种入口（如 modlens 用 exports['./dsh']，main 为空）
+          const mainFile = nmPkg.main || 'index.js';
+          const mainPath = join(nmRoot, name, mainFile);
+          const hasExports = !!(nmPkg.exports && typeof nmPkg.exports === 'object');
+          if (!hasExports && !existsSync(mainPath)) {
+            addIssue(name, `入口文件缺失: ${mainFile}`);
+            continue;
+          }
+          // 校验 dsh.bundle 声明（合法 bundle 的必要标记）
+          if (!nmPkg.dsh?.bundle) {
+            addIssue(name, '未声明 dsh.bundle（不是合法 bundle，加载时可能报 "invalid plugin"）');
+          }
+        } catch {
+          addIssue(name, 'package.json 解析失败');
+        }
+      }
+    } catch {}
+
+    return { total: seen.size, invalid };
+  }
+
+  /**
+   * 一键修复：移除 profile 插件树中的无效条目
+   * 
+   * 对诊断出的无效条目依次尝试：
+   *   ① 官方 `dsh plugin --profile <name> remove <id>`（最干净，同步清理 pnpm 依赖）
+   *   ② 直接编辑 profile/package.json：从 dependencies 与 dsh.profile.bundles 移除
+   * 同时清理 cordis.patch.yml 中对应的 insert 条目。
+   * @param {string} [profile='web']
+   * @returns {Promise<{fixed: Array<{id: string, method: string}>, failed: Array<{id: string, error: string}>, remaining: Array<{id: string, reason: string}>}>}
+   */
+  async fixInvalidPlugins(profile = 'web') {
+    const { invalid } = this.diagnoseInvalidPlugins(profile);
+    const fixed = [];
+    const failed = [];
+
+    if (invalid.length === 0) {
+      return { fixed, failed, remaining: [] };
+    }
+
+    const profilesDir = join(DSH_HOME(), 'profiles');
+    const pkgFile = join(profilesDir, profile, 'package.json');
+    const patchFile = join(profilesDir, profile, 'cordis.patch.yml');
+
+    for (const item of invalid) {
+      // ① 官方 remove 命令
+      let removed = false;
+      try {
+        const dshCmd = await resolveDSHCommand();
+        const { exitCode } = await execa(dshCmd, ['plugin', '--profile', profile, 'remove', item.id], {
+          reject: false,
+          timeout: 60_000,
+        });
+        removed = exitCode === 0;
+      } catch {}
+
+      // ② 直接编辑 package.json 兜底
+      if (!removed && existsSync(pkgFile)) {
+        try {
+          const pkg = JSON.parse(readFileSync(pkgFile, 'utf-8'));
+          let changed = false;
+          if (pkg.dependencies && pkg.dependencies[item.id]) {
+            delete pkg.dependencies[item.id];
+            changed = true;
+          }
+          if (Array.isArray(pkg.dsh?.profile?.bundles)) {
+            const before = pkg.dsh.profile.bundles.length;
+            pkg.dsh.profile.bundles = pkg.dsh.profile.bundles.filter(b => b !== item.id);
+            if (pkg.dsh.profile.bundles.length !== before) changed = true;
+          }
+          if (changed) {
+            writeFileSync(pkgFile, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
+            removed = true;
+          }
+        } catch {}
+      }
+
+      // ③ 清理 cordis.patch.yml 中的 insert 条目
+      if (existsSync(patchFile)) {
+        try {
+          let content = readFileSync(patchFile, 'utf-8');
+          const blockRe = new RegExp(`-\\s*insert:\\s*\\n(?:[ \\t]+[^\\n]*\\n)*[ \\t]+name:\\s*['"]?${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]?[^\\n]*\\n(?:[ \\t]+[^\\n]*\\n)*`, 'g');
+          const newContent = content.replace(blockRe, '');
+          if (newContent !== content) {
+            writeFileSync(patchFile, newContent, 'utf-8');
+          }
+        } catch {}
+      }
+
+      if (removed) {
+        fixed.push({ id: item.id, method: 'dsh plugin remove / 配置移除' });
+      } else {
+        failed.push({ id: item.id, error: item.reason });
+      }
+    }
+
+    // 修复后复查
+    const remaining = this.diagnoseInvalidPlugins(profile).invalid;
+    return { fixed, failed, remaining };
+  }
+
+  /**
    * 获取 DSH profile 的完整组合插件树（等同 DSH 设置页展示内容）
    * 通过执行 `dsh --profile <name> --dump-config` 解析，包含：
    *   - 核心框架插件（@deepseek-ai/dsh-base / dsh-web-app）

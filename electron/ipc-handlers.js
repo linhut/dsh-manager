@@ -406,6 +406,18 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await registry.getComposedPlugins(profile, forceRefresh);
   });
 
+  ipcMain.handle('marketplace:diagnose-plugins', async (_, profile = 'web') => {
+    const { PluginRegistry } = await loadMarketplace();
+    const registry = new PluginRegistry();
+    return registry.diagnoseInvalidPlugins(profile);
+  });
+
+  ipcMain.handle('marketplace:fix-plugins', async (_, profile = 'web') => {
+    const { PluginRegistry } = await loadMarketplace();
+    const registry = new PluginRegistry();
+    return await registry.fixInvalidPlugins(profile);
+  });
+
   ipcMain.handle('marketplace:check-updates', async () => {
     const { PluginRegistry } = await loadMarketplace();
     const registry = new PluginRegistry();

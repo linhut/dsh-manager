@@ -991,6 +991,33 @@ async function uninstallDSH() {
 }
 
 // ====== 插件管理页面 ======
+// 诊断并一键修复插件树中的无效条目（恢复 dsh web 启动）
+async function diagnoseAndFixPlugins() {
+  showToast('正在诊断插件树...', 'info');
+  try {
+    const diag = await window.dshManager.diagnoseInvalidPlugins('web');
+    if (!diag.invalid || diag.invalid.length === 0) {
+      showToast('✅ 插件树健康，未发现无效条目', 'success');
+      return;
+    }
+
+    const reasons = diag.invalid.map(p => `• ${p.id}: ${p.reason}`).join('\n');
+    const ok = confirm(`检测到 ${diag.invalid.length} 个无效插件条目（可能导致 DSH 启动失败）：\n\n${reasons}\n\n是否一键移除？`);
+    if (!ok) return;
+
+    showToast('正在移除无效条目...', 'info');
+    const result = await window.dshManager.fixInvalidPlugins('web');
+    const parts = [];
+    if (result.fixed?.length) parts.push(`已移除 ${result.fixed.length} 个：${result.fixed.map(f => f.id).join(', ')}`);
+    if (result.failed?.length) parts.push(`失败 ${result.failed.length} 个：${result.failed.map(f => f.id).join(', ')}`);
+    if (result.remaining?.length) parts.push(`仍有残留 ${result.remaining.length} 个（需手动处理）`);
+    showToast('🩺 ' + (parts.join('；') || '处理完成'), result.failed?.length || result.remaining?.length ? 'warning' : 'success');
+    renderPluginsPage();
+  } catch (err) {
+    showToast('诊断失败: ' + err.message, 'error');
+  }
+}
+
 // 折叠/展开某个 bundle 分组
 function toggleBundleGroup(groupId) {
   const bodyRows = document.querySelectorAll(`tr[data-bundle-body="${groupId}"]`);
@@ -1088,6 +1115,7 @@ async function renderPluginsPage() {
       <button class="btn btn-secondary" onclick="checkPluginUpdates()">
         🔄 检查更新
       </button>
+      <button class="btn btn-ghost" onclick="diagnoseAndFixPlugins()" title="扫描插件树中无效条目（如已注册但包缺失/非合法 bundle），一键移除以恢复 DSH 启动">🩺 诊断并修复</button>
       <button class="btn btn-ghost" onclick="toggleAllBundles(true)" title="展开所有 bundle 分组">📂 全部展开</button>
       <button class="btn btn-ghost" onclick="toggleAllBundles(false)" title="收起所有 bundle 分组">📁 全部收起</button>
       <span style="font-size:12px;color:var(--text-dim);">共 ${totalPlugins} 个插件（用户 bundle ${userBundles.length} 组 · 核心框架 ${coreBundles.length} 组）</span>

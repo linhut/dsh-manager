@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('dshManager', {
   uninstallPlugin: (pluginId) => ipcRenderer.invoke('marketplace:uninstall-plugin', pluginId),
   getLocalPlugins: (forceRefresh = false) => ipcRenderer.invoke('marketplace:local-plugins', forceRefresh),
   getComposedPlugins: (profile = 'web', forceRefresh = false) => ipcRenderer.invoke('marketplace:composed-plugins', profile, forceRefresh),
+  diagnoseInvalidPlugins: (profile = 'web') => ipcRenderer.invoke('marketplace:diagnose-plugins', profile),
+  fixInvalidPlugins: (profile = 'web') => ipcRenderer.invoke('marketplace:fix-plugins', profile),
   checkPluginUpdates: () => ipcRenderer.invoke('marketplace:check-updates'),
   enablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:enable-plugin', pluginId),
   disablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:disable-plugin', pluginId),
