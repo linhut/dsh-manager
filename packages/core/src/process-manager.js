@@ -1,21 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 服务/进程管理
- * 
- * 检测 DSH Web 服务端口占用与进程信息，辅助排查"已安装但连不上"类问题。
- * 
- * 已知问题与修复思路：
- *  - 现象：dsh web 曾显示启动成功，但浏览器永远打不开主页。
- *  - 根因：dsh web 进程挂在退出会话的进程树下（终端/任务计划结束时被回收），
- *          3080 端口无人监听，浏览器自然无法访问。
- *  - 修复：此处提供 <b>findAvailablePort</b>（端口占用自动换随机空闲端口）、
- *          <b>diagnoseDSHProcess</b>（一键诊断端口/进程/HTTP 可达性）、
- *          <b>testDSHHealth</b>（HTTP 存活探测）等能力，供 UI 直接调用。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { execa } from 'execa';

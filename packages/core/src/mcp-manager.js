@@ -1,14 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - MCP 服务端管理器（增强版）
- *
- * 管理 DSH profile 中配置的 MCP 服务端。
- * 支持 JSON 导入、环境变量转换、原子写入备份。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, copyFileSync, statSync, chmodSync } from 'node:fs';

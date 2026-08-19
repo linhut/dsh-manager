@@ -1,13 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - DSH 安装器
- * 
- * 支持多种安装方式：npm、源码编译、版本切换
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { execa } from 'execa';

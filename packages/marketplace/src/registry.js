@@ -1,13 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/marketplace - 插件注册表
- * 
- * 管理本地插件注册信息、缓存、搜索
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';

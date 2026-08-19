@@ -1,12 +1,12 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ * 
+ * 主应用逻辑 - 管理所有页面渲染、DSH 状态、安装流程、插件管理
  */
 
-
-
-// ====== 全局状态 ======
 const state = {
   skillsQuery: '',
   skillsSourceFilter: 'all',

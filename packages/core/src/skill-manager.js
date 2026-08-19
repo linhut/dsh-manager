@@ -1,20 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 技能（Skills）管理器
- *
- * 管理 DSH Agent 技能：多源扫描（用户 ~/.dsh/skills + 项目内置 dsh-skills）、
- * SKILL.md frontmatter 解析/渲染、创建/更新/删除、可见性切换、目录/GitHub/zip 导入。
- *
- * 设计要点：
- * - 同名技能按来源优先级 shadow（低 rank 优先显示，其余标记 shadowed）
- * - frontmatter 解析用项目自带 parseYAML（不引入新依赖）
- * - zip 导入内置迷你解压器（zlib inflateRawSync，支持 store/deflate），
- *   无 adm-zip 依赖，路径穿越严格校验
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, renameSync, cpSync, mkdtempSync, statSync } from 'node:fs';

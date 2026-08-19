@@ -1,16 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * DSH Manager - 预加载脚本
- * 
- * 使用 CommonJS 格式（.js 文件但使用 require），确保在 Electron 打包后
- * 的 asar 环境中可靠加载。package.json 的 "type": "module" 不影响此文件。
- * 
- * 通过 contextBridge 安全地暴露 API 给渲染进程
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');

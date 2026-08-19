@@ -1,13 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/marketplace - 插件管理器
- * 
- * 插件生命周期管理：启用/禁用、列表、状态检查
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { DSHError, DSHErrorCodes } from '../../core/src/index.js';

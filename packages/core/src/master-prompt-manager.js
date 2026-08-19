@@ -1,20 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 总提示词管理 (Master Prompt Manager)
- *
- * 管理全局持久化提示词（工作指令），可注入到 Agent 上下文。
- * 支持：CRUD / 启用关闭 / 分类 / 渲染为指令块。
- * 数据存储：~/.dsh/manager/master-prompts.json
- *
- * 典型用途：
- *   - "所做操作必须提供结果报告"
- *   - "重大操作前需询问用户确认"
- *   - "完成任务后询问是否走发布流程"
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";

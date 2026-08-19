@@ -1,16 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 便携版 Node.js 安装
- * 
- * 低配置电脑最小化安装方案：
- * 从 npmmirror 镜像下载 Node 官方 zip，解压到 ~/.dsh/env/node，
- * 免管理员权限、不污染系统 PATH、可整体删除。
- * 运行时通过动态注入 PATH 使用（见 resolveDSHCommand / checkNode 便携版兜底）。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { execa } from 'execa';

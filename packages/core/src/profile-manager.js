@@ -1,14 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - Profile 管理
- * 
- * 管理 DSH profiles（web/dev/自定义多配置）：列表、新建、备份。
- * profiles 目录下每个子目录即一个 profile。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, mkdirSync, readdirSync, statSync, cpSync } from 'node:fs';

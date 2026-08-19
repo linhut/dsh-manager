@@ -1,8 +1,8 @@
 # DSH Manager
-# Copyright (c) 2026 linhut (https://github.com/linhut)
-# MIT License
+# (c) 2026 Jose AI (https://www.linhut.cn)
+# https://github.com/linhut/dsh-manager
+# Licensed under the MIT License. See the LICENSE file for details.
 
-#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     DSH Manager 一键安装脚本（源码方式）

@@ -1,13 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/marketplace - GitHub API 封装
- * 
- * 搜索 dsh-plugin 主题仓库、获取仓库详情、README 等
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { DSHError, DSHErrorCodes } from '../../core/src/index.js';

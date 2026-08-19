@@ -1,20 +1,10 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-/**
- * @dsh-manager/core - 共享 YAML 工具
- * 
- * 统一的 YAML 解析/序列化实现（兼容 dsh settings.yaml 格式）。
- * 供 DSHConfig 与 dsh-utils.readConfigFile 复用，消除重复实现。
- */
-
-/**
- * 解析 YAML 标量
- * @private
- */
 function parseScalar(value) {
   if (value === 'true') return true;
   if (value === 'false') return false;

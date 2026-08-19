@@ -1,15 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 基础环境检测
- * 
- * 面向"基础空白环境"（可能连 Node.js/npm 都未安装）的部署检测：
- * 安装 DSH 前先确认 node/npm/pnpm 是否可用，缺失时给出明确引导。
- * 低配置场景支持便携版 Node（~/.dsh/env/node），解压即用不污染系统。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { execa } from 'execa';

@@ -1,14 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 数据管理
- * 
- * 统计 DSH 各数据目录占用，按需清理会话/缓存/存储。
- * 清理只删除目录内文件与子目录，保留目录本身。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readdirSync, statSync, rmSync } from 'node:fs';

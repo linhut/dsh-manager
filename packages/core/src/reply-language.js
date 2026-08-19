@@ -1,18 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - DSH 回复语言管理
- * 
- * 通过注入/替换/移除 ~/.dsh/AGENTS.md 中的语言指令块，
- * 控制 DSH（DeepSeek Harness）回复与思考使用的语言。
- * 
- * DSH 原生没有「回复语言」配置开关；AGENTS.md 由 dsh-agent-instructions
- * 注入会话（guidance 级，优先级低于系统提示词与直接用户指令），
- * 是社区控制回复语言的最简方式。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';

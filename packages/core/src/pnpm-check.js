@@ -1,15 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - pnpm 检测工具
- * 
- * DSH 的插件管理依赖 pnpm（通过 `dsh plugin --profile <name> add <package>` 间接使用）。
- * 如果系统中没有安装 pnpm，插件安装/卸载/更新操作将失败。
- * 本模块提供检测和安装引导功能。
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { execa } from 'execa';

@@ -1,21 +1,8 @@
 /**
  * DSH Manager
- * Copyright (c) 2026 linhut (https://github.com/linhut)
- * MIT License
- */
-
-/**
- * @dsh-manager/core - 依赖完整性检查器
- *
- * 基于经验教训实现：
- *   - npm/pnpm install 中断会造成依赖树残缺，且 --offline 显示 "up to date" 但实际文件缺失
- *   - 快速校验法：对比 profile 与全局同名包的文件数，少于全局即残缺
- *   - 修复法：从全局副本整体覆盖，比重新 install 更可靠、更快
- *
- * 功能：
- *   ① 检查 profile node_modules 完整性（文件数对比全局参考）
- *   ② 从 DSH 全局安装副本修复残缺包
- *   ③ 系统组件 vs 外部插件分类
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, rmSync } from "node:fs";
