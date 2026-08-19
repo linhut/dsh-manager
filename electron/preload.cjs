@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   getAgentPresets: () => ipcRenderer.invoke('config:agent-presets'),
   updateLLMProvider: (name, providerConfig) => ipcRenderer.invoke('config:update-llm-provider', name, providerConfig),
   deleteLLMProvider: (name) => ipcRenderer.invoke('config:delete-llm-provider', name),
+  fetchLLMModels: (provider, baseUrl, apiKey) => ipcRenderer.invoke('llm:fetch-models', provider, baseUrl, apiKey),
 
   // ====== MCP 服务端管理 ======
   mcpList: (profile) => ipcRenderer.invoke('mcp:list', profile),

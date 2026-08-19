@@ -529,6 +529,44 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return { success: true };
   });
 
+  // ====== LLM 模型获取 ======
+  ipcMain.handle('llm:fetch-models', async (_, provider, baseUrl, apiKey) => {
+    const defaults = {
+      openai: 'https://api.openai.com/v1',
+      deepseek: 'https://api.deepseek.com/v1',
+      anthropic: 'https://api.anthropic.com/v1',
+      google: 'https://generativelanguage.googleapis.com/v1beta',
+      azure: '',
+      ollama: 'http://localhost:11434/v1',
+      'openai-compatible': 'https://api.openai.com/v1',
+    };
+    let base = (baseUrl || defaults[provider] || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    if (!base) return { success: false, error: '请先填写 API Base URL（Azure 需填写 endpoint）' };
+    const hasVersion = /\/v\d+(\.\d+)?$/.test(base);
+    const candidates = hasVersion ? [base + '/models'] : [base + '/v1/models', base + '/models'];
+    let lastErr = '';
+    for (const url of candidates) {
+      try {
+        const resp = await fetch(url, {
+          headers: { 'Authorization': 'Bearer ' + (apiKey || ''), 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!resp.ok) { lastErr = 'HTTP ' + resp.status + ': ' + resp.statusText; continue; }
+        const data = await resp.json();
+        const models = (data.data || []).map(m => ({
+          id: m.id,
+          ownedBy: m.owned_by || '',
+          created: m.created ? new Date(m.created * 1000).toISOString() : '',
+        })).sort((a, b) => a.id.localeCompare(b.id));
+        return { success: true, models, count: models.length };
+      } catch (e) {
+        lastErr = e.message;
+        // 继续尝试下一个候选 URL
+      }
+    }
+    return { success: false, error: lastErr || '无法连接到模型服务，请检查 API Base URL 和 Key' };
+  });
+
   // ====== MCP 服务端管理 ======
   ipcMain.handle('mcp:list', async (_, profile) => {
     const { MCPServerManager } = await loadCore();

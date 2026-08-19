@@ -2898,7 +2898,15 @@ async function showLLMProviderForm(editName) {
             <option value="openai-compatible" ${provider === 'openai-compatible' ? 'selected' : ''}>OpenAI 兼容接口</option>
           </select>
         </div>
-        <div class="form-group"><label class="form-label">模型名称 *</label><input class="input" id="llm-model" value="${model}" placeholder="例如: gpt-4o, deepseek-chat"><p class="form-hint" id="modelHint">不同提供商支持的模型名称不同</p></div>
+        <div class="form-group"><label class="form-label">模型名称 *</label>
+          <div style="display:flex;gap:8px;">
+            <input class="input" id="llm-model" value="${model}" placeholder="例如: gpt-4o, deepseek-chat" style="flex:1;">
+            <button class="btn btn-sm btn-ghost" id="fetchLLMModelBtn" onclick="fetchLLMModels()" title="调用提供商 API 获取可用模型列表">🔍 获取模型</button>
+          </div>
+          <div id="llm-model-results" style="display:none;margin-top:8px;">
+            <select class="input" id="llm-model-select" onchange="useSelectedLLMModel()"></select>
+          </div>
+          <p class="form-hint" id="modelHint">不同提供商支持的模型名称不同，点击"获取模型"可自动拉取可用列表</p></div>
         <div class="form-group">
           <label class="form-label">API Key</label>
           <div style="display:flex;gap:8px;"><input class="input" id="llm-apikey" type="password" value="${apiKey}" placeholder="sk-..." style="flex:1;"><button class="btn btn-sm btn-ghost" onclick="toggleApiKeyVisibility()" title="显示/隐藏">👁</button></div>
@@ -2942,6 +2950,33 @@ async function deleteLLMProvider(name) {
 function toggleApiKeyVisibility() {
   const input = document.getElementById('llm-apikey');
   if (input) input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+// ====== LLM 模型获取 ======
+async function fetchLLMModels() {
+  const provider = document.getElementById('llm-provider')?.value;
+  const baseUrl = document.getElementById('llm-baseurl')?.value?.trim();
+  const apiKey = document.getElementById('llm-apikey')?.value?.trim();
+  if (provider !== 'ollama' && !apiKey) { showToast('请先填写 API Key 再获取模型', 'warning'); return; }
+  showToast('正在获取模型列表...', 'info');
+  try {
+    const result = await window.dshManager.fetchLLMModels(provider, baseUrl, apiKey);
+    const results = document.getElementById('llm-model-results');
+    const select = document.getElementById('llm-model-select');
+    if (!result.success) { showToast('获取失败: ' + (result.error || '未知错误'), 'error'); if (results) results.style.display = 'none'; return; }
+    if (!result.models || !result.models.length) { showToast('未获取到任何模型', 'warning'); if (results) results.style.display = 'none'; return; }
+    select.innerHTML = result.models.map(m => '<option value="' + (m.id||'').replace(/"/g,'&quot;') + '">' + (m.id||'') + (m.ownedBy ? ' (' + m.ownedBy + ')' : '') + '</option>').join('');
+    results.style.display = 'block';
+    showToast('获取到 ' + result.count + ' 个模型，请从下拉列表中选择', 'success');
+  } catch (e) { showToast('获取失败: ' + e.message, 'error'); }
+}
+function useSelectedLLMModel() {
+  const select = document.getElementById('llm-model-select');
+  const input = document.getElementById('llm-model');
+  if (select && input && select.value) {
+    input.value = select.value;
+    document.getElementById('llm-model-results').style.display = 'none';
+  }
 }
 
 let _pendingSaveTimer = null;
