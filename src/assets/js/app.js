@@ -179,11 +179,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderAboutPage();
 
   // 异步检测 DSH 状态（带超时保护，不阻塞 UI）
+  // 注意：Promise.race 不会取消超时定时器，必须在回调里用完成标志防止
+  // 检测成功后仍把状态覆盖成"检测超时"
+  let dshCheckDone = false;
   Promise.race([
-    checkDSHStatus(),
+    checkDSHStatus().then(() => { dshCheckDone = true; }),
     new Promise(r => setTimeout(() => {
-      console.warn('checkDSHStatus 超时，跳过');
-      updateStatusToError('dshStatus', 'DSH 检测超时');
+      if (!dshCheckDone) {
+        console.warn('checkDSHStatus 超时，跳过');
+        updateStatusToError('dshStatus', 'DSH 检测超时');
+      }
       r();
     }, 30_000))
   ]).then(() => {
@@ -193,11 +198,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }).catch(() => {});
 
   // 异步检测 pnpm 状态（带超时保护）
+  let pnpmCheckDone = false;
   Promise.race([
-    checkPnpmStatus(),
+    checkPnpmStatus().then(() => { pnpmCheckDone = true; }),
     new Promise(r => setTimeout(() => {
-      console.warn('checkPnpmStatus 超时，跳过');
-      updateStatusToError('pnpmStatus', 'pnpm 检测超时');
+      if (!pnpmCheckDone) {
+        console.warn('checkPnpmStatus 超时，跳过');
+        updateStatusToError('pnpmStatus', 'pnpm 检测超时');
+      }
       r();
     }, 30_000))
   ]).catch(() => {});
@@ -430,6 +438,18 @@ async function tryLoadDSHWeb() {
 async function tryStartDSH() {
   showToast('正在尝试启动 DSH...', 'info');
   try {
+    // 订阅主进程推送的启动失败信息（dsh web 崩溃时展示真实 stderr）
+    let startErrorHandled = false;
+    window.dshManager.removeAllListeners('dsh:start-error');
+    window.dshManager.onDSHStartError((data) => {
+      if (startErrorHandled) return;
+      startErrorHandled = true;
+      const detail = data?.stderr
+        ? (data.stderr.split('\n').slice(0, 4).join(' ').slice(0, 300))
+        : ('exit code ' + (data?.exitCode ?? '?'));
+      showToast('❌ DSH 启动失败: ' + detail, 'error');
+    });
+
     // 通过 IPC 让主进程启动 DSH（渲染进程无法直接访问 execa）
     const result = await window.dshManager.startDSH();
     
@@ -659,15 +679,6 @@ function renderInstallPage() {
           <span class="card-title">快速启动</span>
         </div>
         <div class="card-body" style="display:flex;flex-direction:column;gap:12px;">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm);font-size:12px;flex-wrap:wrap;">
-            <span>📦 pnpm:</span>
-            ${state.pnpmAvailable
-              ? `<span class="badge badge-green">${state.pnpmVersion}</span>`
-              : `<span class="badge badge-red">未安装</span>`
-            }
-            ${!state.pnpmAvailable ? `<span style="color:var(--text-dim);">插件管理需要 pnpm</span>` : ''}
-            ${!state.pnpmAvailable ? `<button class="btn btn-sm btn-primary" onclick="installPnpm()">一键安装 pnpm</button>` : ''}
-          </div>
           <button class="btn btn-primary btn-lg" onclick="switchPage('dashboard')" ${!state.dshInstalled ? 'disabled' : ''}>
             🚀 打开 DSH 控制台
           </button>
@@ -725,7 +736,7 @@ async function renderEnvStatus() {
     return;
   }
 
-  const { node, npm, pnpm } = env;
+  const { node, npm, pnpm, git } = env;
   const row = (icon, label, info) => `
     <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
       <span>${icon}</span>
@@ -742,16 +753,23 @@ async function renderEnvStatus() {
   const pnpmRow = pnpm.installed
     ? row('✅', 'pnpm', `<strong>${pnpm.version}</strong>`)
     : row('⚠️', 'pnpm', '<span style="color:var(--warning);">未安装（插件管理需要，可一键安装）</span>');
+  const gitRow = git?.installed
+    ? row('✅', 'git', `<strong>${git.version}</strong>`)
+    : row('❌', 'git', '<span style="color:var(--error);">未安装（GitHub 插件安装需要，可一键安装）</span>');
 
   const missingNode = !node.installed;
   const missingNpm = !npm.installed;
+  const missingGit = !git?.installed;
   el.innerHTML = `
-    ${nodeRow}${npmRow}${pnpmRow}
+    ${nodeRow}${npmRow}${pnpmRow}${gitRow}
     <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
       ${(missingNode || missingNpm) ? `
         <button class="btn btn-sm btn-primary" onclick="installNodejs()" id="installNodeBtn">⬇️ 一键安装 Node.js</button>
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://nodejs.org')">🌐 官网下载</button>` : ''}
       ${!pnpm.installed ? `<button class="btn btn-sm btn-secondary" onclick="installPnpm()">一键安装 pnpm</button>` : ''}
+      ${missingGit ? `
+        <button class="btn btn-sm btn-secondary" onclick="installGit()" id="installGitBtn">⬇️ 一键安装 git</button>
+        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('https://git-scm.com/downloads')">🌐 官网下载</button>` : ''}
     </div>
     ${(missingNode || missingNpm) ? `<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">💡 基础空白环境：请先安装 Node.js（含 npm）再安装 DSH。安装后如仍不可用，请重启 DSH Manager 使 PATH 生效。</p>` : ''}
     <div id="envInstallLog" style="display:none;margin-top:10px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
@@ -973,6 +991,29 @@ async function uninstallDSH() {
 }
 
 // ====== 插件管理页面 ======
+// 折叠/展开某个 bundle 分组
+function toggleBundleGroup(groupId) {
+  const bodyRows = document.querySelectorAll(`tr[data-bundle-body="${groupId}"]`);
+  const chevron = document.querySelector(`[data-chevron="${groupId}"]`);
+  let collapsed = false;
+  bodyRows.forEach((row, i) => {
+    const isHidden = row.style.display === 'none';
+    row.style.display = isHidden ? '' : 'none';
+    if (i === 0) collapsed = !isHidden; // 首行决定新状态：当前展开→收起
+  });
+  if (chevron) chevron.textContent = collapsed ? '▶' : '▼';
+}
+
+// 全部展开 / 全部收起
+function toggleAllBundles(expand) {
+  document.querySelectorAll('.plugin-item-row').forEach(row => {
+    row.style.display = expand ? '' : 'none';
+  });
+  document.querySelectorAll('.bundle-chevron').forEach(c => {
+    c.textContent = expand ? '▼' : '▶';
+  });
+}
+
 async function renderPluginsPage() {
   const el = document.getElementById('pluginsContent');
   if (!el) return;
@@ -1011,15 +1052,19 @@ async function renderPluginsPage() {
   const userBundles = bundleGroups.filter(([b]) => !b.startsWith('@deepseek-ai/'));
   const coreBundles = bundleGroups.filter(([b]) => b.startsWith('@deepseek-ai/'));
 
-  const renderBundleRows = (groups) => groups.map(([bundle, items]) => `
-    <tr class="plugin-bundle-row">
+  // 默认折叠策略：核心框架组收起（数量大），用户 bundle 展开
+  const renderBundleRows = (groups, defaultCollapsed = false) => groups.map(([bundle, items]) => {
+    const groupId = 'bundle-' + bundle.replace(/[^a-zA-Z0-9]/g, '-');
+    return `
+    <tr class="plugin-bundle-row" data-bundle-row="${groupId}" onclick="toggleBundleGroup('${groupId}')" style="cursor:pointer;">
       <td colspan="5" style="font-weight:600;font-size:12px;color:var(--text-secondary);background:var(--bg-hover);">
+        <span class="bundle-chevron" data-chevron="${groupId}">${defaultCollapsed ? '▶' : '▼'}</span>
         📦 ${escapeHtml(bundle)}
         <span style="font-weight:400;color:var(--text-dim);">（${items.length}）</span>
       </td>
     </tr>
     ${items.map(p => `
-      <tr>
+      <tr class="plugin-item-row" data-bundle-body="${groupId}" style="${defaultCollapsed ? 'display:none;' : ''}">
         <td><strong>${escapeHtml(p.name || p.id)}</strong>${p.core ? ' <span class="badge badge-gray">核心</span>' : ''}</td>
         <td><span class="badge badge-blue">${p.version || '-'}</span></td>
         <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : p.type === 'core' ? '框架' : 'npm'}</td>
@@ -1032,7 +1077,8 @@ async function renderPluginsPage() {
         </td>
       </tr>
     `).join('')}
-  `).join('');
+  `;
+  }).join('');
 
   el.innerHTML = `
     <div style="margin-bottom:20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
@@ -1042,6 +1088,8 @@ async function renderPluginsPage() {
       <button class="btn btn-secondary" onclick="checkPluginUpdates()">
         🔄 检查更新
       </button>
+      <button class="btn btn-ghost" onclick="toggleAllBundles(true)" title="展开所有 bundle 分组">📂 全部展开</button>
+      <button class="btn btn-ghost" onclick="toggleAllBundles(false)" title="收起所有 bundle 分组">📁 全部收起</button>
       <span style="font-size:12px;color:var(--text-dim);">共 ${totalPlugins} 个插件（用户 bundle ${userBundles.length} 组 · 核心框架 ${coreBundles.length} 组）</span>
       <div class="search-box" style="margin-left:auto;">
         <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -1090,8 +1138,8 @@ async function renderPluginsPage() {
                  </tr>
                </thead>
                <tbody>
-                 ${renderBundleRows(userBundles)}
-                 ${renderBundleRows(coreBundles)}
+                 ${renderBundleRows(userBundles, false)}
+                 ${renderBundleRows(coreBundles, true)}
                </tbody>
              </table>
            </div>`

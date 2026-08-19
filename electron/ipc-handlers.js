@@ -179,11 +179,28 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         windowsHide: isWindows,        // Windows 上隐藏控制台窗口（CREATE_NO_WINDOW）
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, NO_COLOR: '1' },
+        reject: false,                 // 不抛异常，由下方统一处理失败
       });
       // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
       child.nodeChildProcess?.unref();
-      child.catch(err => {
-        writeLog('error', 'DSH 启动失败: ' + err.message + (err.stderr ? ' stderr: ' + err.stderr : ''));
+      child.then(result => {
+        // 进程已退出（成功启动后退出或启动即失败）。短暂存活期内的非零退出视为启动失败
+        if (result.exitCode !== 0 && result.failed) {
+          const stderr = (result.stderr || '').toString().trim();
+          writeLog('error', 'DSH 启动失败: exit=' + result.exitCode + (stderr ? ' stderr: ' + stderr.slice(0, 2000) : ''));
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('dsh:start-error', {
+              exitCode: result.exitCode,
+              stderr: stderr.slice(0, 2000),
+            });
+          }
+        } else {
+          writeLog('info', 'DSH 进程已退出: exit=' + result.exitCode);
+        }
+      }).catch(err => {
+        // reject:false 下极少走到这里，兜底记录
+        writeLog('error', 'DSH 启动监控异常: ' + err.message);
       });
       return { success: true, message: 'DSH 启动命令已发送' };
     } catch (error) {

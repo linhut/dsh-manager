@@ -31,6 +31,10 @@ contextBridge.exposeInMainWorld('dshManager', {
   switchDSHVersion: (version) => ipcRenderer.invoke('dsh:switch-version', version),
   doctorCheck: () => ipcRenderer.invoke('dsh:doctor'),
   startDSH: () => ipcRenderer.invoke('dsh:start'),
+  onDSHStartError: (callback) => {
+    ipcRenderer.on('dsh:start-error', (_, data) => callback(data));
+    return () => ipcRenderer.removeAllListeners('dsh:start-error');
+  },
   stopDSH: () => ipcRenderer.invoke('dsh:stop'),
 
   // ====== 数据管理 ======

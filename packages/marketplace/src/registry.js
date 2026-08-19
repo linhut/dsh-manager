@@ -540,6 +540,30 @@ export class PluginRegistry {
    * @param {string} id
    * @returns {Promise<{hasUpdate: boolean, currentVersion: string|null, latestVersion: string|null}>}
    */
+  /**
+   * 数值化比较两个版本号（semver 风格，忽略 v 前缀与非数字段）
+   * @param {string} a
+   * @param {string} b
+   * @returns {number} a<b 返回负数，a>b 返回正数，相等返回 0
+   * @private
+   */
+  _compareVersions(a, b) {
+    const parse = (v) => String(v || '')
+      .replace(/^v/i, '')
+      .split(/[.-]/)
+      .map(p => parseInt(p, 10))
+      .filter(n => !Number.isNaN(n));
+    const pa = parse(a);
+    const pb = parse(b);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+      const na = pa[i] || 0;
+      const nb = pb[i] || 0;
+      if (na !== nb) return na - nb;
+    }
+    return 0;
+  }
+
   async checkPluginUpdate(id) {
     const plugins = this.getLocalPlugins();
     const plugin = plugins.find(p => p.id === id);
@@ -557,7 +581,8 @@ export class PluginRegistry {
       if (releases.length > 0) {
         const latestTag = releases[0].tag.replace(/^v/, '');
         const currentVersion = plugin.version;
-        const hasUpdate = latestTag !== currentVersion;
+        // 按版本号大小判断是否有更新（而非字符串比较，避免 v1.10.0 < v1.9.0 误判）
+        const hasUpdate = this._compareVersions(latestTag, currentVersion) > 0;
         
         return { hasUpdate, currentVersion, latestVersion: latestTag };
       }
