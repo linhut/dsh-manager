@@ -48,6 +48,23 @@
 - **高级：系统包管理器**——保留现有 winget/brew/apt 路径
 - 自动检测：若系统内存 < 4GB 或已有便携版环境，默认选中便携版
 
+### 3.5 运行配置选择通道
+
+低配置电脑可能同时存在「便携版 Node」与「系统 Node」，或需要为 DSH 运行时
+调整资源配置。设置页新增「运行配置」区块，提供选择通道：
+
+- **运行时选择**：
+  - 自动（推荐）：优先便携版（若有），否则系统版
+  - 便携版：强制用 `~/.dsh/env/node`
+  - 系统版：强制用系统 PATH 中的 node
+- **DSH 启动配置**：
+  - 低资源模式（开关）：启动 `dsh web` 时注入 `NODE_OPTIONS=--max-old-space-size=<val>`
+    与减少并发（供 <4GB 内存机器使用），默认值 512MB
+  - 端口选择：自定义 DSH Web 端口（默认 3080），写入启动命令 `--port`
+- **持久化**：选择结果存 `manager.runtime` 配置键（`{ node: 'auto'|'portable'|'system',
+  lowMemory: bool, maxOldSpace: number, port: number }`）
+- **生效**：`dsh:start` 与 `resolveDSHCommand` 读取该配置决定 PATH 注入与启动参数
+
 ### 3.4 与现有代码的衔接
 
 - `env-check.js`：`checkNode/checkNpm` 增加便携版路径探测（`~/.dsh/env/node` 存在且可执行）
