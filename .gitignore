@@ -45,7 +45,8 @@ scripts/audit-*.mjs
 docs/DEBUG_*.md
 docs/AUDIT_*.md
 docs/COMPARISON_WITH_*.md
-docs/screenshots/
+docs/screenshots/*
+/docs/screenshots/
 
 # Old preload
 electron/preload.js
