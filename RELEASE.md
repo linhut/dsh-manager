@@ -1,64 +1,119 @@
-# 发布流程（Release Process）
+# 正式版本发布流程
 
-本文档定义 DSH Manager 的**版本规范、发布流程与构建流程**。所有发布操作遵循本流程，保证 Release list 整洁、版本可追溯、构建可复现。
+> ⚠️ **正式版本一律通过 GitHub Actions 自动构建发布**，禁止本地构建后手动上传产物。
 
-## 1. 版本规范（SemVer）
+## 📋 前置条件
 
-遵循 [语义化版本 2.0.0](https://semver.org/)：
+- 拥有仓库的 write 权限
+- 本地已安装 [GitHub CLI (gh)](https://cli.github.com/) 并已登录（`gh auth login`）
+- GitHub Actions 已启用（仓库 Settings → Actions）
 
-| 版本段 | 含义 | 示例 |
-|--------|------|------|
-| `MAJOR` | 不兼容的重大变更 / 正式里程碑 | `1.0.0` |
-| `MINOR` | 向后兼容的新功能 | `1.1.0` |
-| `PATCH` | 向后兼容的缺陷修复 | `1.1.1` |
-| 预发布后缀 | 测试版（不用于正式 Release） | `1.2.0-rc.1` |
+## 📝 命名规范
 
-**规则**：
-- 新增功能 → `MINOR+1`（如 `1.0.0` → `1.1.0`）
-- 缺陷修复 → `PATCH+1`（如 `1.1.0` → `1.1.1`）
-- 每次发布必须递增版本号，禁止重复使用同一版本号
-- 版本号同时更新在 **6 处**（见 §3 检查清单），保持一致
+| 项目 | 规范 | 示例 |
+|------|------|------|
+| 版本号 | SemVer `major.minor.patch` | `1.3.4` |
+| Git Tag | 前缀 `v` + 版本号 | `v1.3.4` |
+| Release 名称 | `DSH Manager v{major}.{minor}.{patch}` | `DSH Manager v1.3.4` |
+| 安装包名 | `DSH-Manager-{version}.{ext}` | `DSH-Manager-1.3.4.exe` |
 
-## 2. 发布流程（标准操作）
+## 🚀 发布步骤
 
-```text
-1. 确认代码就绪（功能完成、检查通过）
-2. 全局检查（§4 检查清单）
-3. 更新版本号（§3）
-4. 提交版本更新（feat:/fix: + chore: bump version）
-5. 打 tag（git tag -a vX.Y.Z）
-6. 推送代码与 tag（触发 CI 自动构建发布）
-7. 验证 Release（§5）
+### 1. 更新版本号
+
+编辑 `package.json` 的 `version` 字段（同时保证 §6 检查清单中多处一致）：
+
+```json
+"version": "x.y.z",
 ```
 
-### 2.1 详细步骤
+### 2. 提交版本更新
 
 ```bash
-# ① 确认工作区干净
-git status
-
-# ② 全局检查（见 §4）
-npm run build:win   # 或 CI 预检
-
-# ③ 更新版本号（6 处一致，见 §3）
-# ④ 提交
-git add -A
-git commit -m "feat: xxx / fix: xxx"          # 功能提交
-git commit -m "chore: bump version to X.Y.Z"  # 版本提交
-
-# ⑤ 打注解 tag
-git tag -a v1.2.0 -m "DSH Manager 1.2.0"
-
-# ⑥ 推送（CI 自动构建三平台并发布 Release）
-git push origin main
-git push origin v1.2.0
-
-# ⑦ 验证 Release
-gh release list
-gh release view v1.2.0 --json assets
+git add package.json
+git commit -m "chore: bump version to x.y.z"
 ```
 
-## 3. 版本号更新点（6 处必须一致）
+### 3. 创建并推送 Git Tag（触发 Actions 构建）
+
+```bash
+# 创建 tag（指向最新 commit）
+git tag -a vx.y.z -m "vx.y.z release"
+
+# 推送 tag 到 GitHub —— 这是正式发版的触发开关
+git push origin vx.y.z
+```
+
+### 4. 等待 GitHub Actions 自动构建与发布
+
+推送 `v*` tag 后，`.github/workflows/build.yml` 自动执行以下流水线：
+
+| 阶段 | 步骤 | 说明 |
+|------|------|------|
+| 0-check-version | 校验 tag 与 package.json 版本一致 | 不一致直接失败 |
+| 1-build (matrix) | Windows / macOS / Linux 三平台并行构建 | `npm run build:win / build:mac / build:linux` |
+| 2-upload-artifact | 上传构建产物到 Actions Artifacts | `.exe` / `.dmg` / `.AppImage` |
+| 3-create-release | 创建 GitHub Release 并附加所有安装包 | 自动生成 Release Notes |
+
+查看构建进度：
+
+```bash
+gh run list --repo linhut/dsh-manager --limit 3
+gh run watch <run-id> --repo linhut/dsh-manager
+```
+
+### 5. 验证 Release
+
+```bash
+gh release view vx.y.z --repo linhut/dsh-manager --json tagName,assets,url,publishedAt
+```
+
+确认清单：
+- [ ] Release 名称格式为 `DSH Manager vX.Y.Z`
+- [ ] 三平台构建产物完整且命名规范（Windows `.exe` / macOS `.dmg` x2 / Linux `.AppImage`）
+- [ ] Release 标记为 Latest
+- [ ] Release Notes 包含正确下载链接
+
+### 6. 同步到其他镜像仓库
+
+```bash
+git push gitcode vx.y.z
+git push atomgit vx.y.z
+```
+
+## ⚠️ 注意事项
+
+### ❌ 禁止事项
+
+1. **不要本地构建正式版本** —— 正式发布全部通过 GitHub Actions 构建，确保产物一致性与可追溯性
+2. **不要手动 `gh release create`** —— 推送 tag 会自动触发 Actions 创建 Release，手动创建会导致重复的 Draft
+3. **不要用 `gh release delete` 删除已发布 Release** —— 会丢失构建产物且无法恢复（除非重新构建）
+4. **不要强制推送同名 tag** —— 若已存在同名 tag，先 `git tag -d vx.y.z` 删除本地 tag，再重新创建
+
+### ✅ 正确做法
+
+1. **Tag 与 package.json 版本必须一致**，否则 check-version 步骤会失败
+2. **Tag 必须指向最新 commit**：若指向旧 commit，用 `git tag -f vx.y.z HEAD` 更新后再推送
+3. **出现重复 Draft 时**：用 `gh release edit <tag> --draft=false -t "DSH Manager vX.Y.Z"` 发布草稿，不要删除
+4. **本地 dist/ 目录仅用于开发测试**，正式产物由 Actions 在远程构建并管理
+
+## 🔄 触发方式
+
+| 触发方式 | 说明 |
+|---------|------|
+| `git push origin vx.y.z` | 推送 tag 自动触发三平台构建 + Release（正式发版标准方式） |
+| GitHub Actions 手动触发 | 选择 `workflow_dispatch` 手动指定平台（应急用） |
+
+## 📦 构建产物命名对照（Actions 产物）
+
+| 平台 | 文件名格式 | 示例 |
+|------|-----------|------|
+| Windows | `DSH-Manager-{version}.exe` | `DSH-Manager-1.3.4.exe` |
+| macOS Intel | `DSH-Manager-{version}-x64.dmg` | `DSH-Manager-1.3.4-x64.dmg` |
+| macOS Apple Silicon | `DSH-Manager-{version}-arm64.dmg` | `DSH-Manager-1.3.4-arm64.dmg` |
+| Linux | `DSH-Manager-{version}.AppImage` | `DSH-Manager-1.3.4.AppImage` |
+
+## 📝 版本号检查清单（6 处一致）
 
 | # | 文件 | 位置 |
 |---|------|------|
@@ -69,57 +124,10 @@ gh release view v1.2.0 --json assets
 | 5 | `packages/marketplace/src/github-api.js` | User-Agent `dsh-manager/X.Y.Z` |
 | 6 | `electron/ipc-handlers.js` | `app:get-version` catch fallback `'X.Y.Z'` |
 
-> 注：`docs/superpowers/specs/*.md` 中"当前基线"为历史记录，无需更新。
-
-## 4. 发布前检查清单
-
-- [ ] `git status` 干净（无未提交改动）
-- [ ] 全部 JS 语法通过：`for f in $(git ls-files '*.js' '*.cjs'); do node --check "$f"; done`
-- [ ] IPC 三端一致（main handle 数 = preload invoke 数）
-- [ ] 渲染层调用 API 全部在 preload 暴露（零缺失）
-- [ ] 核心模块冒烟测试通过（`node --input-type=module` 跑 core/marketplace 回归）
-- [ ] 6 处版本号一致且已递增（§3）
-- [ ] 本地构建通过（`npm run build:win` 或 CI 等价验证）
-
-## 5. 构建与发布（CI 自动完成）
-
-推送 `v*` tag 后，[`.github/workflows/build.yml`](../.github/workflows/build.yml) 自动：
-
-| 步骤 | 平台 | 产物 |
-|------|------|------|
-| build (matrix) | windows-latest | `dist/*.exe`（NSIS） |
-| build (matrix) | macos-latest | `dist/*.dmg`（x64 + arm64） |
-| build (matrix) | ubuntu-latest | `dist/*.AppImage` |
-| create-release | ubuntu-latest | 创建 Release `DSH Manager vX.Y.Z` 并上传全部产物 |
-
-**本地构建**（如 CI 不可用）：在本地 NTFS 盘执行（`Y:` 网络卷不支持 workspace 符号链接）：
-
-```bash
-# 在本地盘（如 C:\dsh-build\app）导出快照后
-git archive HEAD | tar -x -C <build-dir>
-cd <build-dir>
-npm install --no-audit --no-fund
-npm install --no-save sharp
-npm run build:win   # 产物在 dist/DSH Manager Setup X.Y.Z.exe
-```
-
-## 6. 发布后验证
-
-```bash
-gh release list                                  # 确认 vX.Y.Z 出现且标记 Latest
-gh release view vX.Y.Z --json assets             # 确认 4 个产物（win exe / mac dmg x2 / linux AppImage）
-```
-
-**Release 规范**：
-- 名称统一为 `DSH Manager vX.Y.Z`
-- 仅保留正式 Release，**删除 Draft 草稿**（避免列表重复）
-- 最新版本自动标记 `Latest`
-
-## 7. 常见问题
+## 🧯 常见问题
 
 | 问题 | 处理 |
 |------|------|
-| `gh release create` 报 tag 已存在 | 说明 CI 已自动创建，直接验证即可 |
-| Release list 有 Draft 重复条目 | `gh api -X DELETE repos/<owner>/<repo>/releases/<id>` 删除草稿 |
-| 本地 npm install 失败（errno -4094） | Y: 网络卷符号链接限制，改用本地盘构建（§5） |
-| 构建产物版本号不对 | 检查 §3 的 6 处版本号是否一致 |
+| Release list 出现 Draft 重复条目 | `gh api -X DELETE repos/linhut/dsh-manager/releases/<id>` 删除草稿，或 `gh release edit` 发布草稿 |
+| 本地 npm install 失败（errno -4094） | Y: 网络卷符号链接限制，改用本地盘构建（仅开发场景） |
+| Actions 构建失败 | 查看 `gh run view <run-id>` 日志；check-version 失败多为版本号不一致 |

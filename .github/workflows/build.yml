@@ -111,6 +111,10 @@ jobs:
         with:
           path: artifacts
 
+      - name: Extract version (strip v prefix)
+        id: get_version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -121,14 +125,14 @@ jobs:
             下载适用于你平台的安装包：
 
             ### Windows
-            - `DSH-Manager-Setup-${{ github.ref_name }}.exe` - Windows NSIS 安装程序
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}.exe` - Windows NSIS 安装程序
 
             ### macOS
-            - `DSH-Manager-${{ github.ref_name }}-x64.dmg` - macOS 磁盘映像（Intel）
-            - `DSH-Manager-${{ github.ref_name }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.dmg` - macOS 磁盘映像（Intel）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
             ### Linux
-            - `DSH-Manager-${{ github.ref_name }}.AppImage` - Linux AppImage
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}.AppImage` - Linux AppImage
 
             ---
             ### 安装说明
@@ -143,3 +147,4 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: false
+          make_latest: true
