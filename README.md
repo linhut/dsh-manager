@@ -88,6 +88,18 @@
 
 ---
 
+
+
+## 📸 界面预览
+
+| 控制台 | 插件管理 |
+|:------:|:--------:|
+| ![控制台](screenshots/console.png) | ![插件管理](screenshots/plugins.png) |
+
+| 安装与升级 | 技能管理 |
+|:----------:|:--------:|
+| ![安装与升级](screenshots/install.png) | ![技能管理](screenshots/skills.png) |
+
 ## 🛠️ 技术栈
 
 - **桌面框架**: Electron 33
