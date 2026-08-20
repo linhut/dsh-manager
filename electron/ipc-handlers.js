@@ -822,6 +822,14 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await mgr.listBackups();
   });
 
+  // ====== MCP 市场搜索（本地注册表） ======
+  ipcMain.handle('mcp:search-market', async (_, query, category) => {
+    const { searchMcpMarket, mcpMarketStats } = await import('../packages/marketplace/src/mcp-registry.js');
+    const results = searchMcpMarket(query, category);
+    const stats = mcpMarketStats();
+    return { results, stats };
+  });
+
   // ====== 技能管理 ======
   ipcMain.handle('skills:list', async (_, filter) => {
     const { SkillManager } = await loadCore();

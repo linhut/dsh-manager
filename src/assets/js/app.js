@@ -1,147 +1,15 @@
 /**
- * DSH Manager
- * (c) 2026 Jose AI (https://www.linhut.cn)
- * https://github.com/linhut/dsh-manager
- * Licensed under the MIT License. See the LICENSE file for details.
+ * DSH Manager - 主应用逻辑
  * 
- * 主应用逻辑 - 管理所有页面渲染、DSH 状态、安装流程、插件管理
+ * 架构说明：
+ * - modules/state.js       → 全局状态
+ * - modules/utils.js       → 工具函数（escapeHtml/escapeAttr/fetchWithTimeout/showToast/formatBytes）
+ * - modules/debug.js       → 调试日志系统
+ * - modules/theme.js       → 主题系统
+ * - modules/dsh-status.js  → DSH/npm/pnpm/依赖状态检测
+ * - modules/dsh-control.js → DSH Webview/启动/停止/诊断
+ * - app.js                 → 初始化 + 页面渲染（Install/Plugins/Skills/Versions/Settings/Prompts/About）
  */
-
-const state = {
-  skillsQuery: '',
-  skillsSourceFilter: 'all',
-  skillsSortBy: 'name',
-  skillMarketResults: [],
-  skillMarketCategory: 'all',
-  skillMarketSort: 'stars',
-  skillEditingName: null,
-  currentPage: 'dashboard',
-  dshInstalled: false,
-  dshVersion: null,
-  dshRunning: false,
-  dshUrl: 'http://127.0.0.1:3080',
-  plugins: [],
-  installing: false,
-  pnpmAvailable: null,
-  pnpmVersion: null,
-  pnpmInstallGuide: '',
-  dshInfo: null,
-  marketResults: [],
-  marketCategory: 'all',
-  marketScope: 'all',
-  marketSort: 'top',
-  localPlugins: [],
-};
-
-// ====== 安全工具（防止 XSS） ======
-/**
- * HTML 转义（用于 innerHTML 中的文本内容）
- */
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-/**
- * 属性值转义（用于 onclick 等单引号包裹的属性值）
- */
-function escapeAttr(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/'/g, '&#39;')
-    .replace(/"/g, '&quot;');
-}
-
-// ====== 调试日志系统（拦截 console 和全局错误） ======
-const debugLog = {
-  enabled: false, logs: [], MAX_QUEUE: 500,
-  init() {
-    this.enabled = true;
-    const self = this;
-    const origLog = console.log;
-    const origWarn = console.warn;
-    const origError = console.error;
-    const origInfo = console.info;
-    console.log = function(...args) { self._log('info', args); origLog.apply(console, args); };
-    console.info = function(...args) { self._log('info', args); origInfo.apply(console, args); };
-    console.warn = function(...args) { self._log('warn', args); origWarn.apply(console, args); };
-    console.error = function(...args) { self._log('error', args); origError.apply(console, args); };
-    window.addEventListener('error', (event) => { self._log('error', [event.error?.stack || event.error?.message || event.message || '未知错误']); });
-    window.addEventListener('unhandledrejection', (event) => { self._log('error', [event.reason?.stack || event.reason?.message || String(event.reason)]); });
-    this.log('info', '调试日志系统已初始化');
-    this.log('info', 'URL: ' + window.location.href);
-  },
-  _log(level, args) {
-    const msg = args.map(a => typeof a === 'object' ? (a?.stack || a?.message || JSON.stringify(a)) : String(a)).join(' ');
-    this.logs.push({ level, message: msg, time: new Date().toISOString() });
-    if (this.logs.length > this.MAX_QUEUE) this.logs.splice(0, this.logs.length - this.MAX_QUEUE);
-    if (window.dshManager) { window.dshManager.writeDebugLog(level, msg).catch(() => {}); }
-  },
-  log(level, message) { this._log(level, [message]); },
-  getLogs() { return this.logs.map(l => '[' + l.time + '] [' + l.level.toUpperCase() + '] ' + l.message).join('\n'); },
-  clearLogs() { this.logs = []; return '日志已清除'; }
-};
-try { debugLog.init(); } catch (e) { try { console.error('调试日志初始化失败:', e); } catch {} }
-
-// ====== 主题系统 ======
-const THEME_KEY = 'dshm-theme';
-
-function getCurrentTheme() {
-  const stored = localStorage.getItem(THEME_KEY) || 'system';
-  if (stored === 'system') {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-  return stored;
-}
-
-function applyTheme() {
-  const theme = getCurrentTheme();
-  document.documentElement.setAttribute('data-theme', theme);
-  // 更新主题切换按钮图标
-  const toggleBtn = document.getElementById('themeToggle');
-  if (toggleBtn) {
-    toggleBtn.innerHTML = theme === 'dark'
-      ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
-      : '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zm0-14v2m0 14v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M2 12h2m16 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
-  }
-}
-
-function setThemeChoice(choice) {
-  localStorage.setItem(THEME_KEY, choice);
-  applyTheme();
-  // 更新设置页的主题选项高亮
-  document.querySelectorAll('.theme-option').forEach(btn => {
-    btn.classList.toggle('theme-option-active', btn.dataset.themeChoice === choice);
-  });
-}
-
-function selectThemeOption(choice) {
-  setThemeChoice(choice);
-  showToast(`主题已切换为: ${choice === 'light' ? '浅色' : choice === 'dark' ? '深色' : '跟随系统'}`, 'success');
-}
-
-// ====== 初始化（带超时保护） ======
-
-
-// ====== 带超时的 fetch（手动 AbortController） ======
-async function fetchWithTimeout(url, timeoutMs = 3000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { signal: controller.signal });
-    return resp;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 document.addEventListener('DOMContentLoaded', async () => {
   debugLog.log('info', 'DOMContentLoaded 触发');
   // 应用主题（在渲染页面之前）
@@ -296,7 +164,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           dot.className = 'status-dot ' + (state.dshRunning ? 'status-online' : (state.dshInstalled ? 'status-ok' : 'status-error'));
         }
         if (text) {
-          text.textContent = state.dshRunning ? '运行中' : (state.dshInstalled ? '已安装' : '未安装');
+          text.textContent = state.dshRunning ? (state.dshVersion ? 'DSH ' + state.dshVersion + ' 运行中' : '运行中') : (state.dshInstalled ? (state.dshVersion ? 'DSH ' + state.dshVersion : '已安装') : '未安装');
         }
       }
     } catch {}
@@ -324,558 +192,12 @@ function switchPage(page) {
 }
 
 // ====== 状态更新辅助函数 ======
-function updateStatusToError(elementId, message) {
-  const el = document.getElementById(elementId);
-  if (!el) return;
-  const dot = el.querySelector('.status-dot');
-  const text = el.querySelector('.status-text');
-  if (dot) dot.className = 'status-dot status-error';
-  if (text) text.textContent = message;
-}
+// updateStatusToError 已移到 modules/dsh-status.js
 
 // ====== DSH 状态检测 ======
-async function checkDSHStatus() {
-  const statusEl = document.getElementById('dshStatus');
-  if (!statusEl) return;
+// dsh-status (status checks) moved to modules/dsh-status.js
+// dsh-control (webview/start/stop) moved to modules/dsh-control.js
 
-  try {
-    const info = await window.dshManager.getDSHInfo();
-    state.dshInstalled = info.installed;
-    state.dshVersion = info.version;
-    state.dshInfo = info;
-
-    const dot = statusEl.querySelector('.status-dot');
-    const text = statusEl.querySelector('.status-text');
-
-    if (info.installed) {
-      dot.className = 'status-dot status-ok';
-      text.textContent = `DSH ${info.version}`;
-      
-      // 不在此处检测 DSH 是否运行（避免 TCP 连接挂起）
-      // 由 tryLoadDSHWeb 在需要时检测
-      state.dshRunning = false;
-    } else {
-      dot.className = 'status-dot status-error';
-      text.textContent = 'DSH 未安装';
-    }
-    renderDashToolbar();
-    renderDashInfo();
-    // 异步检测完成后刷新安装页，避免"已安装却显示未安装/提示重装"
-    const installContent = document.getElementById('installContent');
-    if (installContent) renderInstallPage();
-  } catch (err) {
-    console.error('状态检测失败:', err);
-    updateStatusToError('dshStatus', 'DSH 检测失败');
-  }
-}
-
-// ====== npm 状态检测 ======
-async function checkNpmStatus() {
-  const statusEl = document.getElementById('npmStatus');
-  if (!statusEl) return;
-
-  try {
-    const env = await window.dshManager.checkEnvironment();
-    const npm = env?.npm || {};
-    const dot = statusEl.querySelector('.status-dot');
-    const text = statusEl.querySelector('.status-text');
-
-    if (npm.installed) {
-      dot.className = 'status-dot status-ok';
-      text.textContent = `npm ${(npm.version || '').replace(/^v/, '')}`;
-      statusEl.style.cursor = 'default';
-      statusEl.title = '';
-      statusEl.onclick = null;
-    } else {
-      dot.className = 'status-dot status-error';
-      text.textContent = 'npm 未安装';
-      statusEl.style.cursor = 'pointer';
-      statusEl.title = 'npm 随 Node.js 一起提供，请先安装 Node.js';
-      statusEl.onclick = null;
-    }
-  } catch (err) {
-    console.error('npm 检测失败:', err);
-    updateStatusToError('npmStatus', 'npm 检测失败');
-  }
-}
-
-// ====== pnpm 状态检测 ======
-async function checkPnpmStatus() {
-  const statusEl = document.getElementById('pnpmStatus');
-  if (!statusEl) return;
-
-  try {
-    const result = await window.dshManager.checkPnpm();
-    state.pnpmAvailable = result.installed;
-    state.pnpmVersion = result.version;
-    state.pnpmInstallGuide = result.installGuide || 'corepack enable';
-
-    const dot = statusEl.querySelector('.status-dot');
-    const text = statusEl.querySelector('.status-text');
-
-    if (result.installed) {
-      dot.className = 'status-dot status-ok';
-      text.textContent = `pnpm ${result.version}`;
-      statusEl.style.cursor = 'default';
-      statusEl.title = '';
-      statusEl.onclick = null;
-    } else {
-      dot.className = 'status-dot status-error';
-      text.textContent = 'pnpm 未安装';
-      // 点击触发一键安装
-      statusEl.style.cursor = 'pointer';
-      statusEl.title = '点击一键安装 pnpm';
-      statusEl.onclick = () => {
-        if (confirm('pnpm 未安装，插件管理功能不可用。\n是否立即一键安装 pnpm？（npm install -g pnpm）')) {
-          installPnpm();
-        }
-      };
-    }
-  } catch (err) {
-    console.error('pnpm 检测失败:', err);
-    updateStatusToError('pnpmStatus', 'pnpm 检测失败');
-  }
-}
-
-// ====== 一键安装 pnpm ======
-async function installPnpm() {
-  clearEnvInstallLog();
-  appendEnvInstallLog('开始安装 pnpm（npm install -g pnpm）...');
-  showToast('正在安装 pnpm，请稍候...', 'info');
-  // 订阅主进程推送的安装过程输出（实时回显）
-  window.dshManager.removeAllListeners('env-install-progress');
-  window.dshManager.onEnvInstallProgress((data) => {
-    if (data && data.message) appendEnvInstallLog(data.message, data.level);
-  });
-  try {
-    const result = await window.dshManager.installPnpm();
-    if (result.success) {
-      appendEnvInstallLog(`✅ pnpm ${result.version} 安装成功！`, 'info');
-      showToast(`✅ pnpm ${result.version} 安装成功！`, 'success');
-    } else {
-      const detail = result.message || result.error || '未知错误';
-      appendEnvInstallLog(`❌ pnpm 安装失败: ${detail}`, 'error');
-      showToast(`❌ pnpm 安装失败: ${detail}`, 'error');
-    }
-    await checkPnpmStatus();
-    renderInstallPage();
-  } catch (err) {
-    appendEnvInstallLog(`❌ ${err.message}`, 'error');
-    showToast('❌ pnpm 安装失败: ' + err.message, 'error');
-  } finally {
-    window.dshManager.removeAllListeners('env-install-progress');
-  }
-}
-
-// ====== 依赖完整性检查与修复 ======
-// 检查 DSH profile 的 node_modules 完整性
-async function checkDepsHealth() {
-  const statusEl = document.getElementById('depsHealthStatus');
-  if (!statusEl) return;
-  const dot = statusEl.querySelector('.status-dot');
-  const text = statusEl.querySelector('.status-text');
-  try {
-    const health = await window.dshManager.getDepsHealth('web');
-    if (health.healthy) {
-      dot.className = 'status-dot status-online';
-      text.textContent = '依赖健康 (' + (health.ok || 0) + ')';
-      statusEl.title = '依赖完整性检查通过';
-    } else {
-      dot.className = 'status-dot status-error';
-      text.textContent = '依赖异常 (' + (health.issues || 0) + ')';
-      statusEl.title = '点击查看/修复：' + health.issues + ' 个问题';
-    }
-  } catch (e) {
-    dot.className = 'status-dot status-unknown';
-    text.textContent = '依赖检测失败';
-    statusEl.title = '无法检测依赖完整性：' + (e.message || '');
-  }
-}
-
-// 一键修复依赖（从 UI 触发）
-async function repairDepsFromUI() {
-  try {
-    const health = await window.dshManager.getDepsHealth('web');
-    if (health.healthy) {
-      showToast('依赖完整性检查通过，无需修复', 'success');
-      return;
-    }
-    const issues = health.issues || 0;
-    const ok = confirm('依赖完整性检查发现 ' + issues + ' 个问题。\n\n点击确定将从 DSH 全局安装副本复制缺失/损坏的包文件到当前 profile。\n\n此操作不会影响已安装的插件和配置。');
-    if (!ok) return;
-    showToast('正在修复依赖...', 'info');
-    const result = await window.dshManager.repairDeps('web', {});
-    const fixed = result.repaired ? result.repaired.length : 0;
-    const failed = result.failed ? result.failed.length : 0;
-    const skipped = result.skipped ? result.skipped.length : 0;
-    if (fixed > 0) {
-      showToast('已修复 ' + fixed + ' 个包（失败 ' + failed + '，跳过 ' + skipped + '）', 'success');
-    } else if (failed > 0) {
-      showToast('修复失败：' + failed + ' 个包无法修复，请尝试重新安装 DSH', 'error');
-    } else {
-      showToast('无需修复，所有依赖正常', 'success');
-    }
-    await checkDepsHealth();
-  } catch (e) {
-    showToast('修复失败: ' + (e.message || '未知错误'), 'error');
-  }
-}
-
-// ====== 启动时静默检查 DSH 更新 ======
-async function checkDSHUpdateStartup() {
-  try {
-    const update = await window.dshManager.checkDSHUpdate();
-    if (update && update.hasUpdate) {
-      showToast(`发现 DSH 新版本 ${update.latest}（当前 ${update.current}），可到"安装/升级"页升级`, 'warning');
-    }
-  } catch {}
-}
-
-// ====== DSH Web 界面加载 ======
-// ====== DSH Web 界面加载 ======
-// 尝试连接 DSH 并加载 webview，支持重试
-async function tryConnectDSH(retriesLeft = 5) {
-  const placeholder = document.getElementById('dshPlaceholder');
-  const webview = document.getElementById('dshWebview');
-  if (!placeholder || !webview) return;
-  try {
-    const resp = await fetchWithTimeout(state.dshUrl, 3000);
-    if (resp.ok) {
-      placeholder.style.display = 'none';
-      webview.style.display = 'flex';
-      state.dshRunning = true;
-      dashInfoCollapsed = true;
-      const dashInfoEl = document.getElementById('dashInfo');
-      if (dashInfoEl) dashInfoEl.style.display = 'none';
-      // 自动刷新 webview
-      try {
-        if (webview.src === state.dshUrl) {
-          webview.reload();
-        } else {
-          webview.src = state.dshUrl;
-        }
-      } catch (e) {
-        console.warn('webview 刷新失败:', e.message);
-        webview.src = state.dshUrl;
-      }
-      renderDashToolbar();
-      renderDashInfo();
-      return;
-    }
-  } catch {}
-  if (retriesLeft > 0) {
-    setTimeout(function() { tryConnectDSH(retriesLeft - 1); }, 2000);
-  } else {
-    // 重试耗尽，显示启动提示
-    state.dshRunning = false;
-    placeholder.style.display = 'flex';
-    webview.style.display = 'none';
-    placeholder.innerHTML = [
-      '<div class="placeholder-content">',
-      '<img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">',
-      '<h2>DSH 已安装但未运行</h2>',
-      '<p>DeepSeek Harness ' + state.dshVersion + ' 已安装，但服务未启动。</p>',
-      '<p class="placeholder-hint">点击下方按钮由管理器托管启动（独立进程，不受终端会话影响）</p>',
-      '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">',
-      '<button class="btn btn-primary btn-lg" onclick="tryStartDSH()">🚀 启动 DSH</button>',
-      '<button class="btn btn-secondary btn-lg" onclick="runDSHDiagnosis()">🩺 诊断服务</button>',
-      '</div></div>',
-    ].join('');
-    renderDashToolbar();
-    renderDashInfo();
-  }
-}
-
-async function tryLoadDSHWeb(retries = 5) {
-  renderDashToolbar();
-  renderDashInfo();
-  const placeholder = document.getElementById('dshPlaceholder');
-  const webview = document.getElementById('dshWebview');
-  if (!state.dshInstalled) {
-    if (placeholder) placeholder.style.display = 'flex';
-    if (webview) webview.style.display = 'none';
-    return;
-  }
-  // 启动重试连接
-  tryConnectDSH(retries);
-}
-
-// ====== 尝试启动 DSH ======
-async function tryStartDSH() {
-  showToast('正在尝试启动 DSH...', 'info');
-  try {
-    // 订阅主进程推送的启动失败信息（dsh web 崩溃时展示真实 stderr）
-    let startErrorHandled = false;
-    window.dshManager.removeAllListeners('dsh:start-error');
-    window.dshManager.onDSHStartError((data) => {
-      if (startErrorHandled) return;
-      startErrorHandled = true;
-      const detail = data?.stderr
-        ? (data.stderr.split('\n').slice(0, 4).join(' ').slice(0, 300))
-        : ('exit code ' + (data?.exitCode ?? '?'));
-      
-      // 检查是否有无效插件导致启动失败，提供一键修复
-      const invalidPlugins = data?.invalidPlugins;
-      if (invalidPlugins && invalidPlugins.length > 0) {
-        const names = invalidPlugins.map(function(p) { return p.id; }).join('、');
-        const msg = '检测到 ' + invalidPlugins.length + ' 个无效插件（' + names + '），导致 DSH 无法启动。是否一键移除并重新启动？';
-        if (confirm(msg)) {
-          fixAndRestartDSH();
-          return;
-        }
-      }
-      showToast('❌ DSH 启动失败: ' + detail, 'error');
-    });
-
-    // 通过 IPC 让主进程启动 DSH（渲染进程无法直接访问 execa）
-    const result = await window.dshManager.startDSH();
-    
-    if (!result.success) {
-      showToast('启动失败: ' + (result.error || '未知错误'), 'error');
-      return;
-    }
-    
-    // 使用主进程返回的实际端口（可能因默认端口被占用而自动切换）
-    if (result.port) {
-      state.dshUrl = 'http://127.0.0.1:' + result.port;
-    }
-    if (result.portChanged) {
-      showToast('端口 ' + result.preferredPort + ' 已被占用，已自动切换到 ' + result.port, 'warning');
-    } else {
-      showToast('DSH 启动命令已发送，正在等待服务就绪...', 'info');
-    }
-    
-    // 如果主进程已确认就绪，直接加载
-    if (result.reachable) {
-      showToast('DSH 已启动！(' + state.dshUrl + ')', 'success');
-      tryLoadDSHWeb(15);
-      return;
-    }
-    
-    // 使用共享重试连接逻辑
-    showToast('正在等待 DSH 服务就绪...', 'info');
-    tryLoadDSHWeb(15);
-  } catch (err) {
-    showToast('启动失败: ' + err.message, 'error');
-  }
-}
-
-// ====== 一键修复无效插件并重启 DSH ======
-async function fixAndRestartDSH() {
-  showToast('正在修复无效插件并重启 DSH...', 'info');
-  try {
-    const result = await window.dshManager.fixAndRestartDSH();
-    if (result.success) {
-      if (result.fixResult && result.fixResult.fixed && result.fixResult.fixed.length > 0) {
-        showToast('已移除 ' + result.fixResult.fixed.length + ' 个无效插件，DSH 重新启动', 'success');
-      } else {
-        showToast('DSH 已重新启动', 'success');
-      }
-      if (result.reachable) {
-        state.dshUrl = result.webUrl || state.dshUrl;
-        showToast('DSH 已启动', 'success');
-        tryLoadDSHWeb(15);
-      } else {
-        if (result.port) state.dshUrl = 'http://127.0.0.1:' + result.port;
-        showToast('正在等待 DSH 服务就绪...', 'info');
-        tryLoadDSHWeb(15);
-      }
-    } else {
-      showToast('修复失败: ' + (result.error || '未知错误'), 'error');
-    }
-  } catch (err) {
-    showToast('修复失败: ' + err.message, 'error');
-  }
-}
-
-// ====== 环境信息折叠状态 ======
-let dashInfoCollapsed = false;
-
-// ====== 切换环境信息显隐 ======
-function toggleDashInfo() {
-  dashInfoCollapsed = !dashInfoCollapsed;
-  const el = document.getElementById('dashInfo');
-  // 用户点击优先：显示与否仅由 dashInfoCollapsed 决定，不受 DSH 运行状态压制
-  if (el) el.style.display = dashInfoCollapsed ? 'none' : 'block';
-  renderDashToolbar();
-  // 更新按钮高亮
-  const btn = document.querySelector('[data-toggle-dashinfo]');
-  if (btn) {
-    btn.classList.toggle('btn-primary', !dashInfoCollapsed);
-    btn.classList.toggle('btn-ghost', dashInfoCollapsed);
-  }
-}
-
-// ====== DSH 控制台合并工具栏（启动/停止/浏览器/更新/安装/环境信息） ======
-function renderDashToolbar() {
-  const bar = document.getElementById('dashToolbar');
-  if (!bar) return;
-
-  const statusBadge = !state.dshInstalled
-    ? '<span class="badge badge-red">🔴 未安装</span>'
-    : state.dshRunning
-      ? '<span class="badge badge-green">🟢 运行中</span>'
-      : '<span class="badge badge-yellow">🟡 未运行</span>';
-
-  bar.style.display = 'flex';
-  bar.innerHTML = `
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;">
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-        ${statusBadge}
-        <span style="font-size:12px;color:var(--text-muted);">v${state.dshVersion || '-'}</span>
-      </div>
-      <div style="display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;">
-        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('${state.dshUrl}')" title="在系统浏览器中打开 DSH Web">🌐 浏览器打开</button>
-        ${state.dshRunning
-          ? '<button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>'
-          : (state.dshInstalled ? '<button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>' : '')}
-        <button class="btn btn-sm btn-ghost" onclick="runDSHDiagnosis()" title="诊断 DSH 端口/进程/HTTP 可达性">🩺 诊断</button>
-        <button class="btn btn-sm btn-secondary" onclick="checkAppUpdateUI()" title="检查 DSH Manager 新版本">🔄 检查更新</button>
-        <button class="btn btn-sm btn-secondary" onclick="switchPage('install')" title="安装/升级 DSH">📥 安装/升级</button>
-        <button class="btn btn-sm ${!dashInfoCollapsed ? 'btn-primary' : 'btn-ghost'}" onclick="toggleDashInfo()" data-toggle-dashinfo title="展开/收起环境信息">📋 环境信息</button>
-      </div>
-    </div>
-  `;
-}
-
-// ====== 停止 DSH ======
-async function stopDSH() {
-  showToast('正在停止 DSH...', 'info');
-  try {
-    const result = await window.dshManager.stopDSH();
-    if (result.success) {
-      showToast('DSH 已停止', 'success');
-      state.dshRunning = false;
-      renderDashToolbar();
-      // 已确认停止：立即刷新 webview 显示"未运行"占位（0 重试，不等待）
-      tryLoadDSHWeb(0);
-    } else {
-      showToast('停止失败: ' + (result.error || '未知错误'), 'error');
-      state.dshRunning = false;
-      renderDashToolbar();
-      // 停止可能未生效：按正常流程刷新（带重试，若 DSH 仍在运行则继续显示页面）
-      tryLoadDSHWeb();
-    }
-  } catch (err) {
-    showToast('停止失败: ' + err.message, 'error');
-    state.dshRunning = false;
-    renderDashToolbar();
-    tryLoadDSHWeb();
-  }
-}
-
-// ====== DSH 服务诊断 ======
-async function runDSHDiagnosis() {
-  try {
-    showToast('正在诊断 DSH 服务...', 'info');
-    const result = await window.dshManager.diagnoseDSH();
-    
-    // 构建诊断结果模态框
-    const issuesHtml = result.issues && result.issues.length > 0
-      ? result.issues.map(function(i) { return '<div style="color:var(--error);padding:4px 0;">⚠️ ' + i + '</div>'; }).join('')
-      : '<div style="color:var(--success);padding:4px 0;">✅ 未发现问题</div>';
-    
-    const suggestionsHtml = result.suggestions && result.suggestions.length > 0
-      ? '<div style="margin-top:8px;"><strong style="color:var(--text-secondary);font-size:13px;">💡 建议：</strong>' +
-        result.suggestions.map(function(s) { return '<div style="padding:3px 0;font-size:12px;color:var(--text-muted);">• ' + s + '</div>'; }).join('') +
-        '</div>'
-      : '';
-    
-    const healthHtml = result.health
-      ? '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">HTTP 探测: ' +
-        (result.health.reachable
-          ? '<span style="color:var(--success);">可达（' + result.health.url + '）</span>'
-          : '<span style="color:var(--error);">不可达' + (result.health.error ? '（' + result.health.error + '）' : '') + '</span>') +
-        '</div>'
-      : '';
-    
-    const modal = document.createElement('div');
-    modal.className = 'modal-overlay active';
-    modal.innerHTML = '<div class="modal" style="min-width:460px;max-width:560px;">' +
-      '<div class="modal-header"><h3>🩺 DSH 服务诊断报告</h3><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">×</button></div>' +
-      '<div class="modal-body">' +
-        '<div style="margin-bottom:12px;font-size:13px;">' +
-          '<div>端口: <strong>' + result.port + '</strong></div>' +
-          '<div>端口状态: ' + (result.portFree ? '<span class="badge badge-green">空闲</span>' : '<span class="badge badge-red">占用中</span>') + '</div>' +
-          (result.pid ? '<div>进程 PID: <strong>' + result.pid + '</strong>' + (result.command ? ' (' + result.command + ')' : '') + '</div>' : '') +
-        '</div>' +
-        '<div style="border-top:1px solid var(--border);padding-top:8px;">' + issuesHtml + suggestionsHtml + healthHtml + '</div>' +
-      '</div>' +
-      '<div class="modal-footer">' +
-        '<button class="btn btn-primary" onclick="this.closest(\'.modal-overlay\').remove()">我知道了</button>' +
-      '</div>' +
-    '</div>';
-    document.body.appendChild(modal);
-    
-    if (result.issues && result.issues.length > 0) {
-      showToast('⚠️ 发现 ' + result.issues.length + ' 个问题，请查看诊断报告', 'warning');
-    } else {
-      showToast('✅ DSH 服务运行正常', 'success');
-    }
-  } catch (err) {
-    showToast('诊断失败: ' + err.message, 'error');
-  }
-}
-
-// ====== DSH 控制台环境信息栏（自动折叠） ======
-// ====== 获取当前 DSH Web 端口（从 state.dshUrl 提取） ======
-function getCurrentDSHPort() {
-  try {
-    const url = new URL(state.dshUrl);
-    const port = Number(url.port);
-    if (port) return port;
-  } catch {}
-  return 3080;
-}
-
-async function renderDashInfo() {
-  const el = document.getElementById('dashInfo');
-  if (!el) return;
-  const info = state.dshInfo || {};
-  if (!state.dshInstalled) {
-    el.style.display = 'none';
-    el.innerHTML = '';
-    return;
-  }
-  // 折叠：仅由用户状态 dashInfoCollapsed 决定（初始加载时 DSH 运行中会自动折叠一次）
-  if (dashInfoCollapsed) {
-    el.style.display = 'none';
-    return;
-  }
-  el.style.display = 'block';
-  el.innerHTML =
-    `<div class="card" style="margin-bottom:12px;">
-      <div class="card-header">
-        <span class="card-title">🖥️ 环境信息</span>
-        <span class="badge ${state.dshRunning ? 'badge-green' : 'badge-gray'}">${state.dshRunning ? '运行中' : '未运行'}</span>
-      </div>
-      <div class="card-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 16px;font-size:12px;color:var(--text-muted);">
-        <div>📦 DSH 版本: <strong>${state.dshVersion || '-'}</strong></div>
-        <div>⚙️ Node.js: <strong>${info.nodeVersion || '-'}</strong></div>
-        <div>💻 平台: <strong>${info.platform || '-'} / ${info.arch || '-'}</strong></div>
-        <div>🏠 主目录: <strong title="${info.home || ''}" style="word-break:break-all;">${info.home || '-'}</strong></div>
-        <div>📡 全局路径: <strong title="${info.npmGlobalPath || ''}" style="word-break:break-all;">${info.npmGlobalPath || '-'}</strong></div>
-        <div>🌐 Web 地址: <strong>${state.dshUrl}</strong></div>
-        <div id="processStatusCell">🔌 端口 ${getCurrentDSHPort()}: <strong>检测中...</strong></div>
-      </div>
-    </div>
-  `;
-
-  // 异步检测
-  try {
-    const proc = await window.dshManager.getDSHProcessInfo(getCurrentDSHPort());
-    const cell = document.getElementById('processStatusCell');
-    if (cell) {
-      if (proc.portInUse) {
-        cell.innerHTML = `🔌 端口 ${proc.port}: <strong class="badge badge-red">占用中${proc.pid ? ` (PID ${proc.pid}${proc.command ? ' · ' + proc.command : ''})` : ''}</strong>`;
-      } else {
-        cell.innerHTML = `🔌 端口 ${proc.port}: <span class="badge badge-green">空闲</span>`;
-      }
-    }
-  } catch {}
-}
-
-// ====== 安装页面 ======
 function renderInstallPage() {
   const el = document.getElementById('installContent');
   if (!el) return;
@@ -1373,6 +695,8 @@ function toggleAllBundles(expand) {
 }
 
 async function renderPluginsPage() {
+  // 进入插件页时清空搜索缓存，确保数据最新
+  _localPluginsCache = null;
   const el = document.getElementById('pluginsContent');
   if (!el) return;
 
@@ -1454,7 +778,7 @@ async function renderPluginsPage() {
         <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
         </svg>
-        <input type="text" placeholder="搜索插件..." oninput="searchPlugins(this.value)">
+        <input type="text" placeholder="搜索插件..." oninput="debouncedSearchPlugins(this.value)">
       </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
@@ -1884,15 +1208,30 @@ async function showPluginDetails(fullName) {
   }
 }
 
+// 插件搜索防抖（避免每次按键都触发 IPC，300ms 内合并连续输入）
+let _pluginSearchTimer = null;
+// 本地插件列表缓存（同一时刻内复用，避免重复 IPC）
+let _localPluginsCache = null;
+
+function debouncedSearchPlugins(query) {
+  clearTimeout(_pluginSearchTimer);
+  _pluginSearchTimer = setTimeout(() => searchPlugins(query), 300);
+}
+
 async function searchPlugins(query) {
   // 过滤本地插件列表
   const listEl = document.getElementById('pluginList');
   if (!listEl) return;
 
-  let localPlugins = [];
-  try {
-    localPlugins = await window.dshManager.getLocalPlugins();
-  } catch {}
+  let localPlugins = _localPluginsCache;
+  if (!localPlugins) {
+    try {
+      localPlugins = await window.dshManager.getLocalPlugins();
+      _localPluginsCache = localPlugins;
+    } catch {
+      localPlugins = [];
+    }
+  }
 
   const q = (query || '').trim().toLowerCase();
   const filtered = q
@@ -1908,9 +1247,9 @@ async function searchPlugins(query) {
     listEl.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">🔍</div>
-        <div class="empty-state-title">未找到匹配 "{{ESCAPED}}" 的插件</div>
+        <div class="empty-state-title">未找到匹配 "${escapeHtml(query)}" 的插件</div>
         <div class="empty-state-desc">换个关键词试试</div>
-      </div>`.replace('{{ESCAPED}}', query);
+      </div>`;
     return;
   }
 
@@ -1969,12 +1308,12 @@ function showInstallProgressModal(label, title = '安装') {
   overlay.innerHTML = `
     <div class="modal" style="min-width:420px;max-width:520px;">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
-        <h3 class="modal-title" style="margin-bottom:0;">📥 ${title}</h3>
+        <h3 class="modal-title" style="margin-bottom:0;">📥 ${escapeHtml(title)}</h3>
         <button class="btn btn-sm btn-ghost" id="installCloseX" onclick="closeInstallProgressModal()" title="关闭窗口（安装将在后台继续）" style="min-width:28px;padding:1px 8px;font-size:14px;line-height:1.4;">✕</button>
       </div>
       <div class="modal-body" style="text-align:center;">
         <div style="font-size:48px;margin-bottom:12px;" id="installSpinner">⏳</div>
-        <p style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--text-primary);" id="installLabel">${label}</p>
+        <p style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--text-primary);" id="installLabel">${escapeHtml(label)}</p>
         <div id="installProgressBar" style="width:100%;height:4px;background:var(--bg-primary);border-radius:2px;margin-bottom:12px;overflow:hidden;">
           <div style="width:30%;height:100%;background:var(--primary-light);border-radius:2px;animation:progressIndeterminate 1.5s ease-in-out infinite;"></div>
         </div>
@@ -2250,9 +1589,9 @@ async function renderSkillsPage() {
       '      </div>',
       '      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;align-items:center;">',
       '        <span style="font-size:12px;color:var(--text-dim);">来源:</span>',
-      '        <button class="btn btn-sm skill-market-cat ${state.skillMarketCategory === \'all\' ? \'btn-primary\' : \'btn-secondary\'}" data-cat="all" onclick="setSkillMarketCategory(\'all\')">全部</button>',
-      '        <button class="btn btn-sm skill-market-cat ${state.skillMarketCategory === \'skill\' ? \'btn-primary\' : \'btn-secondary\'}" data-cat="skill" onclick="setSkillMarketCategory(\'skill\')">🧠 技能合集</button>',
-      '        <button class="btn btn-sm skill-market-cat ${state.skillMarketCategory === \'superpowers\' ? \'btn-primary\' : \'btn-secondary\'}" data-cat="superpowers" onclick="setSkillMarketCategory(\'superpowers\')">⚡ Superpowers</button>',
+      '        <button class="btn btn-sm skill-market-cat ' + (state.skillMarketCategory === 'all' ? 'btn-primary' : 'btn-secondary') + '" data-cat="all" onclick="setSkillMarketCategory(\'all\')">全部</button>',
+      '        <button class="btn btn-sm skill-market-cat ' + (state.skillMarketCategory === 'skill' ? 'btn-primary' : 'btn-secondary') + '" data-cat="skill" onclick="setSkillMarketCategory(\'skill\')">🧠 技能合集</button>',
+      '        <button class="btn btn-sm skill-market-cat ' + (state.skillMarketCategory === 'superpowers' ? 'btn-primary' : 'btn-secondary') + '" data-cat="superpowers" onclick="setSkillMarketCategory(\'superpowers\')">⚡ Superpowers</button>',
       '        <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">',
       '          <span style="font-size:12px;color:var(--text-dim);">排序:</span>',
       '          <select class="input" id="skillMarketSort" style="width:auto;padding:4px 8px;" onchange="setSkillMarketSort(this.value)">',
@@ -2270,6 +1609,12 @@ async function renderSkillsPage() {
       renderSkillSection('用户 / 自定义技能', userSkills, true),
       renderSkillSection('内置 / 项目技能', bundledSkills, false),
     ].join('\n');
+    // 重新渲染后恢复搜索框焦点（避免每次按键丢失焦点，多字符搜索可用）
+    const skillsSearchEl = document.getElementById('skillsSearch');
+    if (skillsSearchEl && state.skillsQuery) {
+      skillsSearchEl.focus();
+      skillsSearchEl.setSelectionRange(state.skillsQuery.length, state.skillsQuery.length);
+    }
   } catch (err) {
     el.innerHTML = '<div class="empty-state"><p>❌ 技能加载失败: ' + escSkillHtml(err.message) + '</p>'
       + '<button class="btn btn-primary" onclick="renderSkillsPage()">重试</button></div>';
@@ -2291,7 +1636,7 @@ function renderSkillSection(title, skills, editable) {
     const disabled = s.shadowed ? ' disabled' : '';
     const hl = (typeof window.highlightSkillMatch === 'function') ? window.highlightSkillMatch : escSkillHtml;
     const whenHtml = s.whenToUse ? '<div class="skill-when"><strong>适用：</strong>' + hl(s.whenToUse) + '</div>' : '';
-    const delBtn = editable && !s.shadowed ? '<button class="btn btn-sm btn-danger" onclick="deleteSkill(\'' + s.name + '\')">删除</button>' : '';
+    const delBtn = editable && !s.shadowed ? '<button class="btn btn-sm btn-danger" onclick="deleteSkill(\'' + encodeURIComponent(s.name) + '\')">删除</button>' : '';
     return '<div class="skill-card' + shadowed + '">'
       + '<div class="skill-card-main">'
       + '  <div class="skill-card-head">'
@@ -2303,13 +1648,13 @@ function renderSkillSection(title, skills, editable) {
       + '  <div class="skill-preview">' + hl(s.bodyPreview || '') + '</div>'
       + '</div>'
       + '<div class="skill-card-actions">'
-      + '  <label class="switch-label"><input type="checkbox" ' + (s.modelInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'model\', this.checked)">'
+      + '  <label class="switch-label"><input type="checkbox" ' + (s.modelInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + encodeURIComponent(s.name) + '\', \'model\', this.checked)">'
       + '    <span class="switch"></span> 模型可调用</label>'
-      + '  <label class="switch-label"><input type="checkbox" ' + (s.userInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'user\', this.checked)">'
+      + '  <label class="switch-label"><input type="checkbox" ' + (s.userInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + encodeURIComponent(s.name) + '\', \'user\', this.checked)">'
       + '    <span class="switch"></span> 用户可调用</label>'
       + '  <div class="btn-group">'
-      + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="viewSkillDetail(\'' + s.name + '\')">📖 详情</button>'
-      + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="openEditSkill(\'' + s.name + '\')">编辑</button>'
+      + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="viewSkillDetail(\'' + encodeURIComponent(s.name) + '\')">📖 详情</button>'
+      + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="openEditSkill(\'' + encodeURIComponent(s.name) + '\')">编辑</button>'
       + '    ' + delBtn
       + '  </div>'
       + '</div>'
@@ -2321,40 +1666,9 @@ function renderSkillSection(title, skills, editable) {
     + skills.map(cardHtml).join('')
     + '</div>';
 }
-function skillCardHtml(s) {
-  const shadowed = s.shadowed ? ' skill-shadowed' : '';
-  const shadowBadge = s.shadowed ? '<span class="badge badge-warning">被覆盖</span>' : '';
-  const sourceBadge = '<span class="badge badge-' + escSkillHtml(s.source) + '">' + escSkillHtml(s.sourceLabel || s.source) + '</span>';
-  const disabled = s.shadowed ? ' disabled' : '';
-  // 使用全局高亮函数（如果存在）
-  const hl = (typeof window.highlightSkillMatch === 'function') ? window.highlightSkillMatch : escSkillHtml;
-  const whenHtml = s.whenToUse ? '<div class="skill-when"><strong>适用：</strong>' + hl(s.whenToUse) + '</div>' : '';
-  const delBtn = editable && !s.shadowed ? '<button class="btn btn-sm btn-danger" onclick="deleteSkill(\'' + s.name + '\')">删除</button>' : '';
-  return '<div class="skill-card' + shadowed + '">'
-    + '<div class="skill-card-main">'
-    + '  <div class="skill-card-head">'
-    + '    <span class="skill-name">' + hl(s.name) + '</span>'
-    + '    ' + sourceBadge + shadowBadge
-    + '  </div>'
-    + '  <div class="skill-desc">' + hl(s.description || '暂无描述') + '</div>'
-    + '  ' + whenHtml
-    + '  <div class="skill-preview">' + hl(s.bodyPreview || '') + '</div>'
-    + '</div>'
-    + '<div class="skill-card-actions">'
-    + '  <label class="switch-label"><input type="checkbox" ' + (s.modelInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'model\', this.checked)">'
-    + '    <span class="switch"></span> 模型可调用</label>'
-    + '  <label class="switch-label"><input type="checkbox" ' + (s.userInvocable ? 'checked' : '') + ' ' + disabled + ' onchange="toggleSkillInvocation(\'' + s.name + '\', \'user\', this.checked)">'
-    + '    <span class="switch"></span> 用户可调用</label>'
-    + '  <div class="btn-group">'
-    + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="viewSkillDetail(\'' + s.name + '\')">📖 详情</button>'
-    + '    <button class="btn btn-sm btn-ghost" ' + disabled + ' onclick="openEditSkill(\'' + s.name + '\')">编辑</button>'
-    + '    ' + delBtn
-    + '  </div>'
-    + '</div>'
-    + '</div>';
-  }
-  // ====== 技能详情（只读查看完整 SKILL.md，参考 superpowers 技能管理模式） ======
-  function viewSkillDetail(name) {
+// ====== 技能详情（只读查看完整 SKILL.md，参考 superpowers 技能管理模式） ======
+  function viewSkillDetail(encodedName) {
+    const name = decodeURIComponent(encodedName);
     window.dshManager.skillsGet(name).then(function(s) {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay active';
@@ -2384,7 +1698,8 @@ function skillCardHtml(s) {
   }
 // ====== 技能弹窗 ======
 function openCreateSkill() { openSkillModal(null); }
-function openEditSkill(name) {
+function openEditSkill(encodedName) {
+  const name = decodeURIComponent(encodedName);
   window.dshManager.skillsGet(name).then(function(s) { openSkillModal(s); }).catch(function(e) { showToast('读取失败: ' + e.message, 'error'); });
 }
 function openSkillModal(existing) {
@@ -2441,11 +1756,13 @@ async function saveSkill() {
   } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
 }
 // ====== 可见性切换 / 删除 ======
-async function toggleSkillInvocation(name, kind, value) {
+async function toggleSkillInvocation(encodedName, kind, value) {
+  const name = decodeURIComponent(encodedName);
   try { await window.dshManager.skillsToggle(name, kind, value); showToast('已更新调用权限', 'success'); renderSkillsPage(); }
   catch (e) { showToast('更新失败: ' + e.message, 'error'); renderSkillsPage(); }
 }
-async function deleteSkill(name) {
+async function deleteSkill(encodedName) {
+  const name = decodeURIComponent(encodedName);
   if (!confirm('确定删除技能 ' + name + '？该操作不可恢复。')) return;
   try { await window.dshManager.skillsDelete(name); showToast('已删除: ' + name, 'success'); renderSkillsPage(); }
   catch (e) { showToast('删除失败: ' + e.message, 'error'); }
@@ -2747,7 +2064,7 @@ async function renderVersionsPage() {
               <span style="display:flex;align-items:center;gap:6px;">
                 ${v === state.dshVersion
                   ? '<span class="badge badge-green">当前</span>'
-                  : `<button class="btn btn-sm btn-ghost" onclick="switchDSHVersion('${v}')">切换</button>`}
+                  : `<button class="btn btn-sm btn-ghost" onclick="switchDSHVersion('${escapeAttr(v)}')">切换</button>`}
               </span>
             </div>
           `).join('')}
@@ -2818,15 +2135,7 @@ async function removeLLMProvider(name) {
   deleteLLMProvider(name);
 }
 // ====== Profile 管理 ======
-function formatBytes(bytes) {
-  if (!bytes || bytes < 0) return '0 B';
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let v = bytes / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(1)} ${units[i]}`;
-}
+// formatBytes 已移到 modules/utils.js
 
 async function renderProfiles() {
   const el = document.getElementById('profileList');
@@ -2847,7 +2156,7 @@ async function renderProfiles() {
           <span><strong>${p.name}</strong></span>
           <span style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);">
             <span>${p.mtime ? new Date(p.mtime).toLocaleString() : ''}</span>
-            <button class="btn btn-sm btn-ghost" onclick="backupProfile('${p.name}')">备份</button>
+            <button class="btn btn-sm btn-ghost" onclick="backupProfile('${escapeAttr(p.name)}')">备份</button>
           </span>
         </div>
       `).join('');
@@ -2976,8 +2285,8 @@ async function mcpRenderList() {
               <td><span class="badge ${s.transport === 'stdio' ? 'badge-blue' : 'badge-green'}">${s.transport === 'stdio' ? 'stdio' : 'HTTP'}</span></td>
               <td style="color:var(--text-dim);font-size:12px;">${s.pluginName}</td>
               <td>
-                <button class="btn btn-sm btn-ghost" onclick="mcpEditDialog('${s.serverName}')">编辑</button>
-                <button class="btn btn-sm btn-ghost" style="color:var(--error);" onclick="mcpRemove('${s.serverName}')">删除</button>
+                <button class="btn btn-sm btn-ghost" onclick="mcpEditDialog('${escapeAttr(s.serverName)}')">编辑</button>
+                <button class="btn btn-sm btn-ghost" style="color:var(--error);" onclick="mcpRemove('${escapeAttr(s.serverName)}')">删除</button>
               </td>
             </tr>
           `).join('')}
@@ -3023,14 +2332,14 @@ async function mcpPreviewJsonImport() {
     const result = await window.dshManager.mcpImportJson(text, 'web');
     const preview = document.getElementById('mcpJsonPreview');
     if (!result.ok) {
-      preview.innerHTML = `<span style="color:var(--error);">转换失败: ${result.error || '未知错误'}</span>`;
+      preview.innerHTML = `<span style="color:var(--error);">转换失败: ${escapeHtml(result.error || '未知错误')}</span>`;
       return;
     }
-    let html = `<div style="color:var(--success);">✅ 转换成功，检测到 ${result.servers} 个服务端</div>`;
+    let html = `<div style="color:var(--success);">✅ 转换成功，检测到 ${escapeHtml(result.servers)} 个服务端</div>`;
     if (result.warnings && result.warnings.length) {
-      html += result.warnings.map(w => `<div style="color:var(--warning);font-size:11px;">⚠ ${w}</div>`).join('');
+      html += result.warnings.map(w => `<div style="color:var(--warning);font-size:11px;">⚠ ${escapeHtml(w)}</div>`).join('');
     }
-    html += `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:11px;max-height:200px;overflow:auto;">${result.yaml || ''}</pre>`;
+    html += `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:11px;max-height:200px;overflow:auto;">${escapeHtml(result.yaml || '')}</pre>`;
     preview.innerHTML = html;
   } catch (e) {
     showToast('转换失败: ' + e.message, 'error');
@@ -3333,9 +2642,9 @@ async function renderPromptsPage() {
             '</div>' +
             '</div>' +
             '<div style="display:flex;gap:4px;flex-shrink:0;">' +
-            '<button class="btn btn-xs btn-ghost" onclick="togglePrompt(\'' + p.id + '\', ' + !isEnabled(p) + ')">' + (isEnabled(p) ? '禁用' : '启用') + '</button>' +
-            '<button class="btn btn-xs btn-ghost" onclick="editPrompt(\'' + p.id + '\')">编辑</button>' +
-            '<button class="btn btn-xs btn-ghost" onclick="deletePrompt(\'' + p.id + '\')">删除</button>' +
+            '<button class="btn btn-xs btn-ghost" onclick="togglePrompt(\'' + escapeAttr(p.id) + '\', ' + !isEnabled(p) + ')">' + (isEnabled(p) ? '禁用' : '启用') + '</button>' +
+            '<button class="btn btn-xs btn-ghost" onclick="editPrompt(\'' + escapeAttr(p.id) + '\')">编辑</button>' +
+            '<button class="btn btn-xs btn-ghost" onclick="deletePrompt(\'' + escapeAttr(p.id) + '\')">删除</button>' +
             '</div>' +
             '</div></div>';
         }).join('');
@@ -3474,16 +2783,7 @@ async function updatePrompt(id) {
 }
 
 // ====== Toast 通知 ======
-function showToast(message, type = 'info') {
-  const container = document.getElementById('toastContainer');
-  const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
-  const item = document.createElement('div');
-  item.className = `toast-item ${type}`;
-  item.innerHTML = `<span>${icons[type] || 'ℹ️'}</span><span>${message}</span>`;
-  container.appendChild(item);
-  setTimeout(() => { item.style.opacity = '0'; item.style.transform = 'translateX(100px)'; item.style.transition = 'all 0.3s'; }, 3000);
-  setTimeout(() => item.remove(), 3500);
-}
+// showToast 已移到 modules/utils.js
 
 // ====== 设置页面 - 辅助函数 ======
 
@@ -3756,7 +3056,7 @@ async function renderLLMProvidersTab() {
                   <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
                     <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${name}')">✏️ 编辑</button>
-                    <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${name}')">🗑️ 删除</button>
+                    <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${escapeAttr(name)}')">🗑️ 删除</button>
                   </td>
                 </tr>
               `).join('')}
@@ -3859,7 +3159,7 @@ async function showLLMProviderForm(editName) {
       var select = document.getElementById('llm-model-select');
       var results = document.getElementById('llm-model-results');
       if (select && results) {
-        select.innerHTML = confModels.map(function(m) { return '<option value="' + (m.id||'').replace(/"/g,'&quot;') + '">' + (m.id||'') + (m.ownedBy ? ' (' + m.ownedBy + ')' : '') + '</option>'; }).join('');
+        select.innerHTML = confModels.map(function(m) { return '<option value="' + escapeAttr(m.id||'') + '">' + escapeHtml(m.id||'') + (m.ownedBy ? ' (' + escapeHtml(m.ownedBy) + ')' : '') + '</option>'; }).join('');
         results.style.display = 'block';
       }
     }
@@ -3960,7 +3260,7 @@ async function fetchLLMModels() {
     const select = document.getElementById('llm-model-select');
     if (!result.success) { showToast('获取失败: ' + (result.error || '未知错误'), 'error'); if (results) results.style.display = 'none'; return; }
     if (!result.models || !result.models.length) { showToast('未获取到任何模型', 'warning'); if (results) results.style.display = 'none'; return; }
-    select.innerHTML = result.models.map(m => '<option value="' + (m.id||'').replace(/"/g,'&quot;') + '">' + (m.id||'') + (m.ownedBy ? ' (' + m.ownedBy + ')' : '') + '</option>').join('');
+    select.innerHTML = result.models.map(m => '<option value="' + escapeAttr(m.id||'') + '">' + escapeHtml(m.id||'') + (m.ownedBy ? ' (' + escapeHtml(m.ownedBy) + ')' : '') + '</option>').join('');
     results.style.display = 'block';
     showToast('获取到 ' + result.count + ' 个模型，请从下拉列表中选择', 'success');
   } catch (e) { showToast('获取失败: ' + e.message, 'error'); }
@@ -4158,7 +3458,7 @@ async function refreshVersions() {
                   <td><strong>${v}</strong></td>
                   <td style="color:var(--text-dim);font-size:12px;">-</td>
                   <td>
-                    <button class="btn btn-sm btn-primary" onclick="installVersion('${v}')">安装</button>
+                    <button class="btn btn-sm btn-primary" onclick="installVersion('${escapeAttr(v)}')">安装</button>
                   </td>
                 </tr>
               `).join('')}
@@ -4219,16 +3519,17 @@ async function checkAppUpdateUI() {
     card.style.cssText = 'margin-bottom:16px;';
     const proxyLinks = (update.proxyUrls || []).map((url, i) => {
       const labels = ['🚀 官方 GitHub', '⚡ 加速站 gh-proxy', '🌐 GitHub Proxy 网站'];
-      return '<a class="btn btn-sm btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + url + '\')" style="margin:2px;">' + (labels[i] || '下载 ' + (i+1)) + '</a>';
+      const safeUrl = escapeAttr(url);
+      return '<a class="btn btn-sm btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + safeUrl + '\')" style="margin:2px;">' + (labels[i] || '下载 ' + (i+1)) + '</a>';
     }).join('');
     card.innerHTML = '<div class="card" style="border-color:var(--primary);">' +
-      '<div class="card-header"><span class="card-title">🆕 新版本可用</span><span class="badge badge-green">v' + update.latestVersion + '</span></div>' +
+      '<div class="card-header"><span class="card-title">🆕 新版本可用</span><span class="badge badge-green">v' + escapeHtml(update.latestVersion) + '</span></div>' +
       '<div class="card-body">' +
-      '<p style="margin-bottom:12px;color:var(--text-secondary);">当前版本: v' + update.currentVersion + ' → 最新版本: v' + update.latestVersion + '</p>' +
-      (update.releaseNotes ? '<div style="margin-bottom:12px;font-size:13px;color:var(--text-muted);line-height:1.6;">' + update.releaseNotes + '</div>' : '') +
+      '<p style="margin-bottom:12px;color:var(--text-secondary);">当前版本: v' + escapeHtml(update.currentVersion) + ' → 最新版本: v' + escapeHtml(update.latestVersion) + '</p>' +
+      (update.releaseNotes ? '<div style="margin-bottom:12px;font-size:13px;color:var(--text-muted);line-height:1.6;">' + escapeHtml(update.releaseNotes) + '</div>' : '') +
       '<div style="display:flex;gap:6px;flex-wrap:wrap;">' + proxyLinks + '</div>' +
       '<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">' +
-      '<a href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + update.releaseUrl + '\')">查看 GitHub Release 页面</a> | ' +
+      '<a href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + escapeAttr(update.releaseUrl) + '\')">查看 GitHub Release 页面</a> | ' +
       '<a href="javascript:void(0)" onclick="window.dshManager.openExternal(\'https://github.akams.cn/?url=' + encodeURIComponent(update.downloadUrl) + '\')">GitHub Proxy 加速站</a>' +
       '</div>' +
       '</div></div>';

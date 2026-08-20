@@ -118,8 +118,9 @@ export async function installPortableNode(opts = {}) {
     mkdirSync(nodeDir, { recursive: true });
     log('正在解压...');
     if (process.platform === 'win32') {
-      // Windows 用系统 bsdtar（支持 zip），避免依赖外部解压工具
-      await execa('/c/Windows/System32/tar.exe', ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000 });
+      // Windows 用系统 tar.exe（内置 bsdtar >= 10.1803），提取 zip 文件
+      const tarPath = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+      await execa(tarPath, ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000 });
     } else {
       await execa('tar', ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000 });
     }

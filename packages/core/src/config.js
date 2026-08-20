@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, rmSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
@@ -58,6 +58,23 @@ export class DSHConfig {
       const dir = dirname(filePath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
+      }
+      // 原子写入（带 .bak 备份）：先备份，再写入，确保写操作不损坏原文件
+      if (existsSync(filePath)) {
+        const backupPath = filePath + '.bak-' + Date.now();
+        copyFileSync(filePath, backupPath);
+        // 清理旧备份（保留最近 5 个）
+        try {
+          const dirEntries = readdirSync(dir);
+          const prefix = filePath.split(/[/\\]/).pop();
+          const backups = dirEntries
+            .filter(f => f.startsWith(prefix + '.bak-'))
+            .sort()
+            .reverse();
+          for (let i = 5; i < backups.length; i++) {
+            rmSync(join(dir, backups[i]), { force: true });
+          }
+        } catch {}
       }
       writeFileSync(filePath, yaml, 'utf-8');
     } catch (error) {

@@ -40,5 +40,10 @@ scripts/tmp-*
 NDH6SA~M
 DEPLOY.md
 
+# Local debugging/audit files (not synced to repo)
+scripts/audit-*.mjs
+docs/DEBUG_*.md
+docs/AUDIT_*.md
+
 # Old preload (renamed to .cjs)
 electron/preload.js

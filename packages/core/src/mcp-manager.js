@@ -19,7 +19,13 @@ function yamlString(value) {
   const envMatch = str.match(ENV_REF_PATTERN);
   if (envMatch) return '!!js process.env.' + envMatch[1];
   if (/^[A-Za-z0-9_\-./:@]*$/.test(str)) return str;
-  return '"' + str.replace(/"/g, '\\"') + '"';
+  // 双引号标量：转义反斜杠/引号/换行/制表符，避免 YAML 注入
+  return '"' + str
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t') + '"'
 }
 function yamlList(indent, items) {
   const pad = ' '.repeat(indent);

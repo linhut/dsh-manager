@@ -93,6 +93,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   mcpExportJson: (profile) => ipcRenderer.invoke('mcp:export-json', profile),
   mcpBackup: (profile) => ipcRenderer.invoke('mcp:backup', profile),
   mcpListBackups: (profile) => ipcRenderer.invoke('mcp:list-backups', profile),
+  mcpSearchMarket: (query, category) => ipcRenderer.invoke('mcp:search-market', query, category),
 
   // ====== 技能管理 ======
   skillsList: (filter) => ipcRenderer.invoke('skills:list', filter),
