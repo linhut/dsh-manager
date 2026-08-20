@@ -47,3 +47,5 @@ docs/AUDIT_*.md
 
 # Old preload (renamed to .cjs)
 electron/preload.js
+# 临时调试脚本
+scripts/_*.mjs

@@ -31,6 +31,21 @@ function escapeAttr(str) {
 /**
  * 带超时的 fetch
  */
+
+/**
+ * 防抖函数
+ * @param {Function} fn - 需要防抖的函数
+ * @param {number} delay - 延迟毫秒数
+ * @returns {Function}
+ */
+function debounce(fn, delay = 300) {
+  let timer = null;
+  return function(...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}
+
 async function fetchWithTimeout(url, timeoutMs = 3000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

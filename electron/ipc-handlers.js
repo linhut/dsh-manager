@@ -703,22 +703,17 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('config:update-llm-provider', async (_, name, providerConfig) => {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
-    const { settings } = await config.read();
-    if (!settings.llm) settings.llm = {};
-    settings.llm[name] = providerConfig;
-    await config.write(settings);
-    return { success: true };
+    // 使用 DSH 官方格式存储（settings.llm-<adapter>.providers.<name>）
+    const result = await config.saveLLMProvider(name, providerConfig);
+    return { success: true, ...result };
   });
 
   ipcMain.handle('config:delete-llm-provider', async (_, name) => {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
-    const { settings } = await config.read();
-    if (settings.llm && settings.llm[name]) {
-      delete settings.llm[name];
-      await config.write(settings);
-    }
-    return { success: true };
+    // 使用 DSH 官方格式删除（兼容新旧两种格式）
+    const result = await config.removeLLMProvider(name);
+    return { success: true, ...result };
   });
 
   // ====== LLM 模型获取 ======

@@ -553,7 +553,35 @@ async function installDSH(tool = 'auto') {
     text.textContent = `✅ DSH 安装成功！（通过 ${toolLabel}）`;
 
     showToast(`DSH ${result.version} 安装成功！`, 'success');
-    await checkDSHStatus();
+    // 安装后主动检测状态，最多等待 30 秒，每 3 秒重试一次
+    text.textContent = '正在检测 DSH 状态，请稍候...（最多等待 30 秒）';
+    let waitSeconds = 0;
+    const maxWait = 30;
+    const waitInterval = setInterval(() => {
+      waitSeconds += 3;
+      text.textContent = `正在检测 DSH 状态...（${waitSeconds}/${maxWait} 秒）`;
+    }, 3000);
+    try {
+      let statusOk = false;
+      for (let i = 0; i < maxWait / 3; i++) {
+        const prevVersion = state.dshVersion;
+        await checkDSHStatus();
+        if (state.dshInstalled && state.dshVersion && state.dshVersion !== prevVersion) {
+          statusOk = true;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      clearInterval(waitInterval);
+      if (statusOk) {
+        text.textContent = `✅ DSH ${state.dshVersion} 已就绪`;
+      } else {
+        text.textContent = '⚠️ DSH 安装完成，但状态检测未获取到最新版本，请手动刷新';
+      }
+    } catch (e) {
+      clearInterval(waitInterval);
+      text.textContent = '⚠️ 状态检测中发生错误，请手动刷新页面';
+    }
     renderInstallPage();
   } catch (err) {
     fill.style.width = '100%';

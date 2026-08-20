@@ -238,4 +238,62 @@ export class DSHConfig {
   _toYAML(obj, indent = 0) {
     return toYAML(obj, indent);
   }
+
+  /**
+   * 保存 LLM 提供商（DSH 官方格式：settings.llm-<adapter>.providers.<name>）
+   * @param {string} name - 提供商名称（路由键）
+   * @param {object} config - { provider, model, apiKey?, baseUrl?, models? }
+   * @param {string} [adapter] - LLM 适配器名称，默认取 provider
+   * @returns {Promise<object>}
+   */
+  async saveLLMProvider(name, config, adapter) {
+    if (!name || !config) throw new DSHError(DSHErrorCodes.INVALID_PARAMS, "名称和配置不能为空");
+    const { settings } = await this.read();
+    const adapterName = adapter || config.provider || "openai";
+    const llmKey = "llm-" + adapterName;
+    if (!settings[llmKey]) settings[llmKey] = { providers: {} };
+    if (!settings[llmKey].providers) settings[llmKey].providers = {};
+    const providerConfig = {
+      apiKeyEnv: config.apiKeyEnv || "",
+      api: "openai-completions",
+      baseURL: config.baseUrl || "",
+      models: Array.isArray(config.models) && config.models.length > 0
+        ? config.models.map(m => typeof m === "string" ? { id: m } : { id: m.id || m })
+        : [{ id: config.model || "gpt-4o" }],
+    };
+    if (config.apiKey) providerConfig.apiKeyEnv = config.apiKey;
+    settings[llmKey].providers[name] = providerConfig;
+    await this.write(settings);
+    return { success: true, name, adapter: adapterName, key: llmKey };
+  }
+
+  /**
+   * 删除 LLM 提供商（兼容旧格式和官方格式）
+   * @param {string} name - 提供商名称
+   * @returns {Promise<object>}
+   */
+  async removeLLMProvider(name) {
+    if (!name) throw new DSHError(DSHErrorCodes.INVALID_PARAMS, "名称不能为空");
+    const { settings } = await this.read();
+    // 从旧格式删除
+    if (settings.llm && settings.llm[name]) {
+      delete settings.llm[name];
+      await this.write(settings);
+      return { success: true, from: "legacy" };
+    }
+    // 从官方格式删除（遍历所有 llm-<adapter>）
+    for (const [adapter, adapterCfg] of Object.entries(settings)) {
+      if (!/^llm-/.test(adapter) || !adapterCfg || typeof adapterCfg !== "object") continue;
+      if (adapterCfg.providers && adapterCfg.providers[name]) {
+        delete adapterCfg.providers[name];
+        if (Object.keys(adapterCfg.providers).length === 0) {
+          delete settings[adapter];
+        }
+        await this.write(settings);
+        return { success: true, from: "official", adapter };
+      }
+    }
+    throw new DSHError(DSHErrorCodes.NOT_FOUND, "提供商 " + name + " 不存在");
+  }
+
 }

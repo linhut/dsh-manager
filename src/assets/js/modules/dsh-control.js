@@ -7,8 +7,22 @@ async function checkDSHUpdateStartup() {
     const update = await window.dshManager.checkDSHUpdate();
     if (update && update.hasUpdate) {
       showToast(`发现 DSH 新版本 ${update.latest}（当前 ${update.current}），可到"安装/升级"页升级`, 'warning');
+      showUpdateBanner(update.latest, update.current);
     }
   } catch {}
+}
+
+function showUpdateBanner(latest, current) {
+  const old = document.getElementById('updateBanner');
+  if (old) old.remove();
+  const banner = document.createElement('div');
+  banner.id = 'updateBanner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;padding:10px 16px;background:var(--primary);color:white;text-align:center;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;';
+  banner.innerHTML = '🆕 发现 DSH <strong>' + escapeHtml(latest) + '</strong> 新版本（当前：' + escapeHtml(current) + '）' +
+    '<button class="btn btn-sm" style="background:white;color:var(--primary);" onclick="dismissBannerAndUpgrade()">立即升级</button>' +
+    '<button class="btn btn-sm btn-ghost" style="color:white;border-color:rgba(255,255,255,0.3);" onclick="dismissUpdateBanner()">稍后提醒</button>';
+  document.body.prepend(banner);
+  document.body.style.paddingTop = '44px';
 }
 
 // ====== DSH Web 界面加载 ======
