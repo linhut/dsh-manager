@@ -27,25 +27,28 @@ npm-debug.log*
 .env.local
 .env.*.local
 
-# Generated build artifacts (but keep source SVG)
+# Generated build artifacts
 build/*.png
 build/*.ico
 build/*.icns
 build/png-temp/
+
 # Website (local deployment only, not synced to GitHub)
 website/
 DEPLOY.md
 tmp/
 scripts/tmp-*
 NDH6SA~M
-DEPLOY.md
 
 # Local debugging/audit files (not synced to repo)
 scripts/audit-*.mjs
 docs/DEBUG_*.md
 docs/AUDIT_*.md
+docs/COMPARISON_WITH_*.md
+docs/screenshots/
 
-# Old preload (renamed to .cjs)
+# Old preload
 electron/preload.js
-# 临时调试脚本
+
+# Temp debug scripts
 scripts/_*.mjs
