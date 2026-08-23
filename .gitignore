@@ -53,3 +53,13 @@ electron/preload.js
 
 # Temp debug scripts
 scripts/_*.mjs
+
+# Debug and test artifacts
+_fix-*.mjs
+_recovered-*.js
+_verify-*.cjs
+.playwright-cli/
+dist-test/
+scripts/build-*.cjs
+scripts/check-*.mjs
+scripts/models-settings-*.png

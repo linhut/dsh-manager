@@ -14,7 +14,7 @@ import { DSHError, DSHErrorCodes } from './errors.js';
  */
 export async function checkPnpm() {
   try {
-    const { stdout, stderr } = await execa('pnpm', ['--version'], { reject: false, timeout: 10_000 });
+    const { stdout, stderr } = await execa('pnpm', ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }

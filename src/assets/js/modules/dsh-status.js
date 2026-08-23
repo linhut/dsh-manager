@@ -11,10 +11,23 @@ function updateStatusToError(elementId, message) {
   if (text) text.textContent = message;
 }
 
+/** 切换到"检测中"状态：状态点显示旋转动画，文案回显检测进度 */
+function updateStatusToDetecting(elementId, message) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const dot = el.querySelector('.status-dot');
+  const text = el.querySelector('.status-text');
+  if (dot) dot.className = 'status-dot status-detecting';
+  if (text) text.textContent = message;
+}
+
 // ====== DSH 状态检测 ======
 async function checkDSHStatus() {
   const statusEl = document.getElementById('dshStatus');
   if (!statusEl) return;
+
+  // 检测开始：状态点旋转动画 + 回显"检测中"
+  updateStatusToDetecting('dshStatus', '检测中...');
 
   try {
     const info = await window.dshManager.getDSHInfo();
@@ -52,6 +65,9 @@ async function checkNpmStatus() {
   const statusEl = document.getElementById('npmStatus');
   if (!statusEl) return;
 
+  // 检测开始：旋转动画 + 回显
+  updateStatusToDetecting('npmStatus', '检测中...');
+
   try {
     const env = await window.dshManager.checkEnvironment();
     const npm = env?.npm || {};
@@ -81,6 +97,9 @@ async function checkNpmStatus() {
 async function checkPnpmStatus() {
   const statusEl = document.getElementById('pnpmStatus');
   if (!statusEl) return;
+
+  // 检测开始：旋转动画 + 回显
+  updateStatusToDetecting('pnpmStatus', '检测中...');
 
   try {
     const result = await window.dshManager.checkPnpm();
@@ -152,6 +171,10 @@ async function checkDepsHealth() {
   if (!statusEl) return;
   const dot = statusEl.querySelector('.status-dot');
   const text = statusEl.querySelector('.status-text');
+
+  // 检测开始：旋转动画 + 回显
+  updateStatusToDetecting('depsHealthStatus', '依赖检测中...');
+
   try {
     const health = await window.dshManager.getDepsHealth('web');
     if (health.healthy) {

@@ -72,7 +72,7 @@ export class GitHubAPI {
     this.token = options.token || process.env.GITHUB_TOKEN || null;
     this.headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'dsh-manager/1.3.3',
+      'User-Agent': 'dsh-manager/1.3.5',
       ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
     };
   }

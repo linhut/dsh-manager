@@ -3,6 +3,11 @@
 
 // ====== 启动时静默检查 DSH 更新 ======
 async function checkDSHUpdateStartup() {
+  // 检查「稍后提醒」标记：3 天内不再提示
+  try {
+    const remindTime = localStorage.getItem('dsh-update-remind');
+    if (remindTime && Date.now() < Number(remindTime)) return;
+  } catch {}
   try {
     const update = await window.dshManager.checkDSHUpdate();
     if (update && update.hasUpdate) {
@@ -26,12 +31,32 @@ function showUpdateBanner(latest, current) {
 }
 
 // ====== DSH Web 界面加载 ======
-// ====== DSH Web 界面加载 ======
 // 尝试连接 DSH 并加载 webview，支持重试
-async function tryConnectDSH(retriesLeft = 5) {
+// userInitiated=true 表示用户点击了"启动 DSH"（显示"正在连接"动画）；
+// false 为被动探测（页面加载/切页），直接显示静态"已安装但未运行"占位，不打扰用户
+async function tryConnectDSH(retriesLeft = 5, userInitiated = false) {
   const placeholder = document.getElementById('dshPlaceholder');
   const webview = document.getElementById('dshWebview');
   if (!placeholder || !webview) return;
+
+  // 被动探测：立即显示静态"已安装但未运行"占位（不显示"正在连接"动画）
+  if (state.dshInstalled && !state.dshRunning && !userInitiated) {
+    renderDSHNotRunningPlaceholder();
+  } else if (state.dshInstalled && !state.dshRunning && userInitiated) {
+    // 用户主动启动：显示旋转动画 + 回显进度
+    placeholder.style.display = 'flex';
+    webview.style.display = 'none';
+    placeholder.innerHTML = [
+      '<div class="placeholder-content">',
+      '<div class="spinner spinner-lg"></div>',
+      '<h2>正在启动 DSH 服务...</h2>',
+      '<p>正在探测 <strong>' + escapeHtml(state.dshUrl) + '</strong>' +
+        (retriesLeft > 0 ? '，剩余重试 ' + retriesLeft + ' 次' : '') + '</p>',
+      '<p class="placeholder-hint">首次启动可能需要数秒，请稍候</p>',
+      '</div>',
+    ].join('');
+  }
+
   try {
     const resp = await fetchWithTimeout(state.dshUrl, 3000);
     if (resp.ok) {
@@ -58,29 +83,37 @@ async function tryConnectDSH(retriesLeft = 5) {
     }
   } catch {}
   if (retriesLeft > 0) {
-    setTimeout(function() { tryConnectDSH(retriesLeft - 1); }, 2000);
+    setTimeout(function() { tryConnectDSH(retriesLeft - 1, userInitiated); }, 2000);
   } else {
     // 重试耗尽，显示启动提示
     state.dshRunning = false;
-    placeholder.style.display = 'flex';
-    webview.style.display = 'none';
-    placeholder.innerHTML = [
-      '<div class="placeholder-content">',
-      '<img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">',
-      '<h2>DSH 已安装但未运行</h2>',
-      '<p>DeepSeek Harness ' + state.dshVersion + ' 已安装，但服务未启动。</p>',
-      '<p class="placeholder-hint">点击下方按钮由管理器托管启动（独立进程，不受终端会话影响）</p>',
-      '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">',
-      '<button class="btn btn-primary btn-lg" onclick="tryStartDSH()">🚀 启动 DSH</button>',
-      '<button class="btn btn-secondary btn-lg" onclick="runDSHDiagnosis()">🩺 诊断服务</button>',
-      '</div></div>',
-    ].join('');
+    renderDSHNotRunningPlaceholder();
     renderDashToolbar();
     renderDashInfo();
   }
 }
 
-async function tryLoadDSHWeb(retries = 5) {
+/** 渲染"DSH 已安装但未运行"静态占位（含启动/诊断按钮） */
+function renderDSHNotRunningPlaceholder() {
+  const placeholder = document.getElementById('dshPlaceholder');
+  const webview = document.getElementById('dshWebview');
+  if (!placeholder || !webview) return;
+  placeholder.style.display = 'flex';
+  webview.style.display = 'none';
+  placeholder.innerHTML = [
+    '<div class="placeholder-content">',
+    '<img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">',
+    '<h2>DSH 已安装但未运行</h2>',
+    '<p>DeepSeek Harness ' + state.dshVersion + ' 已安装，但服务未启动。</p>',
+    '<div class="placeholder-hint" title="管理器会以独立进程托管 DSH，不随终端会话退出">🛡️ 点击下方按钮，由管理器托管启动</div>',
+    '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">',
+    '<button class="btn btn-primary btn-lg" onclick="tryStartDSH()">🚀 启动 DSH</button>',
+    '<button class="btn btn-secondary btn-lg" onclick="runDSHDiagnosis()">🩺 诊断服务</button>',
+    '</div></div>',
+  ].join('');
+}
+
+async function tryLoadDSHWeb(retries = 5, userInitiated = false) {
   renderDashToolbar();
   renderDashInfo();
   const placeholder = document.getElementById('dshPlaceholder');
@@ -90,32 +123,63 @@ async function tryLoadDSHWeb(retries = 5) {
     if (webview) webview.style.display = 'none';
     return;
   }
-  // 启动重试连接
-  tryConnectDSH(retries);
+  // 启动重试连接（区分被动探测与用户主动启动）
+  tryConnectDSH(retries, userInitiated);
 }
 
 // ====== 尝试启动 DSH ======
 async function tryStartDSH() {
   showToast('正在尝试启动 DSH...', 'info');
   try {
-    // 订阅主进程推送的启动失败信息（dsh web 崩溃时展示真实 stderr）
+    // 订阅主进程推送的启动失败/自愈信息（dsh web 崩溃时展示真实 stderr；自愈成功时刷新页面）
     let startErrorHandled = false;
     window.dshManager.removeAllListeners('dsh:start-error');
     window.dshManager.onDSHStartError((data) => {
       if (startErrorHandled) return;
       startErrorHandled = true;
+
+      // ① 主进程自愈成功：无需用户操作，刷新 webview 并回显修复结果
+      if (data && data.autoRepaired) {
+        const parts = [];
+        if (data.repaired && data.repaired.length > 0) {
+          parts.push('自动修复 ' + data.repaired.join('、'));
+        }
+        if (data.failed && data.failed.length > 0) {
+          parts.push('仍有问题 ' + data.failed.join('、'));
+        }
+        showToast('✅ DSH 启动故障已' + (parts.length ? parts.join('，') : '自动修复') + '，正在加载界面...', 'success');
+        if (data.port) state.dshUrl = 'http://127.0.0.1:' + data.port;
+        tryLoadDSHWeb(15, true);
+        return;
+      }
+
       const detail = data?.stderr
         ? (data.stderr.split('\n').slice(0, 4).join(' ').slice(0, 300))
         : ('exit code ' + (data?.exitCode ?? '?'));
       
-      // 检查是否有无效插件导致启动失败，提供一键修复
+      // 检查是否有无效插件/缺失模块导致启动失败，提供一键修复
       const invalidPlugins = data?.invalidPlugins;
       if (invalidPlugins && invalidPlugins.length > 0) {
-        const names = invalidPlugins.map(function(p) { return p.id; }).join('、');
-        const msg = '检测到 ' + invalidPlugins.length + ' 个无效插件（' + names + '），导致 DSH 无法启动。是否一键移除并重新启动？';
-        if (confirm(msg)) {
-          fixAndRestartDSH();
+        const missingModules = invalidPlugins.filter(function(p) { return p.kind === 'module'; });
+        const badPlugins = invalidPlugins.filter(function(p) { return p.kind !== 'module'; });
+
+        // ① 缺失模块（如 shiki/js-yaml）：确定性依赖问题，无需用户确认，直接自动修复
+        if (missingModules.length > 0) {
+          const names = missingModules.map(function(p) { return p.id; }).join('、');
+          showToast('检测到缺失依赖（' + names + '），正在自动补齐并重启 DSH...', 'info');
+          // 把诊断出的模块 ID 传给主进程，缺失的传递依赖将定向复制补齐
+          fixAndRestartDSH(invalidPlugins.map(function(p) { return p.id; }));
           return;
+        }
+
+        // ② 无效插件：移除属于破坏性操作，需用户确认
+        if (badPlugins.length > 0) {
+          const names = badPlugins.map(function(p) { return p.id; }).join('、');
+          const msg = '检测到 ' + badPlugins.length + ' 个无效插件（' + names + '）导致 DSH 无法启动。\n是否一键移除并重新启动？';
+          if (confirm(msg)) {
+            fixAndRestartDSH(badPlugins.map(function(p) { return p.id; }));
+            return;
+          }
         }
       }
       showToast('❌ DSH 启动失败: ' + detail, 'error');
@@ -142,37 +206,46 @@ async function tryStartDSH() {
     // 如果主进程已确认就绪，直接加载
     if (result.reachable) {
       showToast('DSH 已启动！(' + state.dshUrl + ')', 'success');
-      tryLoadDSHWeb(15);
+      tryLoadDSHWeb(15, true);
       return;
     }
     
-    // 使用共享重试连接逻辑
+    // 使用共享重试连接逻辑（用户主动启动 → 显示"正在启动"动画）
     showToast('正在等待 DSH 服务就绪...', 'info');
-    tryLoadDSHWeb(15);
+    tryLoadDSHWeb(15, true);
   } catch (err) {
     showToast('启动失败: ' + err.message, 'error');
   }
 }
 
-// ====== 一键修复无效插件并重启 DSH ======
-async function fixAndRestartDSH() {
-  showToast('正在修复无效插件并重启 DSH...', 'info');
+// ====== 一键修复无效插件/缺失依赖并重启 DSH ======
+async function fixAndRestartDSH(moduleIds) {
+  showToast('正在修复无效插件/缺失依赖并重启 DSH...', 'info');
   try {
-    const result = await window.dshManager.fixAndRestartDSH();
+    const result = await window.dshManager.fixAndRestartDSH(moduleIds);
     if (result.success) {
+      const summary = [];
       if (result.fixResult && result.fixResult.fixed && result.fixResult.fixed.length > 0) {
-        showToast('已移除 ' + result.fixResult.fixed.length + ' 个无效插件，DSH 重新启动', 'success');
-      } else {
-        showToast('DSH 已重新启动', 'success');
+        summary.push('移除无效插件 ' + result.fixResult.fixed.length + ' 个');
       }
+      if (result.moduleFix && result.moduleFix.copied && result.moduleFix.copied.length > 0) {
+        summary.push('补齐缺失模块 ' + result.moduleFix.copied.join('、'));
+      }
+      if (result.depFix && result.depFix.repaired && result.depFix.repaired.length > 0) {
+        summary.push('修复依赖 ' + result.depFix.repaired.length + ' 个包');
+      }
+      if (result.globalFix && result.globalFix.fixed && result.globalFix.fixed.length > 0) {
+        summary.push('修复全局依赖 ' + result.globalFix.fixed.length + ' 个');
+      }
+      showToast(summary.length > 0 ? summary.join('，') + '，DSH 重新启动' : 'DSH 已重新启动', 'success');
       if (result.reachable) {
         state.dshUrl = result.webUrl || state.dshUrl;
         showToast('DSH 已启动', 'success');
-        tryLoadDSHWeb(15);
+        tryLoadDSHWeb(15, true);
       } else {
         if (result.port) state.dshUrl = 'http://127.0.0.1:' + result.port;
         showToast('正在等待 DSH 服务就绪...', 'info');
-        tryLoadDSHWeb(15);
+        tryLoadDSHWeb(15, true);
       }
     } else {
       showToast('修复失败: ' + (result.error || '未知错误'), 'error');
@@ -260,6 +333,9 @@ async function stopDSH() {
 
 // ====== DSH 服务诊断 ======
 async function runDSHDiagnosis() {
+  const btn = document.querySelector('[onclick="runDSHDiagnosis()"]');
+  const originalHtml = btn ? btn.innerHTML : '';
+  if (btn) btn.innerHTML = '<span class="spinner" style="vertical-align:-2px;margin-right:4px;"></span>诊断中...';
   try {
     showToast('正在诊断 DSH 服务...', 'info');
     const result = await window.dshManager.diagnoseDSH();
@@ -309,6 +385,10 @@ async function runDSHDiagnosis() {
     }
   } catch (err) {
     showToast('诊断失败: ' + err.message, 'error');
+  } finally {
+    // 恢复诊断按钮（旋转动画结束）
+    const diagBtn = document.querySelector('[onclick="runDSHDiagnosis()"]');
+    if (diagBtn && originalHtml) diagBtn.innerHTML = originalHtml;
   }
 }
 
@@ -368,4 +448,31 @@ async function renderDashInfo() {
       }
     }
   } catch {}
+}
+
+// ====== 更新 Banner 动作 ======
+
+/**
+ * 立即升级 DSH：关闭 banner，跳转到安装/升级页，触发升级流程
+ * 与版本管理模块（upgradeDSH）联动
+ */
+async function dismissBannerAndUpgrade() {
+  const banner = document.getElementById('updateBanner');
+  if (banner) banner.remove();
+  document.body.style.paddingTop = '';
+  switchPage('install');
+  setTimeout(function() { upgradeDSH(); }, 200);
+}
+
+/**
+ * 稍后提醒：关闭 banner，记录状态到 localStorage，3 天内不再提示
+ */
+function dismissUpdateBanner() {
+  const banner = document.getElementById('updateBanner');
+  if (banner) banner.remove();
+  document.body.style.paddingTop = '';
+  try {
+    localStorage.setItem('dsh-update-remind', String(Date.now() + 259200000));
+  } catch {}
+  showToast('已稍后提醒（3 天内不再提示）', 'info');
 }

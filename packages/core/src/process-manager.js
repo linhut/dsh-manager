@@ -31,7 +31,7 @@ function randomPort() {
 export async function isPortFree(port) {
   try {
     if (process.platform === 'win32') {
-      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false });
+      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false , windowsHide: true});
       const lines = stdout.split(/\r?\n/).filter(l => {
         return l.includes(`:${port}`) && l.trim().toUpperCase().includes('LISTENING');
       });
@@ -39,7 +39,7 @@ export async function isPortFree(port) {
     }
     // 非 Windows：优先 lsof
     try {
-      const { stdout } = await execa('lsof', ['-i', `:${port}`], { timeout: 10_000, reject: false });
+      const { stdout } = await execa('lsof', ['-i', `:${port}`], { timeout: 10_000, reject: false , windowsHide: true});
       return !stdout.split(/\r?\n/).some(l => l.includes('LISTEN'));
     } catch {
       return true;
@@ -91,7 +91,7 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
   try {
     if (process.platform === 'win32') {
       // netstat -ano 提取端口行 → PID
-      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false });
+      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false , windowsHide: true});
       const lines = stdout.split(/\r?\n/).filter(l => {
         // 匹配 LISTENING 状态的本地端口
         return l.includes(`:${port}`) && l.trim().toUpperCase().includes('LISTENING');
@@ -103,7 +103,7 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
         base.pid = pid;
         // tasklist 取进程名
         if (pid) {
-          const { stdout: tl } = await execa('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { timeout: 10_000, reject: false });
+          const { stdout: tl } = await execa('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { timeout: 10_000, reject: false , windowsHide: true});
           const m = tl.match(/"([^"]+)"/);
           if (m) base.command = m[1];
         }
@@ -111,7 +111,7 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
     } else {
       // 非 Windows：优先 lsof，缺失则静默降级为未占用
       try {
-        const { stdout } = await execa('lsof', ['-i', `:${port}`], { timeout: 10_000, reject: false });
+        const { stdout } = await execa('lsof', ['-i', `:${port}`], { timeout: 10_000, reject: false , windowsHide: true});
         const line = stdout.split(/\r?\n/).find(l => l.includes('LISTEN'));
         if (line) {
           const parts = line.trim().split(/\s+/);
@@ -215,9 +215,9 @@ export async function stopProcessByPort(port = DSH_WEB_PORT) {
 
   try {
     if (process.platform === 'win32') {
-      await execa('taskkill', ['/PID', String(info.pid), '/F', '/T'], { timeout: 10_000, reject: false });
+      await execa('taskkill', ['/PID', String(info.pid), '/F', '/T'], { timeout: 10_000, reject: false , windowsHide: true});
     } else {
-      await execa('kill', [String(info.pid)], { timeout: 10_000, reject: false });
+      await execa('kill', [String(info.pid)], { timeout: 10_000, reject: false , windowsHide: true});
     }
     return { success: true, pid: info.pid, message: `已结束进程 PID ${info.pid}（${info.command || ''}）` };
   } catch (error) {

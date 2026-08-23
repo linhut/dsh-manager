@@ -21,7 +21,7 @@ export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
 export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT, findAvailablePort, isPortFree, testDSHHealth, diagnoseDSHProcess } from './process-manager.js';
 export { DSHProfileManager } from './profile-manager.js';
 export { SkillManager } from './skill-manager.js';
-export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules } from './dependency-integrity.js';
+export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules, checkGlobalDSHIntegrity, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies } from './dependency-integrity.js';
 export { MasterPromptManager } from './master-prompt-manager.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 

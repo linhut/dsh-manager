@@ -15,6 +15,12 @@ import { initDebugLog, writeLog, isDebugEnabled } from './debug-logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// 无 GPU / 远程桌面 / 虚拟机环境下禁用硬件加速，避免 GPU 进程启动失败导致 FATAL 崩溃
+app.disableHardwareAcceleration();
+if (process.env.DSH_DISABLE_GPU === 'true' || process.argv.includes('--disable-gpu')) {
+  app.commandLine.appendSwitch('disable-gpu');
+}
+
 const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
 // 开发调试模式：环境变量 DSH_DEBUG=true 或 --debug 参数

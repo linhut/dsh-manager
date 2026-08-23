@@ -70,18 +70,22 @@ export const DSH_PATHS = {
  * 内部：解析 @deepseek-ai/dsh/package.json 的完整路径
  * 依次尝试：DSH_HOME 内 node_modules → npm root -g → require.resolve
  * （全局 npm 包不会出现在日常 require 的解析路径中，必须显式探测）
+ *
+ * 校验：候选目录必须"可用"（package.json 可解析且 bin 入口文件存在）。
+ * 修复场景：npm uninstall 因 ENOTEMPTY 残留的 package.json（入口文件已删）会被
+ * 视为未安装，避免前端误报"已安装"导致无法重新安装。
  */
 async function resolveDSHPackageJson() {
+  const candidates = [];
+
   // ① 优先检查 DSH_HOME 下的 node_modules（本地部署场景）
-  const homeGlobal = join(DSH_PATHS.home, 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
-  if (existsSync(homeGlobal)) return homeGlobal;
+  candidates.push(join(DSH_PATHS.home, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
 
   // ② 通过 npm root -g 获取 npm 全局路径
   try {
-    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     if (globalRoot && globalRoot.trim()) {
-      const pkgPath = join(globalRoot.trim(), '@deepseek-ai', 'dsh', 'package.json');
-      if (existsSync(pkgPath)) return pkgPath;
+      candidates.push(join(globalRoot.trim(), '@deepseek-ai', 'dsh', 'package.json'));
     }
   } catch {}
 
@@ -90,8 +94,29 @@ async function resolveDSHPackageJson() {
     const { stdout } = await execa('node', [
       '-e', 'try { console.log(require.resolve("@deepseek-ai/dsh/package.json")); } catch(e) { console.log(""); }'
     ], { reject: false, timeout: 10_000 });
-    if (stdout && stdout.trim().length > 0) return stdout.trim();
+    if (stdout && stdout.trim().length > 0) candidates.push(stdout.trim());
   } catch {}
+
+  for (const pkgPath of candidates) {
+    if (!pkgPath || !existsSync(pkgPath)) continue;
+    // 校验安装可用性：package.json 可解析且 bin 入口文件存在（残留/损坏目录视为未安装）
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      const binEntry = pkg.bin;
+      const binFile = typeof binEntry === 'string'
+        ? binEntry
+        : (binEntry && typeof binEntry === 'object' ? (binEntry.dsh || Object.values(binEntry)[0]) : null);
+      if (binFile) {
+        if (existsSync(join(dirname(pkgPath), binFile))) return pkgPath;
+        // bin 入口缺失 → 损坏安装，跳过（继续探测下一个候选）
+        continue;
+      }
+      return pkgPath;
+    } catch {
+      // package.json 损坏 → 视为未安装
+      continue;
+    }
+  }
 
   return null;
 }
@@ -136,7 +161,7 @@ export async function getDSHVersion() {
 export async function resolveDSHCommand() {
   // ① 优先 PATH 中的 dsh
   try {
-    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 5_000 });
+    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 5_000, windowsHide: true });
     if (stdout && stdout.trim()) return 'dsh';
   } catch {}
 
@@ -205,6 +230,46 @@ export async function getDSHInfo() {
 }
 
 /**
+ * 语义化版本比较（支持 DSH 的 0.x-rc.N / 0.x-beta.N 预发布格式）
+ *
+ * npm 上 @deepseek-ai/dsh 全部为预发布版本（latest/next 均为 rc 系列），
+ * 字符串排序（如 .reverse()）会把 rc.10 排在 rc.9 前面，必须按
+ * 主/次/修订/预发布段逐级比较。规则：
+ *   - 主/次/修订逐段比较；
+ *   - 同主版本号下：带 -rc.N/-beta.N 的预发布 < 对应正式版本（正式版 pre=Infinity）；
+ *   - rc.N 之间按 N 数值比较。
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} a<b 返回负数，a>b 返回正数，相等返回 0
+ */
+export function compareDSHVersions(a, b) {
+  const parse = (v) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(?:rc|beta|alpha|next)\.(\d+))?/i.exec(String(v || '').trim());
+    if (!m) return { nums: [0, 0, 0], pre: Infinity };
+    return {
+      nums: [Number(m[1]), Number(m[2]), Number(m[3])],
+      pre: m[4] !== undefined ? Number(m[4]) : Infinity,
+    };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    if (pa.nums[i] !== pb.nums[i]) return pa.nums[i] > pb.nums[i] ? 1 : -1;
+  }
+  const diff = pa.pre - pb.pre;
+  return diff > 0 ? 1 : diff < 0 ? -1 : 0;
+}
+
+/**
+ * 语义化版本降序排序（最新在前），替代不可靠的字符串 .reverse()
+ * @param {string[]} versions
+ * @returns {string[]} 排序后的新数组
+ */
+export function sortDSHVersionsDesc(versions) {
+  return [...versions].sort((a, b) => compareDSHVersions(b, a));
+}
+
+/**
  * 列出已安装的 DSH 版本（npm 全局缓存）
  * @returns {Promise<string[]>}
  */
@@ -215,8 +280,10 @@ export async function listDSHVersions() {
     ], { reject: false });
     if (stdout) {
       const versions = JSON.parse(stdout);
-      // 过滤出 rc 版本和正式版本
-      return versions.filter(v => v.startsWith('0.')).reverse();
+      // 只保留合法语义化版本号（兼容 0.x-rc.N 预发布与未来的 1.x 正式版）
+      return sortDSHVersionsDesc(
+        versions.filter(v => typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v.trim()))
+      );
     }
     return [];
   } catch {

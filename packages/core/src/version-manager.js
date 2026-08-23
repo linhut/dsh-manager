@@ -9,7 +9,7 @@ import { execa } from 'execa';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
-import { DSH_PATHS, getDSHVersion, isDSHInstalled } from './dsh-utils.js';
+import { DSH_PATHS, getDSHVersion, isDSHInstalled, compareDSHVersions } from './dsh-utils.js';
 
 export class DSHVersionManager {
   constructor() {
@@ -61,20 +61,30 @@ export class DSHVersionManager {
   }
 
   /**
-   * 获取最新稳定版本信息（多源检查：npm → GitHub API）
+   * 获取最新版本信息（多源检查：npm dist-tags → GitHub API）
+   *
+   * 注意：@deepseek-ai/dsh 目前全部为 rc 预发布版本，npm 的 latest tag
+   * 往往滞后于 next tag（如 latest=0.1.0-rc.7 而 next=0.1.0-rc.8）。
+   * 只查 `npm view version`（latest）会漏掉 next 上的更新，
+   * 因此这里读取全部 dist-tags 并取语义化版本号最高的一个。
    * @returns {Promise<{version: string, publishedAt: string, source: string}|null>}
    */
   async getLatestVersion() {
-    // ① 优先从 npm registry 获取（国内通常可访问）
+    // ① 优先从 npm registry 获取 dist-tags（国内通常可访问）
     try {
       const { stdout } = await execa('npm', [
-        'view', '@deepseek-ai/dsh', 'version', '--json',
+        'view', '@deepseek-ai/dsh', 'dist-tags', '--json',
       ], { timeout: 15_000, reject: false });
 
       if (stdout && stdout.trim()) {
-        const version = JSON.parse(stdout);
-        if (typeof version === 'string' && version) {
-          return { version, publishedAt: new Date().toISOString(), source: 'npm' };
+        const tags = JSON.parse(stdout);
+        const versions = Object.values(tags)
+          .filter(v => typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v.trim()));
+        if (versions.length > 0) {
+          // 语义化版本号最高的 tag 视为最新（覆盖 latest/next 双通道）
+          const latest = versions.reduce((best, v) =>
+            compareDSHVersions(v, best) > 0 ? v : best, versions[0]);
+          return { version: latest, publishedAt: new Date().toISOString(), source: 'npm' };
         }
       }
     } catch {
@@ -87,7 +97,7 @@ export class DSHVersionManager {
       const timeoutId = setTimeout(() => controller.abort(), 15_000);
       const response = await fetch(
         'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest',
-        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/1.3.3' } }
+        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/1.3.5' } }
       );
       clearTimeout(timeoutId);
 
@@ -164,18 +174,15 @@ export class DSHVersionManager {
   }
 
   /**
-   * 简易版本比较
+   * 版本比较（支持 DSH 的 0.x-rc.N 预发布格式）
+   * 规则：主/次/修订逐段比较；带 -rc.N 的预发布版本 < 对应正式版本（正式版 pre=Infinity）
+   * 实现复用 dsh-utils 的公共 compareDSHVersions，保证各模块排序/比较一致。
+   * @param {string} a
+   * @param {string} b
+   * @returns {number} a<b 返回负数，a>b 返回正数，相等返回 0
    * @private
    */
   _compareVersions(a, b) {
-    const partsA = a.replace(/[^0-9.]/g, '').split('.').map(Number);
-    const partsB = b.replace(/[^0-9.]/g, '').split('.').map(Number);
-    
-    for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-      const numA = partsA[i] || 0;
-      const numB = partsB[i] || 0;
-      if (numA !== numB) return numA - numB;
-    }
-    return 0;
+    return compareDSHVersions(a, b);
   }
 }

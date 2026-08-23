@@ -99,30 +99,38 @@ export class PluginInstaller {
       // 检查 pnpm 是否已安装（dsh plugin 命令依赖 pnpm）
       await requirePnpm('卸载插件');
 
-      // 从本地注册表移除
-      this.registry.unregisterLocalPlugin(pluginId);
-
-      // 通过 dsh plugin 命令卸载
+      // ① 官方命令：dsh plugin --profile <name> remove <id>（真实卸载 + 同步 profile bundles）
       let dshRemoved = false;
+      let dshError = null;
       try {
-        const { stdout, stderr } = await execa(await this._dshCmd(), [
+        const result = await execa(await this._dshCmd(), [
           'plugin', '--profile', profile, 'remove', pluginId,
         ], { reject: false, timeout: 60_000 });
-        this._log(stdout || '');
-        if (stderr) this._log(stderr, 'warn');
-        dshRemoved = true;
+        if (result.stdout) this._log(result.stdout);
+        if (result.stderr) this._log(result.stderr, 'warn');
+        dshRemoved = result.exitCode === 0;
+        if (!dshRemoved) dshError = `dsh plugin remove 退出码 ${result.exitCode}`;
       } catch (e) {
+        dshError = e.message;
         this._log('dsh plugin remove 失败: ' + e.message, 'warn');
       }
 
-      // 兜底：清理 patch 文件中的条目（兼容非标准插件如 gongwen-skill 等）
+      // ② 兜底：清理 patch 文件中的条目（兼容非标准插件如 gongwen-skill 等）
       try {
         this.registry.cleanupPatchEntries(profile, pluginId);
       } catch (e) {
         this._log('清理 patch 文件失败: ' + e.message, 'warn');
       }
 
-      return { success: true };
+      // ③ 仅当官方卸载成功（或经 patch 清理确认）后才移除本地注册条目，
+      //    避免"本地列表已删但实际仍安装"的不一致状态。
+      if (dshRemoved) {
+        this.registry.unregisterLocalPlugin(pluginId);
+        return { success: true, method: 'official' };
+      }
+      // 官方命令失败但已清理 patch → 保守保留本地条目，提示用户
+      this._log(`dsh plugin remove 未确认成功（${dshError || '未知原因'}），本地条目保留以便重试`, 'warn');
+      return { success: false, error: dshError || 'dsh plugin remove 未确认成功', keepLocal: true };
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -180,7 +188,10 @@ export class PluginInstaller {
 
       // 获取 npm 包信息
       const npmInfo = await this._getNpmPackageInfo(packageName);
-      const pluginId = info.id || packageName.split('/').pop() || packageName;
+      // 官方规范：插件身份 = 完整包名（dsh.profile.bundles 中即完整包名，如 @linxin666/gongwen-skill）。
+      // 不能用 split('/').pop() 取末段，否则 scope 丢失，本地注册表与 profile 扫描对不上产生幽灵条目。
+      const resolvedName = npmInfo.name || packageName;
+      const pluginId = (info && info.npmPackage) ? info.npmPackage : resolvedName;
 
       // 注册到本地列表
       this.registry.registerLocalPlugin({
@@ -237,7 +248,9 @@ export class PluginInstaller {
       this._log(stdout || '');
       if (stderr) this._log(stderr, 'warn');
 
-      const pluginId = info.id || repo;
+      // 官方规范：插件身份 = 完整包名（dsh.profile.bundles 中即完整包名）。
+      // GitHub 安装优先使用 npmPackage，其次 pkg.name/repo，避免与 profile 扫描不一致。
+      const pluginId = info.npmPackage || info.id || repo;
 
       this.registry.registerLocalPlugin({
         id: pluginId,
@@ -300,7 +313,15 @@ export class PluginInstaller {
       this._log(stdout || '');
       if (stderr) this._log(stderr, 'warn');
 
-      const pluginId = info.id || repo;
+      // 官方规范：插件身份 = 完整包名。读取克隆产物 package.json 的真实包名，
+      // 与 dsh plugin add 实际注册进 profile bundles 的名字保持一致。
+      let realName = info.npmPackage || info.id || repo;
+      try {
+        const clonedPkg = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf-8'));
+        if (clonedPkg && clonedPkg.name) realName = clonedPkg.name;
+      } catch {}
+
+      const pluginId = realName;
       this.registry.registerLocalPlugin({
         id: pluginId,
         name: info.name || repo,
@@ -569,8 +590,24 @@ export class PluginInstaller {
         pkg = JSON.parse(pkgRaw);
       } catch {}
 
-      const pluginId = info.id || pkg?.name || repoName;
+      // 官方规范：插件身份 = 完整包名，优先使用 package.json 的真实包名
+      const pluginId = pkg?.name || info.npmPackage || info.id || repoName;
       const version = pkg?.version || 'main';
+
+      // 官方规范：仅复制/克隆到缓存并不算安装——必须通过
+      // `dsh plugin --profile <name> add <source>` 注册进 profile 的
+      // package.json dependencies + dsh.profile.bundles，DSH 才会真正加载。
+      // 这里用官方 link: 源指向克隆产物（与 GitHub 降级路径一致）。
+      try {
+        const { stdout, stderr } = await execa(await this._dshCmd(), [
+          'plugin', '--profile', profile, 'add', `link:${dest}`,
+        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+        this._log(stdout || '');
+        if (stderr) this._log(stderr, 'warn');
+        this._log(`已通过 dsh plugin 注册到 profile ${profile}`);
+      } catch (regError) {
+        this._log(`dsh plugin add 注册失败: ${regError.message}`, 'warn');
+      }
 
       this.registry.registerLocalPlugin({
         id: pluginId,
@@ -675,7 +712,21 @@ export class PluginInstaller {
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
       cpSync(dir, dest, { recursive: true });
 
+      // 官方规范：仅复制到缓存并不算安装——必须通过
+      // `dsh plugin --profile <name> add file:<path>` 注册进 profile，
+      // DSH 才会真正加载该插件（file: 是 DSH 官方支持的本地源形式）。
       const pluginId = pluginName;
+      try {
+        const { stdout, stderr } = await execa(await this._dshCmd(), [
+          'plugin', '--profile', profile, 'add', `file:${dest}`,
+        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+        this._log(stdout || '');
+        if (stderr) this._log(stderr, 'warn');
+        this._log(`已通过 dsh plugin 注册到 profile ${profile}`);
+      } catch (regError) {
+        this._log(`dsh plugin add 注册失败: ${regError.message}`, 'warn');
+      }
+
       this.registry.registerLocalPlugin({
         id: pluginId,
         name: pkg.name || pluginName,
@@ -734,6 +785,20 @@ export class PluginInstaller {
       const dest = join(cacheRoot, pluginName);
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
       cpSync(pkgDir, dest, { recursive: true });
+
+      // 官方规范：仅解压到缓存并不算安装——必须通过
+      // `dsh plugin --profile <name> add file:<path>` 注册进 profile，
+      // DSH 才会真正加载该插件（tarball 走官方 file: 源形式）。
+      try {
+        const { stdout, stderr } = await execa(await this._dshCmd(), [
+          'plugin', '--profile', profile, 'add', `file:${dest}`,
+        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+        this._log(stdout || '');
+        if (stderr) this._log(stderr, 'warn');
+        this._log(`已通过 dsh plugin 注册到 profile ${profile}`);
+      } catch (regError) {
+        this._log(`dsh plugin add 注册失败: ${regError.message}`, 'warn');
+      }
 
       this.registry.registerLocalPlugin({
         id: pluginName,

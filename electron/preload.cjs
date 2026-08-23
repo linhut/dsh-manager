@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   diagnoseDSH: (port) => ipcRenderer.invoke('dsh:diagnose', port),
   checkDSHPort: (port) => ipcRenderer.invoke('dsh:check-port', port),
   getDSHActualPort: () => ipcRenderer.invoke('dsh:get-actual-port'),
-  fixAndRestartDSH: () => ipcRenderer.invoke('dsh:fix-and-restart'),
+  fixAndRestartDSH: (moduleIds) => ipcRenderer.invoke('dsh:fix-and-restart', moduleIds),
   searchGitHubSkills: (query, page) => ipcRenderer.invoke('skills:search-github', query, page),
 
   // ====== 数据管理 ======
@@ -81,6 +81,12 @@ contextBridge.exposeInMainWorld('dshManager', {
   updateLLMProvider: (name, providerConfig) => ipcRenderer.invoke('config:update-llm-provider', name, providerConfig),
   deleteLLMProvider: (name) => ipcRenderer.invoke('config:delete-llm-provider', name),
   fetchLLMModels: (provider, baseUrl, apiKey) => ipcRenderer.invoke('llm:fetch-models', provider, baseUrl, apiKey),
+
+  // ====== 配置备份/还原 ======
+  createConfigBackup: (reason) => ipcRenderer.invoke('config:create-backup', reason),
+  listConfigBackups: () => ipcRenderer.invoke('config:list-backups'),
+  restoreConfigBackup: (nameOrIndex) => ipcRenderer.invoke('config:restore-backup', nameOrIndex),
+  validateConfig: () => ipcRenderer.invoke('config:validate'),
 
   // ====== MCP 服务端管理 ======
   mcpList: (profile) => ipcRenderer.invoke('mcp:list', profile),
@@ -132,6 +138,9 @@ contextBridge.exposeInMainWorld('dshManager', {
   // ====== 事件监听 ======
   onInstallProgress: (callback) => {
     ipcRenderer.on('dsh:install-progress', (_, data) => callback(data));
+  },
+  onSwitchVersionProgress: (callback) => {
+    ipcRenderer.on('dsh:switch-version-progress', (_, data) => callback(data));
   },
   onPluginInstallProgress: (callback) => {
     ipcRenderer.on('plugin-install-progress', (_, data) => callback(data));

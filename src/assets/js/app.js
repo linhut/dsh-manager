@@ -2,18 +2,39 @@
  * DSH Manager - 主应用逻辑
  * 
  * 架构说明：
- * - modules/state.js       → 全局状态
- * - modules/utils.js       → 工具函数（escapeHtml/escapeAttr/fetchWithTimeout/showToast/formatBytes）
+ * - modules/state.js       → 全局状态（含响应式订阅）
+ * - modules/utils.js       → 工具函数 + Toast 通知 + 模态确认 + 请求缓存 + 超时管理
  * - modules/debug.js       → 调试日志系统
  * - modules/theme.js       → 主题系统
  * - modules/dsh-status.js  → DSH/npm/pnpm/依赖状态检测
  * - modules/dsh-control.js → DSH Webview/启动/停止/诊断
+ * - modules/page-manager.js → 页面管理器（懒加载/生命周期）
  * - app.js                 → 初始化 + 页面渲染（Install/Plugins/Skills/Versions/Settings/Prompts/About）
  */
+
+// ====== 全局错误处理 ======
+window.addEventListener('error', function(event) {
+  console.error('[全局错误]', event.error?.message || event.message, 'at', event.filename, 'line', event.lineno);
+  // 尝试显示 Toast 通知（如果 Toast 系统已加载）
+  if (typeof showToast === 'function') {
+    showToast('发生错误: ' + (event.error?.message || event.message || '未知错误'), 'error', 5000);
+  }
+});
+
+window.addEventListener('unhandledrejection', function(event) {
+  console.error('[未处理的 Promise 拒绝]', event.reason?.message || event.reason);
+  if (typeof showToast === 'function') {
+    showToast('未处理的 Promise 错误: ' + (event.reason?.message || '未知错误'), 'error', 5000);
+  }
+});
+
 document.addEventListener('DOMContentLoaded', async () => {
   debugLog.log('info', 'DOMContentLoaded 触发');
   // 应用主题（在渲染页面之前）
   applyTheme();
+
+  // 恢复侧边栏折叠状态（用户偏好持久化）
+  restoreSidebarCollapseState();
 
   // 监听系统主题变化（system 模式下自动切换）
   const mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -52,9 +73,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 首次渲染页面（让用户尽快看到内容，不因检测阻塞）
   // 低配置优化：plugins/skills/versions 为重型页面（会执行 dsh 命令/网络请求），
   // 改为进入对应页面时由 switchPage 懒加载，避免启动时全部跑一遍拖慢应用
-  renderInstallPage();
-  renderSettingsPage();
-  renderAboutPage();
+  if (window.pageManager) {
+    // Page manager handles lazy loading
+    pageManager.navigate('install');
+  } else {
+    renderInstallPage();
+    renderSettingsPage();
+    renderAboutPage();
+  }
 
   // 异步检测 DSH 状态（带超时保护，不阻塞 UI）
   // 注意：Promise.race 不会取消超时定时器，必须在回调里用完成标志防止
@@ -171,8 +197,37 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, 30_000);
 });
 
+// ====== 侧边栏折叠 ======
+const SIDEBAR_COLLAPSED_KEY = 'dshm-sidebar-collapsed';
+
+/** 切换侧边栏折叠状态并持久化 */
+function toggleSidebarCollapse() {
+  const sidebar = document.querySelector('.sidebar');
+  if (!sidebar) return;
+  const collapsed = sidebar.classList.toggle('collapsed');
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {}
+}
+
+/** 恢复侧边栏折叠状态（启动时调用） */
+function restoreSidebarCollapseState() {
+  const sidebar = document.querySelector('.sidebar');
+  if (!sidebar) return;
+  try {
+    if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1') {
+      sidebar.classList.add('collapsed');
+    }
+  } catch {}
+}
+
 // ====== 页面切换 ======
 function switchPage(page) {
+  if (window.pageManager) {
+    pageManager.navigate(page);
+    return;
+  }
+  // Fallback to old implementation
   state.currentPage = page;
 
   // 更新导航高亮
@@ -263,6 +318,7 @@ function renderInstallPage() {
         <div id="installProgress" style="display:none;margin-top:16px;">
           <div class="progress-bar"><div class="progress-bar-fill" id="progressFill" style="width:0%"></div></div>
           <p id="progressText" style="margin-top:8px;font-size:13px;color:var(--text-muted);"></p>
+          <div id="installLog" style="display:none;margin-top:10px;max-height:200px;overflow-y:auto;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--text-dim);font-family:var(--font-mono);line-height:1.7;"></div>
         </div>
       </div>
       <div class="card">
@@ -530,20 +586,44 @@ async function installDSH(tool = 'auto') {
     // 真实进度提示（由主进程 dsh:install-progress 事件驱动，不再模拟进度条）
     const toolLabel = tool === 'pnpm' ? 'pnpm' : tool === 'mirror' ? '镜像源' : tool === 'corepack' ? 'corepack' : '自动';
     text.textContent = `正在通过 ${toolLabel} 安装 DSH${version ? ` v${version}` : ''}（可能需要几分钟，请耐心等待）...`;
-    fill.style.width = '30%';
+    fill.style.width = '10%';
 
-    // 订阅主进程推送的安装日志，实时更新进度条
+    // 步骤日志容器：追加主进程实时推送的安装输出
+    const logEl = document.getElementById('installLog');
+    if (logEl) {
+      logEl.style.display = 'block';
+      logEl.innerHTML = '';
+    }
+    const appendLog = (msg) => {
+      if (!logEl || !msg) return;
+      const line = document.createElement('div');
+      line.textContent = msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    // 订阅主进程推送的安装日志，实时更新进度条（阶段推进，不依赖消息条数）
     window.dshManager.removeAllListeners('dsh:install-progress');
     window.dshManager.onInstallProgress((data) => {
       if (!data || !data.message) return;
-      text.textContent = data.message;
-      if (data.level === 'warn') {
-        fill.style.width = '80%';
-      } else if (data.level === 'error') {
+      const msg = String(data.message);
+      appendLog(msg);
+      text.textContent = msg;
+      const cur = parseInt(fill.style.width, 10) || 0;
+      if (data.level === 'error') {
         fill.style.width = '100%';
+      } else if (data.level === 'warn') {
+        // 警告（如重试/降级）保持进度，不误推进
+        fill.style.width = Math.max(cur, 70) + '%';
+      } else if (/安装成功|安装完成|已安装/.test(msg)) {
+        fill.style.width = '95%';
+      } else if (/验证/.test(msg)) {
+        fill.style.width = '90%';
+      } else if (/下载|安装 DSH|执行|正在/.test(msg)) {
+        fill.style.width = Math.min(Math.max(cur, 30), 85) + '%';
       } else {
-        const current = parseInt(fill.style.width, 10) || 0;
-        fill.style.width = Math.min(current + 15, 70) + '%';
+        // 常规输出（npm 进度行等）：小步推进，封顶 85%
+        fill.style.width = Math.min(cur + 3, 85) + '%';
       }
     });
 
@@ -609,6 +689,19 @@ async function upgradeDSH() {
   showToast('正在检查更新...', 'info');
   try {
     const update = await window.dshManager.checkDSHUpdate();
+    // DSH 未安装（current 为空）→ 提示下载安装最新版，而非误报"已是最新"
+    if (!update.current) {
+      const latest = update.latest || '最新版';
+      showToast(`DSH 未安装，最新版本为 ${latest}`, 'warning');
+      if (confirm(`检测到 DSH 尚未安装。\n最新版本: ${latest}\n是否立即下载并安装？`)) {
+        await window.dshManager.installDSH(null, null, 'auto');
+        showToast('DSH 安装成功！', 'success');
+        await checkDSHStatus();
+        renderInstallPage();
+        renderVersionsPage();
+      }
+      return;
+    }
     if (update.hasUpdate) {
       showToast(`发现新版本: ${update.latest}`, 'info');
       if (confirm(`发现新版本 DSH ${update.latest}（当前: ${update.current}），是否升级？`)) {
@@ -662,10 +755,15 @@ async function uninstallDSH() {
   try {
     await window.dshManager.uninstallDSH();
     showToast('DSH 已卸载', 'success');
+    // 先强制置为未安装并立即渲染安装页（确保"安装 DSH"按钮立刻出现），
+    // 再后台刷新状态；避免残留目录被误判为已安装而吞掉安装按钮
     state.dshInstalled = false;
     state.dshVersion = null;
-    await checkDSHStatus();
     renderInstallPage();
+    try {
+      await checkDSHStatus();
+      renderInstallPage();
+    } catch {}
   } catch (err) {
     showToast('卸载失败: ' + err.message, 'error');
   }
@@ -1480,7 +1578,11 @@ async function runBatchInstall() {
 async function uninstallPlugin(id) {
   if (!confirm(`确定要卸载插件 "${id}" 吗？`)) return;
   try {
-    await window.dshManager.uninstallPlugin(id);
+    const result = await window.dshManager.uninstallPlugin(id);
+    if (result && result.success === false) {
+      showToast('卸载失败: ' + (result.error || 'dsh plugin remove 未确认成功'), 'error');
+      return;
+    }
     showToast('插件已卸载', 'success');
     renderPluginsPage();
   } catch (err) {
@@ -2072,6 +2174,7 @@ async function renderVersionsPage() {
         </div>
       </div>
     </div>
+    <div id="switchProgress"></div>
   `;
 
   // 加载版本信息
@@ -2108,8 +2211,73 @@ async function renderVersionsPage() {
 }
 
 // ====== 切换 DSH 版本 ======
+/** 版本切换进度回显容器 */
+function ensureSwitchProgressUI() {
+  const container = document.getElementById('switchProgress');
+  if (!container) return null;
+  if (!container.dataset.built) {
+    container.dataset.built = '1';
+    container.innerHTML = `
+      <div class="card" style="margin-top:16px;">
+        <div class="card-header">
+          <span class="card-title">🔄 版本切换进度</span>
+          <button class="btn btn-sm btn-ghost" onclick="this.closest('#switchProgress').innerHTML='';this.closest('#switchProgress').dataset.built='';" title="关闭进度面板">✕ 关闭</button>
+        </div>
+        <div class="card-body">
+          <div class="progress-bar">
+            <div class="progress-bar-fill" id="switchProgressFill" style="width:0%"></div>
+          </div>
+          <div id="switchProgressText" style="margin-top:10px;font-size:13px;color:var(--text-muted);">准备中...</div>
+          <div id="switchProgressLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:12px;color:var(--text-dim);line-height:1.7;font-family:var(--font-mono);white-space:pre-wrap;"></div>
+        </div>
+      </div>
+    `;
+  }
+  return container;
+}
+
+/** 更新版本切换进度（由主进程 dsh:switch-version-progress 事件驱动） */
+function updateSwitchVersionProgress(data) {
+  const container = document.getElementById('switchProgress');
+  if (!container || !container.dataset.built) return;
+  const fill = document.getElementById('switchProgressFill');
+  const text = document.getElementById('switchProgressText');
+  const log = document.getElementById('switchProgressLog');
+  if (!fill || !text || !log) return;
+  const msg = (data && data.message) ? String(data.message) : '';
+  if (msg) {
+    const line = document.createElement('div');
+    line.textContent = '· ' + msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (data && data.level === 'error') {
+    fill.style.width = '100%';
+    fill.style.background = 'var(--error)';
+    text.innerHTML = '❌ ' + (msg || '切换失败');
+    text.style.color = 'var(--error)';
+  } else if (data && data.level === 'warn') {
+    fill.style.width = Math.min((parseInt(fill.style.width, 10) || 0) + 10, 80) + '%';
+    if (msg) text.textContent = msg;
+  } else {
+    // 正常推进：卸载→安装→完成，渐进式增长
+    const cur = parseInt(fill.style.width, 10) || 0;
+    fill.style.width = Math.min(cur + 8, 90) + '%';
+    if (msg) text.textContent = msg;
+  }
+}
+
+/** 订阅版本切换进度事件（避免重复订阅） */
+function bindSwitchVersionProgress() {
+  window.dshManager.removeAllListeners('dsh:switch-version-progress');
+  window.dshManager.onSwitchVersionProgress((data) => updateSwitchVersionProgress(data));
+}
+
 async function switchDSHVersion(version) {
   if (!confirm(`确定要切换到 DSH ${version} 吗？\n将先卸载当前版本，再安装目标版本。`)) return;
+  ensureSwitchProgressUI();
+  updateSwitchVersionProgress({ message: '开始切换版本...' });
+  bindSwitchVersionProgress();
   showToast(`正在切换到 DSH ${version}...`, 'info');
   try {
     const result = await window.dshManager.switchDSHVersion(version);
@@ -2134,14 +2302,18 @@ async function renderSettingsPage() {
   let config = { settings: {}, credentials: {} };
   let autoStartConsole = true;
   let checkUpdatesOnStartup = true;
+  let replyLang = 'default';
+  let runtime = {};
   try {
     config = await window.dshManager.getAllConfig();
     autoStartConsole = (await window.dshManager.getConfig('manager.auto-start-dsh')) !== false;
     checkUpdatesOnStartup = (await window.dshManager.getConfig('manager.check-updates')) !== false;
+    replyLang = (await window.dshManager.getReplyLanguage()) || 'default';
+    runtime = (await window.dshManager.getConfig('manager.runtime')) || {};
   } catch (err) { console.warn('读取配置失败:', err); }
 
   el.innerHTML = `
-    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+    <div class="settings-tab-bar">
       <button class="btn btn-primary" onclick="openSettingsTab('manager')">⚙️ Manager 设置</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('llm')">🤖 LLM 提供商</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('yaml')">📝 YAML 编辑器</button>
@@ -2149,7 +2321,7 @@ async function renderSettingsPage() {
       <button class="btn btn-secondary" onclick="openSettingsTab('system')">🔧 系统管理</button>
     </div>
     <div id="settingsTabs">
-      ${renderSettingsManagerTab(autoStartConsole, checkUpdatesOnStartup)}
+      ${renderSettingsManagerTab(autoStartConsole, checkUpdatesOnStartup, replyLang, runtime)}
     </div>
   `;
   el.querySelector('.btn-primary')?.classList.add('settings-tab-active');
@@ -2912,8 +3084,10 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
       <div class="card-header">
         <span class="card-title">⚙️ Manager 设置</span>
       </div>
-      <div class="card-body">
+      <div class="card-body settings-body">
+        <div class="setting-section">通用</div>
         <div class="setting-item">
+          <div class="setting-icon">🚀</div>
           <div class="setting-info">
             <strong>自动打开 DSH 控制台</strong>
             <p class="setting-desc">启动时自动加载 DSH Web 界面</p>
@@ -2924,19 +3098,22 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
           </label>
         </div>
         <div class="setting-item">
+          <div class="setting-icon">🔄</div>
           <div class="setting-info">
             <strong>启动时检查更新</strong>
-            <p class="setting-desc">启动时静默检查 DSH 是否有新版本</p>
+            <p class="setting-desc">启动时静默检查 DSH 新版本</p>
           </div>
           <label class="toggle">
             <input type="checkbox" ${checkUpdates ? 'checked' : ''} onchange="setManagerSetting('manager.check-updates', this.checked)">
             <span class="toggle-slider"></span>
           </label>
         </div>
+        <div class="setting-section">界面</div>
         <div class="setting-item">
+          <div class="setting-icon">💬</div>
           <div class="setting-info">
             <strong>回复语言</strong>
-            <p class="setting-desc">控制 DSH 回复与思考使用的语言；改动需新开会话或重启 DSH 生效，且为引导级指令</p>
+            <p class="setting-desc">DSH 回复与思考的语言，重启或新开会话后生效</p>
           </div>
           <select class="setting-select" onchange="setReplyLanguage(this.value)">
             <option value="zh-CN" ${replyLang === 'zh-CN' ? 'selected' : ''}>简体中文</option>
@@ -2945,9 +3122,10 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
           </select>
         </div>
         <div class="setting-item">
+          <div class="setting-icon">🎨</div>
           <div class="setting-info">
             <strong>主题选择</strong>
-            <p class="setting-desc">选择界面主题</p>
+            <p class="setting-desc">界面明暗主题</p>
           </div>
           <div class="theme-selector">
             <button class="btn btn-sm theme-option ${theme === 'system' ? 'theme-option-active' : ''}" data-theme-choice="system" onclick="selectThemeOption('system')">🌓 跟随系统</button>
@@ -2961,11 +3139,13 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
       <div class="card-header">
         <span class="card-title">🚀 运行配置（低配置优化）</span>
       </div>
-      <div class="card-body">
+      <div class="card-body settings-body">
+        <div class="setting-section">运行环境</div>
         <div class="setting-item">
+          <div class="setting-icon">🖥️</div>
           <div class="setting-info">
             <strong>Node 运行时选择</strong>
-            <p class="setting-desc">低配机器推荐「便携版」：镜像下载、免安装、不污染系统；自动=有便携版则用便携版</p>
+            <p class="setting-desc">自动=优先便携版；低配机推荐「便携版」</p>
           </div>
           <select class="setting-select" onchange="setRuntimeConfig('node', this.value)">
             <option value="auto" ${rtNode === 'auto' ? 'selected' : ''}>自动（推荐）</option>
@@ -2974,9 +3154,10 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
           </select>
         </div>
         <div class="setting-item">
+          <div class="setting-icon">💾</div>
           <div class="setting-info">
             <strong>低资源模式</strong>
-            <p class="setting-desc">为 DSH 注入内存上限（NODE_OPTIONS --max-old-space-size），减少低配机内存压力</p>
+            <p class="setting-desc">注入内存上限，减少低配机内存压力</p>
           </div>
           <label class="toggle">
             <input type="checkbox" ${rtLowMem ? 'checked' : ''} onchange="setRuntimeConfig('lowMemory', this.checked)">
@@ -2984,25 +3165,29 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
           </label>
         </div>
         <div class="setting-item">
+          <div class="setting-icon">📊</div>
           <div class="setting-info">
             <strong>内存上限 (MB)</strong>
-            <p class="setting-desc">低资源模式下 DSH 的最大堆内存，默认 512MB（仅低配机器建议调低）</p>
+            <p class="setting-desc">低资源模式下 DSH 最大堆内存，默认 512MB</p>
           </div>
-          <input class="input" type="number" min="128" max="4096" step="64" value="${rtMaxOld}" style="width:120px;flex-shrink:0;" onchange="setRuntimeConfig('maxOldSpace', Number(this.value))">
+          <input class="input setting-num-input" type="number" min="128" max="4096" step="64" value="${rtMaxOld}" onchange="setRuntimeConfig('maxOldSpace', Number(this.value))">
         </div>
+        <div class="setting-section">网络与重试</div>
         <div class="setting-item">
+          <div class="setting-icon">🌐</div>
           <div class="setting-info">
             <strong>DSH Web 端口</strong>
-            <p class="setting-desc">自定义 DSH Web 界面端口（默认 3080）</p>
+            <p class="setting-desc">DSH Web 界面端口，默认 3080</p>
           </div>
-          <input class="input" type="number" min="1024" max="65535" value="${rtPort}" style="width:120px;flex-shrink:0;" onchange="setRuntimeConfig('port', Number(this.value))">
+          <input class="input setting-num-input" type="number" min="1024" max="65535" value="${rtPort}" onchange="setRuntimeConfig('port', Number(this.value))">
         </div>
         <div class="setting-item">
+          <div class="setting-icon">🔁</div>
           <div class="setting-info">
             <strong>对话重试次数</strong>
-            <p class="setting-desc">Agent 对话失败时的最大重试次数（0=不重试，默认 3）</p>
+            <p class="setting-desc">Agent 对话失败重试上限，0=不重试，默认 3</p>
           </div>
-          <input class="input" type="number" min="0" max="20" step="1" value="${typeof runtime?.retryCount === 'number' ? runtime.retryCount : 3}" style="width:80px;flex-shrink:0;" onchange="setRuntimeConfig('retryCount', Number(this.value))">
+          <input class="input setting-num-input setting-num-input-sm" type="number" min="0" max="20" step="1" value="${typeof runtime?.retryCount === 'number' ? runtime.retryCount : 3}" onchange="setRuntimeConfig('retryCount', Number(this.value))">
         </div>
       </div>
     </div>
@@ -3181,17 +3366,6 @@ async function showLLMProviderForm(editName) {
       if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; confModels = Array.isArray(conf.models) ? conf.models : null; }
     } catch {}
   }
-  // 如果已有模型列表，在异步渲染后恢复下拉
-  setTimeout(function() {
-    if (confModels && confModels.length > 0) {
-      var select = document.getElementById('llm-model-select');
-      var results = document.getElementById('llm-model-results');
-      if (select && results) {
-        select.innerHTML = confModels.map(function(m) { return '<option value="' + escapeAttr(m.id||'') + '">' + escapeHtml(m.id||'') + (m.ownedBy ? ' (' + escapeHtml(m.ownedBy) + ')' : '') + '</option>'; }).join('');
-        results.style.display = 'block';
-      }
-    }
-  }, 100);
   const modal = document.createElement('div');
   modal.className = 'modal-overlay active';
   modal.innerHTML = `
@@ -3217,9 +3391,17 @@ async function showLLMProviderForm(editName) {
             <button class="btn btn-sm btn-ghost" id="fetchLLMModelBtn" onclick="fetchLLMModels()" title="调用提供商 API 获取可用模型列表">🔍 获取模型</button>
           </div>
           <div id="llm-model-results" style="display:none;margin-top:8px;">
-            <select class="input" id="llm-model-select" onchange="useSelectedLLMModel()"></select>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;">
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer;">
+                <input type="checkbox" id="llm-model-selectall" onchange="toggleAllModels(this.checked)"> 全选
+              </label>
+              <button class="btn btn-sm btn-ghost" onclick="toggleAllModels(false)">全取消</button>
+              <span id="llm-model-count" style="font-size:12px;color:var(--text-dim);"></span>
+              <button class="btn btn-sm btn-secondary" onclick="fillCheckedModelsToInput()" title="将已勾选模型填入上方模型名称（默认取第一个）">⬇ 应用到输入框</button>
+            </div>
+            <div id="llm-model-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:4px;background:var(--bg-input);"></div>
           </div>
-          <p class="form-hint" id="modelHint">不同提供商支持的模型名称不同，点击"获取模型"可自动拉取可用列表</p></div>
+          <p class="form-hint" id="modelHint">不同提供商支持的模型名称不同，点击"获取模型"可自动拉取可用列表，勾选多个模型保存</p></div>
         <div class="form-group">
           <label class="form-label">API Key</label>
           <div style="display:flex;gap:8px;"><input class="input" id="llm-apikey" type="password" value="${apiKey}" placeholder="sk-..." style="flex:1;"><button class="btn btn-sm btn-ghost" onclick="toggleApiKeyVisibility()" title="显示/隐藏">👁</button></div>
@@ -3233,6 +3415,13 @@ async function showLLMProviderForm(editName) {
     </div>
   `;
   document.body.appendChild(modal);
+  // 编辑态：已有模型列表 → 渲染复选框并预勾选（与官方 models 数组一致）
+  if (confModels && confModels.length > 0) {
+    renderModelCheckList(confModels.map(m => ({
+      id: (typeof m === 'string' ? m : m.id) || '',
+      ownedBy: (typeof m === 'string' ? '' : m.ownedBy) || '',
+    })), true);
+  }
 }
 
 async function saveLLMProvider() {
@@ -3246,15 +3435,13 @@ async function saveLLMProvider() {
   const providerConfig = { provider, model };
   if (apiKey) providerConfig.apiKey = apiKey;
   if (baseUrl) providerConfig.baseUrl = baseUrl;
-  // 保存完整模型列表（如果已获取）—— 对齐 DSH 官方 format
-  const modelSelect = document.getElementById('llm-model-select');
-  if (modelSelect && modelSelect.options.length > 0) {
-    providerConfig.models = Array.from(modelSelect.options).map(opt => {
-      const id = opt.value;
-      const text = opt.text || '';
-      const ownedBy = text.includes('(') ? text.match(/\(([^)]+)\)/)?.[1] : '';
-      return { id, ownedBy: ownedBy || '' };
-    });
+  // 保存勾选的完整模型列表（对齐 DSH 官方 models 数组格式）
+  const checkedModels = updateModelCheckCount();
+  if (checkedModels && checkedModels.length > 0) {
+    providerConfig.models = checkedModels.map(cb => ({
+      id: cb.value,
+      ownedBy: cb.dataset.ownedby || '',
+    }));
   }
   try {
     await window.dshManager.updateLLMProvider(name, providerConfig);
@@ -3285,21 +3472,76 @@ async function fetchLLMModels() {
   try {
     const result = await window.dshManager.fetchLLMModels(provider, baseUrl, apiKey);
     const results = document.getElementById('llm-model-results');
-    const select = document.getElementById('llm-model-select');
     if (!result.success) { showToast('获取失败: ' + (result.error || '未知错误'), 'error'); if (results) results.style.display = 'none'; return; }
     if (!result.models || !result.models.length) { showToast('未获取到任何模型', 'warning'); if (results) results.style.display = 'none'; return; }
-    select.innerHTML = result.models.map(m => '<option value="' + escapeAttr(m.id||'') + '">' + escapeHtml(m.id||'') + (m.ownedBy ? ' (' + escapeHtml(m.ownedBy) + ')' : '') + '</option>').join('');
-    results.style.display = 'block';
-    showToast('获取到 ' + result.count + ' 个模型，请从下拉列表中选择', 'success');
+    // 渲染复选框列表（默认不勾选，由用户多选；已选中的模型保持选中）
+    renderModelCheckList(result.models, false);
+    showToast('获取到 ' + result.count + ' 个模型，勾选需要的模型后保存', 'success');
   } catch (e) { showToast('获取失败: ' + e.message, 'error'); }
 }
-function useSelectedLLMModel() {
-  const select = document.getElementById('llm-model-select');
+
+/**
+ * 渲染模型复选框列表（多选 + 全选/全取消）
+ * @param {Array<{id: string, ownedBy?: string}>} models - 模型列表
+ * @param {boolean} precheckAll - 是否默认全部勾选（编辑态恢复时传 true）
+ */
+function renderModelCheckList(models, precheckAll) {
+  const listEl = document.getElementById('llm-model-list');
+  const results = document.getElementById('llm-model-results');
+  const countEl = document.getElementById('llm-model-count');
+  if (!listEl || !results) return;
+  if (!Array.isArray(models) || models.length === 0) return;
+
+  // 合并已有勾选（避免重新获取时丢失用户已勾选项）
+  const prevChecked = new Set();
+  listEl.querySelectorAll('input.llm-model-cb:checked').forEach(function(cb) { prevChecked.add(cb.value); });
+
+  listEl.innerHTML = models.map(m => {
+    const id = (m.id || '').trim();
+    if (!id) return '';
+    const owned = m.ownedBy || '';
+    const checked = precheckAll || prevChecked.has(id) ? 'checked' : '';
+    const label = owned ? escapeHtml(id) + ' <span style="color:var(--text-dim);font-size:11px;">(' + escapeHtml(owned) + ')</span>' : escapeHtml(id);
+    return '<label style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;transition:background 0.12s;" onmouseover="this.style.background=\'var(--bg-hover)\'" onmouseout="this.style.background=\'transparent\'">' +
+      '<input type="checkbox" class="llm-model-cb" value="' + escapeAttr(id) + '" data-ownedby="' + escapeAttr(owned) + '" ' + checked + ' onchange="updateModelCheckCount()" style="flex-shrink:0;">' +
+      '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
+      '</label>';
+  }).join('');
+  results.style.display = 'block';
+  updateModelCheckCount();
+}
+
+/** 更新已勾选数量与全选框状态 */
+function updateModelCheckCount() {
+  const listEl = document.getElementById('llm-model-list');
+  const countEl = document.getElementById('llm-model-count');
+  const selectAll = document.getElementById('llm-model-selectall');
+  if (!listEl) return;
+  const cbs = listEl.querySelectorAll('input.llm-model-cb');
+  const checked = Array.from(cbs).filter(function(cb) { return cb.checked; });
+  if (countEl) countEl.textContent = '已选 ' + checked.length + ' / ' + cbs.length;
+  if (selectAll) selectAll.checked = cbs.length > 0 && checked.length === cbs.length;
+  return checked;
+}
+
+/** 全选 / 全取消 */
+function toggleAllModels(checked) {
+  const listEl = document.getElementById('llm-model-list');
+  if (!listEl) return;
+  listEl.querySelectorAll('input.llm-model-cb').forEach(function(cb) { cb.checked = !!checked; });
+  updateModelCheckCount();
+}
+
+/** 将已勾选模型填入上方模型名称输入框（取第一个勾选的模型） */
+function fillCheckedModelsToInput() {
   const input = document.getElementById('llm-model');
-  if (select && input && select.value) {
-    input.value = select.value;
-    document.getElementById('llm-model-results').style.display = 'none';
+  const checked = updateModelCheckCount();
+  if (!input || !checked || checked.length === 0) {
+    showToast('请先勾选至少一个模型', 'warning');
+    return;
   }
+  input.value = checked[0].value;
+  showToast('已填入模型: ' + checked[0].value + '（可继续勾选多个一起保存）', 'info');
 }
 
 let _pendingSaveTimer = null;
@@ -3458,11 +3700,11 @@ async function refreshVersions() {
             <tbody>
               ${installed.map(v => `
                 <tr>
-                  <td><strong>${v.version}</strong> ${v.current ? '<span class="badge badge-green">当前</span>' : ''}</td>
+                  <td><strong>${v.version}</strong> ${v.isCurrent ? '<span class="badge badge-green">当前</span>' : ''}</td>
                   <td style="color:var(--text-dim);font-size:12px;">${v.installedAt ? new Date(v.installedAt).toLocaleString() : '-'}</td>
                   <td>
-                    ${!v.current ? `<button class="btn btn-sm btn-primary" onclick="switchVersion('${v.version}')">切换</button>` : ''}
-                    ${!v.current ? `<button class="btn btn-sm btn-ghost" onclick="removeVersion('${v.version}')">删除</button>` : ''}
+                    ${!v.isCurrent ? `<button class="btn btn-sm btn-primary" onclick="switchVersion('${v.version}')">切换</button>` : ''}
+                    ${!v.isCurrent ? `<button class="btn btn-sm btn-ghost" onclick="removeVersion('${v.version}')">删除</button>` : ''}
                   </td>
                 </tr>
               `).join('')}
@@ -3504,6 +3746,9 @@ async function refreshVersions() {
 
 async function switchVersion(version) {
   if (!confirm(`是否确定要切换到 DSH ${version}？\n将先卸载当前版本，再安装目标版本。`)) return;
+  ensureSwitchProgressUI();
+  updateSwitchVersionProgress({ message: '开始切换版本...' });
+  bindSwitchVersionProgress();
   showToast(`正在切换到 DSH ${version}...`, 'info');
   try {
     const result = await window.dshManager.switchDSHVersion(version);
@@ -3572,9 +3817,50 @@ async function checkAppUpdateUI() {
 
 // ====== 键盘快捷键 ======
 document.addEventListener('keydown', (e) => {
+  // Ctrl+Shift+D: 调试面板
   if (e.ctrlKey && e.shiftKey && e.key === 'D') {
     e.preventDefault();
     toggleDebugPanel();
+  }
+  // Ctrl+1~8: 页面切换
+  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+    const pageMap = {
+      '1': 'dashboard', '2': 'install', '3': 'plugins',
+      '4': 'skills', '5': 'versions', '6': 'settings',
+      '7': 'prompts', '8': 'about',
+    };
+    const page = pageMap[e.key];
+    if (page && page !== state.currentPage) {
+      e.preventDefault();
+      switchPage(page);
+    }
+  }
+  // Ctrl+F: 聚焦搜索框
+  if (e.ctrlKey && e.key === 'f' && !e.shiftKey && !e.altKey && !e.metaKey) {
+    const inputs = document.querySelectorAll('.search-box input, input[type="text"]');
+    for (const input of inputs) {
+      if (input.offsetParent !== null) { // visible
+        e.preventDefault();
+        input.focus();
+        input.select();
+        return;
+      }
+    }
+  }
+  // Escape: 关闭模态框
+  if (e.key === 'Escape') {
+    const modal = document.querySelector('.modal-overlay.active');
+    if (modal) {
+      e.preventDefault();
+      modal.remove();
+    }
+  }
+  // F5: 刷新当前页面
+  if (e.key === 'F5' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+    e.preventDefault();
+    const current = state.currentPage || 'dashboard';
+    switchPage(current);
+    showToast('已刷新当前页面', 'info', 2000);
   }
 });
 

@@ -19,7 +19,7 @@ import { DSH_PATHS } from './dsh-utils.js';
  */
 async function checkCommand(cmd, label) {
   try {
-    const { stdout, stderr } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000 });
+    const { stdout, stderr } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }
@@ -52,7 +52,7 @@ export async function checkPortableNode() {
   const bin = getPortableNodeBin();
   if (!bin) return { installed: false, version: null, bin: null };
   try {
-    const { stdout } = await execa(bin, ['--version'], { reject: false, timeout: 10_000 });
+    const { stdout } = await execa(bin, ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), bin };
     }
@@ -85,7 +85,7 @@ export async function checkNpm() {
     ? join(nodeDir, 'npm.cmd')
     : join(nodeDir, 'bin', 'npm');
   if (existsSync(npmBin)) {
-    const { stdout } = await execa(npmBin, ['--version'], { reject: false, timeout: 10_000 });
+    const { stdout } = await execa(npmBin, ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null, source: 'portable' };
     }

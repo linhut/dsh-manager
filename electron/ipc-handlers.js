@@ -42,6 +42,51 @@ async function loadMarketplace() {
 }
 
 /**
+ * 构建并启动 DSH web 子进程（供 dsh:start 与启动失败自愈重启复用）
+ * @returns {Promise<{error?: string, child?: import('execa').ResultPromise, actualPort?: number, preferredPort?: number, portResult?: object}>}
+ */
+async function spawnDSHWeb() {
+  const { execa } = await import('execa');
+  const { DSHUtils, buildRuntimeEnv, getRuntimeConfig, findAvailablePort } = await loadCore();
+  const dshPkgPath = await DSHUtils.getDSHPath();
+  if (!dshPkgPath) return { error: 'DSH 未安装，请先安装 DSH' };
+  const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
+  const binEntry = pkgJson.bin;
+  let cliPath;
+  if (typeof binEntry === 'string') {
+    cliPath = join(dshPkgPath, binEntry);
+  } else if (binEntry && typeof binEntry === 'object') {
+    cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
+  }
+  if (!cliPath || !existsSync(cliPath)) {
+    return { error: '无法定位 DSH CLI 入口文件: ' + (cliPath || '未找到') };
+  }
+  const [{ env }, rt] = await Promise.all([buildRuntimeEnv(), getRuntimeConfig()]);
+  const preferredPort = rt.port && rt.port > 0 ? rt.port : 3080;
+  const portResult = await findAvailablePort(preferredPort);
+  const actualPort = portResult.port;
+  const startArgs = ['web'];
+  if (actualPort !== 3080) startArgs.push('--port', String(actualPort));
+  const nodeEnv = { ...env, NO_COLOR: '1' };
+  if (rt.retryCount && rt.retryCount > 0) {
+    nodeEnv.DSH_AGENT_MAX_RETRIES = String(rt.retryCount);
+  }
+  if (rt.lowMemory) {
+    nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
+  }
+  const child = execa('node', [cliPath, ...startArgs], {
+    detached: true,                // 所有平台脱离父进程树，防止被回收
+    windowsHide: false,            // 显示 DSH 控制台窗口（便于查看 DSH 实时日志）
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: nodeEnv,
+    reject: false,                 // 不抛异常，由调用方统一处理失败
+  });
+  // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
+  child.nodeChildProcess?.unref();
+  return { child, actualPort, preferredPort, portResult };
+}
+
+/**
  * 注册所有 IPC 处理器
  */
 export function registerIpcHandlers(ipcMain, getMainWindow) {
@@ -155,66 +200,21 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   ipcMain.handle('dsh:start', async () => {
     try {
-      const { execa } = await import('execa');
-      const { DSHUtils } = await loadCore();
-
-      const dshPkgPath = await DSHUtils.getDSHPath();
-      if (!dshPkgPath) {
-        return { success: false, error: 'DSH 未安装，请先安装 DSH' };
+      const { testDSHHealth } = await loadCore();
+      const sp = await spawnDSHWeb();
+      if (sp.error) {
+        return { success: false, error: sp.error };
       }
-
-      // 读取 dsh package.json 获取 CLI 入口
-      const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
-      const binEntry = pkgJson.bin;
-      let cliPath;
-      if (typeof binEntry === 'string') {
-        cliPath = join(dshPkgPath, binEntry);
-      } else if (binEntry && typeof binEntry === 'object') {
-        cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
-      }
-      if (!cliPath || !existsSync(cliPath)) {
-        return { success: false, error: '无法定位 DSH CLI 入口文件: ' + (cliPath || '未找到') };
-      }
-
-      // 直接启动 node + CLI（绕过 .cmd 包装，避免 Windows 弹窗）
-      // 关键修复：用 detached: true（所有平台）确保子进程脱离父进程树，
-      // 不会被父进程（终端/任务计划/管理器）退出时回收杀死。
-      // 旧版本 detached: !isWindows 导致 Windows 上进程挂靠在父进程树中。
-      const { buildRuntimeEnv, getRuntimeConfig, findAvailablePort, testDSHHealth } = await loadCore();
-      const [{ env }, rt] = await Promise.all([buildRuntimeEnv(), getRuntimeConfig()]);
-      const preferredPort = rt.port && rt.port > 0 ? rt.port : 3080;
-
-      // 端口自动检测：首选端口若被占用，自动切换到随机空闲端口
-      const portResult = await findAvailablePort(preferredPort);
-      const actualPort = portResult.port;
+      const { child, actualPort, portResult, preferredPort } = sp;
       lastActivePort = actualPort; // 记录本次实际端口，供 stop/diagnose 使用
 
-      // 构建启动参数
-      const startArgs = ['web'];
-      if (actualPort !== 3080) startArgs.push('--port', String(actualPort));
-      const nodeEnv = { ...env, NO_COLOR: '1' };
-      if (rt.retryCount && rt.retryCount > 0) {
-        nodeEnv.DSH_AGENT_MAX_RETRIES = String(rt.retryCount);
-      }
-      if (rt.lowMemory) {
-        nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
-      }
-      const child = execa('node', [cliPath, ...startArgs], {
-        detached: true,                // 所有平台脱离父进程树，防止被回收
-        windowsHide: true,             // Windows 隐藏控制台窗口（CREATE_NO_WINDOW）
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: nodeEnv,
-        reject: false,                 // 不抛异常，由下方统一处理失败
-      });
-      // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
-      child.nodeChildProcess?.unref();
       child.then(async result => {
         // 进程已退出（成功启动后退出或启动即失败）。短暂存活期内的非零退出视为启动失败
         if (result.exitCode !== 0 && result.failed) {
           const stderr = (result.stderr || '').toString().trim();
           writeLog('error', 'DSH 启动失败: exit=' + result.exitCode + (stderr ? ' stderr: ' + stderr.slice(0, 2000) : ''));
-          // 自动诊断是否有无效插件导致启动失败（如 gongwen-skill "invalid plugin"）
-          // 从 stderr 中提取失效插件 ID（更可靠：直接匹配运行时报错信息）
+          // 自动诊断是否有无效插件/缺失模块导致启动失败
+          // 从 stderr 中提取失效插件 ID / 缺失模块（更可靠：直接匹配运行时报错信息）
           let invalidPlugins = [];
           try {
             const { PluginRegistry } = await loadMarketplace();
@@ -227,23 +227,177 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           }
           // 兜底：如果诊断未找到，直接从 stderr 解析 failing plugin ID
           if (invalidPlugins.length === 0 && stderr) {
-            const re = /failed to apply loader entry [^(]+\(([^)]+)\)/g;
+            // 注意：括号内可能是 undefined（如损坏 include 条目 "ui-skin-stock (undefined)"），
+            // 此时回退使用 loader entry 名（ui-skin-stock）；cordis:include 等机制名需过滤
+            const re = /failed to (?:apply|import) loader entry\s+([^\s(]+)(?:\s*\(([^)]*)\))?/g;
             let m;
             while ((m = re.exec(stderr)) !== null) {
-              const id = m[1].trim();
-              if (id && !id.startsWith('@deepseek-ai/')) {
-                invalidPlugins.push({ id, reason: '启动时加载失败（stderr 指示）' });
+              let id = (m[2] || '').trim();
+              // 括号内是 cordis 机制名（如 include (cordis:include)）→ loader entry 为机制本身，跳过
+              if (id && /^cordis:/i.test(id)) {
+                continue;
+              }
+              // 括号值无效（undefined / 空）→ 使用 loader entry 名（如 ui-skin-stock）
+              if (!id || id === 'undefined') {
+                id = (m[1] || '').trim();
+              }
+              if (id && !id.startsWith('@deepseek-ai/') && !/^cordis:/i.test(id)) {
+                invalidPlugins.push({ id, reason: '启动时加载失败（stderr 指示）', kind: 'plugin' });
+              }
+            }
+            // 兜底也提取 Cannot find module 的缺失模块（单引号路径）
+            const re2 = /Cannot find module ['"]([^'"]+)['"]/g;
+            while ((m = re2.exec(stderr)) !== null) {
+              const path = m[1];
+              const idx = path.indexOf('node_modules');
+              const parts = (idx >= 0 ? path.slice(idx + 'node_modules'.length) : path).split(/[\\/]/).filter(Boolean);
+              let pkg = null;
+              if (parts.length > 0) {
+                pkg = parts[0].startsWith('@') && parts.length >= 2 ? parts[0] + '/' + parts[1] : parts[0];
+              }
+              if (pkg && !pkg.startsWith('@deepseek-ai/') && !invalidPlugins.some(p => p.id === pkg)) {
+                invalidPlugins.push({ id: pkg, reason: '模块缺失（stderr 指示）', kind: 'module' });
               }
             }
           }
+
           const win = getMainWindow();
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('dsh:start-error', {
-              exitCode: result.exitCode,
-              stderr: stderr.slice(0, 2000),
-              port: actualPort,
-              invalidPlugins,
-            });
+          const sendError = (extra = {}) => {
+            if (win && !win.isDestroyed()) {
+              win.webContents.send('dsh:start-error', {
+                exitCode: result.exitCode,
+                stderr: stderr.slice(0, 2000),
+                port: actualPort,
+                invalidPlugins,
+                ...extra,
+              });
+            }
+          };
+
+          // ===== 主进程自愈：直接修复并自动重启，不再依赖前端确认/诊断触发 =====
+          if (invalidPlugins.length > 0) {
+            writeLog('info', '检测到启动故障，主进程自动修复中... 问题项: ' +
+              invalidPlugins.map(p => p.id + '(' + p.kind + ')').join('、'));
+            let repaired = [];
+            let failed = [];
+            try {
+              const { copyModuleToProfile, repairProfileDependencies } = await loadCore();
+              const { PluginRegistry } = await loadMarketplace();
+              const registry = new PluginRegistry();
+              // ① 移除无效插件（plugin kind）
+              try {
+                const fixResult = await registry.fixInvalidPlugins('web');
+                repaired.push(...(fixResult.fixed || []).map(f => f.id));
+              } catch (fixErr) {
+                writeLog('warn', '移除无效插件异常: ' + (fixErr?.message || fixErr));
+              }
+              // ② 定向补齐缺失模块（module kind，如 shiki）
+              const moduleIds = invalidPlugins.filter(p => p.kind === 'module').map(p => p.id);
+              for (const id of moduleIds) {
+                try {
+                  const r = await copyModuleToProfile('web', id);
+                  if (r.success) repaired.push(id);
+                  else failed.push(id);
+                } catch (mErr) {
+                  failed.push(id);
+                  writeLog('warn', '补齐模块 ' + id + ' 异常: ' + (mErr?.message || mErr));
+                }
+              }
+              // ③ 仍有失败 → 在 profile 内重建依赖树（pnpm/npm install 按锁文件整体修复）
+              if (failed.length > 0) {
+                try {
+                  const rebuild = await repairProfileDependencies('web');
+                  writeLog('info', 'profile 依赖重建: ' + (rebuild?.summary || ''));
+                } catch (rbErr) {
+                  writeLog('warn', 'profile 依赖重建异常: ' + (rbErr?.message || rbErr));
+                }
+                // 重建后重试失败模块
+                const retryFailed = [];
+                for (const id of failed) {
+                  try {
+                    const r = await copyModuleToProfile('web', id);
+                    if (r.success) repaired.push(id);
+                    else retryFailed.push(id);
+                  } catch (mErr) {
+                    retryFailed.push(id);
+                  }
+                }
+                failed = retryFailed;
+              }
+            } catch (repairErr) {
+              writeLog('error', '主进程自愈修复异常: ' + (repairErr?.message || repairErr));
+            }
+            writeLog('info', '自愈修复结果: 成功=' + (repaired.join('、') || '无') + ' 失败=' + (failed.join('、') || '无'));
+
+            // 修复有进展 → 自动重启 DSH
+            if (repaired.length > 0) {
+              writeLog('info', '自愈修复完成，自动重启 DSH...');
+              try {
+                const sp2 = await spawnDSHWeb();
+                if (sp2.error) {
+                  sendError({ afterFix: true, repaired, failed, restartError: sp2.error });
+                  return;
+                }
+                lastActivePort = sp2.actualPort;
+                // 监控重启结果
+                sp2.child.then(async r2 => {
+                  if (r2.exitCode !== 0 && r2.failed) {
+                    const stderr2 = (r2.stderr || '').toString().trim();
+                    writeLog('error', '自愈重启后 DSH 仍失败: exit=' + r2.exitCode + (stderr2 ? ' stderr: ' + stderr2.slice(0, 2000) : ''));
+                    sendError({ afterFix: true, repaired, failed, restartExitCode: r2.exitCode });
+                  } else {
+                    writeLog('info', '自愈重启后 DSH 进程运行中: exit=' + r2.exitCode + ' port=' + sp2.actualPort);
+                  }
+                }).catch(err => {
+                  writeLog('error', '自愈重启监控异常: ' + err.message);
+                });
+                // 等待 HTTP 就绪（同时确认本次启动的子进程仍存活，
+                // 避免端口被残留进程占用导致"假就绪"误判）
+                let health2 = null;
+                for (let i = 0; i < 10; i++) {
+                  // 本次启动的子进程已退出（exitCode 变为数字）→ 立即判定失败
+                  const childExit = sp2.child.nodeChildProcess?.exitCode;
+                  if (childExit !== null && childExit !== undefined) {
+                    health2 = null;
+                    break;
+                  }
+                  await new Promise(r => setTimeout(r, 1000));
+                  health2 = await testDSHHealth(sp2.actualPort);
+                  if (health2.reachable) break;
+                }
+                // 子进程已退出则无论端口是否可达都按失败处理
+                const finalChildExit = sp2.child.nodeChildProcess?.exitCode;
+                if (finalChildExit !== null && finalChildExit !== undefined) {
+                  health2 = null;
+                }
+                if (health2?.reachable) {
+                  // 自愈成功：通知前端刷新 webview 并回显修复结果
+                  if (win && !win.isDestroyed()) {
+                    win.webContents.send('dsh:start-error', {
+                      exitCode: 0,
+                      stderr: '',
+                      port: sp2.actualPort,
+                      invalidPlugins: [],
+                      autoRepaired: true,
+                      repaired,
+                      failed,
+                    });
+                  }
+                  writeLog('info', '✅ 自愈成功，DSH 已就绪: http://127.0.0.1:' + sp2.actualPort);
+                } else {
+                  sendError({ afterFix: true, repaired, failed, reachable: false });
+                }
+              } catch (restartErr) {
+                writeLog('error', '自愈重启异常: ' + (restartErr?.message || restartErr));
+                sendError({ afterFix: true, repaired, failed });
+              }
+            } else {
+              // 无修复进展 → 通知前端展示真实错误
+              sendError({ afterFix: true, repaired, failed });
+            }
+          } else {
+            // 无诊断结果 → 通知前端展示原始错误
+            sendError();
           }
         } else {
           writeLog('info', 'DSH 进程已退出: exit=' + result.exitCode + ' port=' + actualPort);
@@ -253,11 +407,23 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         writeLog('error', 'DSH 启动监控异常: ' + err.message);
       });
       // 短暂等待后检查 DSH 是否成功启动（最多 10 秒）
+      // 同时确认本次启动的子进程仍存活：端口可能被残留进程占用，
+      // 仅凭 HTTP 可达会把"启动即崩"误判为成功
       let health = null;
       for (let i = 0; i < 10; i++) {
+        const childExit = child.nodeChildProcess?.exitCode;
+        if (childExit !== null && childExit !== undefined) {
+          health = null;
+          break;
+        }
         await new Promise(r => setTimeout(r, 1000));
         health = await testDSHHealth(actualPort);
         if (health.reachable) break;
+      }
+      // 子进程已退出则无论端口是否可达都按失败处理
+      const finalExit = child.nodeChildProcess?.exitCode;
+      if (finalExit !== null && finalExit !== undefined) {
+        health = null;
       }
       return {
         success: true,
@@ -343,13 +509,70 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return { port: lastActivePort, defaultPort: 3080 };
   });
 
-  // 一键修复无效插件并重启 DSH（解决 gongwen-skill "invalid plugin" 等启动失败）
-  ipcMain.handle('dsh:fix-and-restart', async () => {
+  // 一键修复无效插件/缺失依赖并重启 DSH（解决 gongwen-skill "invalid plugin"、shiki/js-yaml 缺失等启动失败）
+  ipcMain.handle('dsh:fix-and-restart', async (_, moduleIds) => {
     try {
-      // ① 修复无效插件
+      // ① 修复无效插件（注册表中指向缺失包的条目）
       const { PluginRegistry } = await loadMarketplace();
       const registry = new PluginRegistry();
       const fixResult = await registry.fixInvalidPlugins('web');
+
+      // ①.5 修复依赖完整性：profile 缺失模块（如 shiki）从全局副本补齐；
+      //      全局安装自身缺失（如 js-yaml）在全局目录内 npm install 恢复
+      const { repairProfileFromGlobal, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies } = await loadCore();
+      let depFix = { repaired: [], failed: [], skipped: [], summary: '' };
+      let globalFix = { fixed: [], failed: [], summary: '' };
+      try {
+        globalFix = await repairGlobalDSHInstall();
+      } catch (gErr) {
+        globalFix = { fixed: [], failed: [], summary: '全局依赖修复异常: ' + (gErr?.message || gErr) };
+      }
+      try {
+        depFix = await repairProfileFromGlobal('web', { includeSystem: true });
+      } catch (dErr) {
+        depFix = { repaired: [], failed: [], skipped: [], summary: 'profile 依赖修复异常: ' + (dErr?.message || dErr) };
+      }
+
+      // ①.6 定向补齐：启动失败时 stderr 中 ERR_MODULE_NOT_FOUND 指向的模块
+      //      （如 shiki 是传递依赖，不在 profile package.json 声明中，需按 ID 复制）
+      let moduleFix = { copied: [], failed: [] };
+      if (Array.isArray(moduleIds) && moduleIds.length > 0) {
+        for (const id of moduleIds) {
+          try {
+            const r = await copyModuleToProfile('web', id);
+            if (r.success) moduleFix.copied.push(id);
+            else moduleFix.failed.push({ id, error: r.error || '复制失败' });
+          } catch (mErr) {
+            moduleFix.failed.push({ id, error: mErr?.message || String(mErr) });
+          }
+        }
+      }
+
+      // ①.7 兜底：profile 依赖树重建（按锁文件整体重建）
+      //      覆盖两类场景：① 模块复制失败（全局无该包）→ 重建后重试复制；
+      //      ② 版本漂移（如 profile rc.7 vs 全局 rc.8 导致 client bundle
+      //      "build-time externals drift" / "missed the module table"）→ pnpm install 对齐
+      let profileRebuild = null;
+      try {
+        profileRebuild = await repairProfileDependencies('web');
+        writeLog('info', 'profile 依赖重建: ' + (profileRebuild?.summary || ''));
+        // 重建后对之前失败的模块再试一次定向复制
+        if (moduleFix.failed.length > 0) {
+          const retryFailed = [];
+          for (const item of moduleFix.failed) {
+            try {
+              const r = await copyModuleToProfile('web', item.id);
+              if (r.success) moduleFix.copied.push(item.id);
+              else retryFailed.push({ id: item.id, error: r.error || '复制失败' });
+            } catch (mErr) {
+              retryFailed.push({ id: item.id, error: mErr?.message || String(mErr) });
+            }
+          }
+          moduleFix.failed = retryFailed;
+        }
+      } catch (pErr) {
+        profileRebuild = { success: false, summary: 'profile 依赖重建异常: ' + (pErr?.message || pErr) };
+      }
 
       // ② 重新触发启动（复用 dsh:start 逻辑）
       const { execa } = await import('execa');
@@ -386,7 +609,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
       const child = execa('node', [cliPath, ...startArgs], {
         detached: true,
-        windowsHide: true,
+        windowsHide: false,        // 显示 DSH 控制台窗口
         stdio: ['ignore', 'pipe', 'pipe'],
         env: nodeEnv,
         reject: false,
@@ -422,8 +645,12 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
       return {
         success: true,
-        message: '无效插件已修复，DSH 重新启动',
+        message: '无效插件/缺失依赖已修复，DSH 重新启动',
         fixResult,
+        depFix,
+        globalFix,
+        moduleFix,
+        profileRebuild,
         port: actualPort,
         webUrl: 'http://127.0.0.1:' + actualPort,
         reachable: health?.reachable || false,
@@ -446,12 +673,28 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   ipcMain.handle('dsh:switch-version', async (_, version) => {
     const { DSHInstaller, DSHVersionManager } = await loadCore();
-    const installer = new DSHInstaller();
-    const result = await installer.switchVersion(version);
-    // 记录切换后的版本
-    const vm = new DSHVersionManager();
-    if (result.newVersion) await vm.recordVersion(result.newVersion);
-    return result;
+    const win = getMainWindow();
+    const installer = new DSHInstaller({
+      onProgress: (data) => {
+        // 将卸载/安装日志推送到渲染进程，驱动版本切换进度条
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('dsh:switch-version-progress', data);
+        }
+      },
+    });
+    try {
+      const result = await installer.switchVersion(version);
+      // 记录切换后的版本
+      const vm = new DSHVersionManager();
+      if (result.newVersion) await vm.recordVersion(result.newVersion);
+      return result;
+    } catch (error) {
+      // 切换失败：进度回显失败原因
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('dsh:switch-version-progress', { level: 'error', message: '版本切换失败: ' + (error.message || error) });
+      }
+      throw error;
+    }
   });
 
   ipcMain.handle('dsh:doctor', async () => {
@@ -469,7 +712,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
     // npm
     try {
-      const npmResult = await execa('npm', ['--version'], { reject: false, timeout: 10000 });
+      const npmResult = await execa('npm', ['--version'], { reject: false, timeout: 10000, windowsHide: true });
       results.push({
         name: 'npm 版本',
         status: npmResult.stdout ? 'ok' : 'error',
@@ -482,7 +725,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
     // pnpm
     try {
-      const pnpmResult = await execa('pnpm', ['--version'], { reject: false, timeout: 10000 });
+      const pnpmResult = await execa('pnpm', ['--version'], { reject: false, timeout: 10000, windowsHide: true });
       results.push({
         name: 'pnpm 版本',
         status: pnpmResult.stdout ? 'ok' : 'warning',
@@ -754,11 +997,37 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return { success: false, error: lastErr || '无法连接到模型服务，请检查 API Base URL 和 Key', candidates };
   });
 
+  // ====== 配置备份/还原 ======
+  ipcMain.handle('config:create-backup', async (_, reason) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.createBackup(reason);
+  });
+
+  ipcMain.handle('config:list-backups', async () => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.listBackups('settings');
+  });
+
+  ipcMain.handle('config:restore-backup', async (_, nameOrIndex) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.restoreBackup(nameOrIndex);
+  });
+
+  ipcMain.handle('config:validate', async () => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.checkConfig();
+  });
+
+
   // ====== MCP 服务端管理 ======
   ipcMain.handle('mcp:list', async (_, profile) => {
     const { MCPServerManager } = await loadCore();
     const mgr = new MCPServerManager({ profile });
-    return mgr.list();
+    return mgr.list(profile);
   });
 
   ipcMain.handle('mcp:get', async (_, serverName, profile) => {
@@ -987,7 +1256,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       );
       return pkg.version;
     } catch {
-      return '1.3.3';
+      return '1.3.5';
     }
   });
 
@@ -1246,7 +1515,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15_000);
         const resp = await fetch(url, {
-          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.2.3' },
+          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.3.5' },
           signal: controller.signal,
         });
         clearTimeout(timeout);

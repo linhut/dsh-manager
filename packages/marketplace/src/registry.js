@@ -24,6 +24,28 @@ let composedCache = null;
 let composedCacheTime = 0;
 const COMPOSED_CACHE_TTL = 60_000; // 60 秒
 
+/**
+ * 从 Node 报错的模块路径中提取包名
+ * 输入: 'C:\Users\...\.dsh\profiles\web\node_modules\shiki\dist\core.mjs'
+ *       '...node_modules\@deepseek-ai\dsh-client-ui-primitives\lib\index.js'
+ * 输出: 'shiki' / '@deepseek-ai/dsh-client-ui-primitives'
+ * @param {string} p - Cannot find module 后的路径
+ * @returns {string|null}
+ */
+function extractPkgNameFromPath(p) {
+  if (!p || typeof p !== 'string') return null;
+  // 取 node_modules 之后的部分
+  const idx = p.indexOf('node_modules');
+  const rest = idx >= 0 ? p.slice(idx + 'node_modules'.length) : p;
+  const parts = rest.split(/[\\/]/).filter(Boolean);
+  if (parts.length === 0) return null;
+  // scoped 包（@scope/name）占两段
+  if (parts[0].startsWith('@') && parts.length >= 2) {
+    return parts[0] + '/' + parts[1];
+  }
+  return parts[0];
+}
+
 export class PluginRegistry {
   /**
    * @param {object} [options]
@@ -544,28 +566,40 @@ export class PluginRegistry {
 
     const invalid = [];
     const seen = new Set();
-    const addIssue = (id, reason) => {
+    const addIssue = (id, reason, kind = 'plugin') => {
       if (seen.has(id)) return;
       seen.add(id);
-      invalid.push({ id, reason });
+      invalid.push({ id, reason, kind });
     };
 
     // 从 stderr 提取运行时加载失败的插件（最可靠信号：DSH 自己报错说哪个插件无效）
     if (stderr) {
-      const re = /failed to apply loader entry [^(]+\(([^)]+)\)/g;
+      // ① 插件加载失败：failed to apply/import loader entry <机制名> (<插件ID>)
+      //    注意：括号内可能是 undefined（如损坏 include 条目 "ui-skin-stock (undefined)"），
+      //    此时回退使用 loader entry 名（ui-skin-stock）；cordis:include 等机制名需过滤
+      const re = /failed to (?:apply|import) loader entry\s+([^\s(]+)(?:\s*\(([^)]*)\))?/g;
       let m;
       while ((m = re.exec(stderr)) !== null) {
-        const id = m[1].trim();
-        if (id && !isSystemComponent(id)) {
+        let id = (m[2] || '').trim();
+        // 括号内是 cordis 机制名（如 include (cordis:include)）→ loader entry 为机制本身，跳过
+        if (id && /^cordis:/i.test(id)) {
+          continue;
+        }
+        // 括号值无效（undefined / 空）→ 使用 loader entry 名（如 ui-skin-stock）
+        if (!id || id === 'undefined') {
+          id = (m[1] || '').trim();
+        }
+        if (id && !isSystemComponent(id) && !/^cordis:/i.test(id)) {
           addIssue(id, '启动时加载失败（stderr 指示）');
         }
       }
-      // ERR_MODULE_NOT_FOUND 中的包名
-      const re2 = /ERR_MODULE_NOT_FOUND[^\"]*"([^\"]+)"/g;
+      // ② 模块缺失：Cannot find module 'C:\...\node_modules\shiki\dist\core.mjs'
+      //    （Node 报错为单引号路径，需从路径中提取包名，标记为 module 类型以便自动补齐）
+      const re2 = /Cannot find module ['"]([^'"]+)['"]/g;
       while ((m = re2.exec(stderr)) !== null) {
-        const id = m[1].trim();
-        if (id && !isSystemComponent(id)) {
-          addIssue(id, '模块缺失（stderr 指示）');
+        const pkg = extractPkgNameFromPath(m[1]);
+        if (pkg && !isSystemComponent(pkg)) {
+          addIssue(pkg, '模块缺失（stderr 指示）', 'module');
         }
       }
     }
@@ -648,7 +682,11 @@ export class PluginRegistry {
             continue;
           }
           // 校验 dsh.bundle 声明（合法 bundle 的必要标记）
-          if (!nmPkg.dsh?.bundle) {
+          // 关键：仅对 bundles 列表中的条目强制要求。普通 dependencies（如 shiki/katex）
+          // 是 DSH 的纯库依赖，官方规范明确"plain library is fine"，若此处误判为无效插件，
+          // fixInvalidPlugins 会执行 `dsh plugin remove <id>` 把真实依赖卸载，导致
+          // "Cannot find package 'shiki'" 之类启动失败。
+          if (source === 'bundles' && !nmPkg.dsh?.bundle) {
             addIssue(name, '未声明 dsh.bundle（不是合法 bundle，加载时可能报 "invalid plugin"）');
           }
         } catch {
@@ -684,6 +722,14 @@ export class PluginRegistry {
     const patchFile = join(profilesDir, profile, 'cordis.patch.yml');
 
     for (const item of invalid) {
+      // 关键保护：kind === 'module' 的条目是"缺失模块"（如 shiki 传递依赖），
+      // 只能通过复制/安装补齐，绝不能执行 dsh plugin remove / 从 dependencies 删除，
+      // 否则会把 DSH 真实依赖卸载掉，导致 "Cannot find package 'shiki'" 启动失败。
+      if (item.kind === 'module') {
+        failed.push({ id: item.id, error: '缺失模块（需补齐安装，不应移除）' });
+        continue;
+      }
+
       // ① 官方 remove 命令
       let removed = false;
       try {
@@ -1026,9 +1072,24 @@ export class PluginRegistry {
           result.push(line);
           i++;
         }
-        const newContent = result.join('\n');
-        if (newContent !== original) {
-          writeFileSync(patchFile, newContent, 'utf-8');
+        // 关键：cordis.patch.yml 必须始终是"顶层 YAML 数组"。
+        // 若清理后没有任何有效条目（只剩注释/空行，如机器级补丁文件仅存
+        // 一条损坏 insert 被移除的场景），必须写回顶层空数组 []，
+        // 否则 DSH 启动时报 "must be a top-level YAML array of loader patch entries"。
+        // 注意：文件可能已自带 []（如 profile 级默认模板），且历史上可能被
+        // 重复追加成 []\n[]（YAML 重复文档报错）——无条目时一律重建为
+        // 「注释行 + 单个 []」，既保证数组不变量又去除重复。
+        const hasEntries = result.some(l => l.trim().startsWith('-'));
+        let finalContent = result.join('\n').trimEnd();
+        if (!hasEntries) {
+          const comments = result
+            .filter(l => l.trim().startsWith('#'))
+            .join('\n')
+            .trimEnd();
+          finalContent = (comments ? comments + '\n' : '') + '[]';
+        }
+        if (finalContent !== original.trimEnd()) {
+          writeFileSync(patchFile, finalContent + '\n', 'utf-8');
         }
       } catch (e) {
         console.warn('清理 patch 文件失败:', patchFile, e.message);
