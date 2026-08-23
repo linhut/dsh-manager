@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve, sep } from "node:path";
 import { execa } from "execa";
 import { DSH_PATHS, getDSHPath } from "./dsh-utils.js";
 
@@ -94,8 +94,16 @@ export async function getGlobalDSHNodeModules() {
   } catch { return null; }
 }
 
+/** 校验 profile 名称合法性，防止路径穿越 */
+function validateProfileName(profile) {
+  if (typeof profile !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(profile)) {
+    throw new Error('非法的 profile 名称: ' + JSON.stringify(profile));
+  }
+}
+
 export function getProfileNodeModules(profile) {
   if (profile === undefined) profile = "web";
+  validateProfileName(profile);
   return join(DSH_PATHS.profiles, profile, "node_modules");
 }
 
@@ -213,9 +221,22 @@ function findInNodeModules(nmRoot, name, depth = 0) {
 export async function copyModuleToProfile(profile, moduleName) {
   try {
     if (!moduleName) return { success: false, method: 'none', error: '模块名为空' };
-    const profileDir = join(DSH_PATHS.profiles, profile);
+    // 安全校验：moduleName 必须是合法 npm 包名（含 @scope 形式），禁止路径穿越
+    const PKG_NAME_RE = /^@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-~][a-z0-9-._~]*$|^[a-z0-9-~][a-z0-9-._~]*$/;
+    if (!PKG_NAME_RE.test(moduleName)) {
+      return { success: false, method: 'none', error: '非法的包名: ' + moduleName };
+    }
+    // 安全校验：profile 必须是合法名称（禁止路径穿越）
+    if (!/^[a-zA-Z0-9_-]+$/.test(profile)) {
+      return { success: false, method: 'none', error: '非法的 profile 名称: ' + profile };
+    }
+    const profileDir = resolve(join(DSH_PATHS.profiles, profile));
     const profileNm = join(profileDir, "node_modules");
-    const target = join(profileNm, moduleName);
+    const target = resolve(join(profileNm, moduleName));
+    // 防御：确保 target 仍位于预期的 profile node_modules 内
+    if (!target.startsWith(profileNm + sep)) {
+      return { success: false, method: 'none', error: '安全校验失败: 路径已逃逸' };
+    }
 
     // ① 已完整安装 → 无需处理
     if (isPackageUsable(profileNm, moduleName)) {
@@ -289,6 +310,7 @@ export async function copyModuleToProfile(profile, moduleName) {
  */
 export async function repairProfileDependencies(profile) {
   if (profile === undefined) profile = "web";
+  validateProfileName(profile);
   const profileDir = join(DSH_PATHS.profiles, profile);
   const pkgFile = join(profileDir, "package.json");
   if (!existsSync(pkgFile)) {
@@ -347,6 +369,7 @@ export async function repairProfileDependencies(profile) {
 
 export async function checkProfileIntegrity(profile, options) {
   if (profile === undefined) profile = "web";
+  validateProfileName(profile);
   if (options === undefined) options = {};
   const { includeSystem = false } = options;
   const issues = [];
@@ -393,6 +416,7 @@ export async function checkProfileIntegrity(profile, options) {
 
 export async function repairProfileFromGlobal(profile, options) {
   if (profile === undefined) profile = "web";
+  validateProfileName(profile);
   if (options === undefined) options = {};
   const { dryRun = false, includeSystem = false, onProgress } = options;
   const repaired = [], failed = [], skipped = [];

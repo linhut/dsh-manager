@@ -25,7 +25,8 @@ let enabled = true;
  * @param {boolean} force - 强制启用（忽略环境变量）
  */
 export function initDebugLog(force = false) {
-  enabled = true;
+  enabled = force;
+  if (!enabled) return;
 
   // 确保目录存在
   const dir = join(DSH_HOME(), 'manager');

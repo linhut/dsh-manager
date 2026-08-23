@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execa } from 'execa';
-import { resolveDSHCommand, isSystemComponent, isExternalPlugin, classifyPackage } from '../../core/src/index.js';
+import { resolveDSHCommand, isSystemComponent, isExternalPlugin, classifyPackage, compareDSHVersions } from '../../core/src/index.js';
 import { GitHubAPI } from './github-api.js';
 
 const DSH_HOME = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -737,6 +737,7 @@ export class PluginRegistry {
         const { exitCode } = await execa(dshCmd, ['plugin', '--profile', profile, 'remove', item.id], {
           reject: false,
           timeout: 60_000,
+          windowsHide: true,
         });
         removed = exitCode === 0;
       } catch {}
@@ -802,6 +803,7 @@ export class PluginRegistry {
       const { stdout } = await execa(dshCmd, ['--profile', profile, '--dump-config'], {
         reject: false,
         timeout: 30_000,
+        windowsHide: true,
       });
       if (!stdout) throw new Error('dump-config 无输出');
 
@@ -931,11 +933,24 @@ export class PluginRegistry {
       if (releases.length > 0) {
         const latestTag = releases[0].tag.replace(/^v/, '');
         const currentVersion = plugin.version;
-        // 按版本号大小判断是否有更新（而非字符串比较，避免 v1.10.0 < v1.9.0 误判）
-        const hasUpdate = this._compareVersions(latestTag, currentVersion) > 0;
+        // 使用已修复的语义化版本比较（支持 alpha/beta/rc 预发布类型排序）
+        const hasUpdate = compareDSHVersions(latestTag, currentVersion) > 0;
         
         return { hasUpdate, currentVersion, latestVersion: latestTag };
       }
+    }
+
+    // 从 npm 获取最新版本
+    if (plugin.source && plugin.source.startsWith('npm:')) {
+      const packageName = plugin.source.replace('npm:', '');
+      try {
+        const { stdout } = await execa('npm', ['view', packageName, 'version', '--json'], { reject: false, timeout: 15_000, windowsHide: true });
+        if (stdout) {
+          const latestVersion = JSON.parse(stdout).replace(/^v/, '');
+          const hasUpdate = compareDSHVersions(latestVersion, plugin.version) > 0;
+          return { hasUpdate, currentVersion: plugin.version, latestVersion };
+        }
+      } catch {}
     }
 
     return { hasUpdate: false, currentVersion: plugin.version, latestVersion: plugin.version };
@@ -1171,8 +1186,8 @@ export class PluginRegistry {
                 let j = i + 1;
                 let itemLines = [line];
                 while (j < lines.length && /^\s+/.test(lines[j]) && indentLen === (lines[j].match(/^\s*/) || [''])[0].length) {
-                  // 同层级缩进的键值行属于当前条目
-                  break;
+                  itemLines.push(lines[j]);
+                  j++;
                 }
                 if (disabled && !/disabled\s*:/.test(itemLines.join('\n'))) {
                   out.push(' '.repeat(blockIndent + 2) + 'disabled: true');

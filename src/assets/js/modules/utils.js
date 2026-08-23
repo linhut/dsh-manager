@@ -302,7 +302,7 @@ function showConfirm(title, message, options = {}) {
       '</div></div>';
     document.body.appendChild(overlay);
     
-    const cleanup = () => { if (overlay.parentNode) overlay.remove(); };
+    const cleanup = () => { if (overlay.parentNode) overlay.remove(); if (overlay._cleanup) overlay._cleanup(); };
     
     document.getElementById('confirmOk').onclick = () => { cleanup(); resolve(true); };
     document.getElementById('confirmCancel').onclick = () => { cleanup(); resolve(false); };
@@ -337,8 +337,14 @@ function showAlert(title, message, type = 'info') {
       '</div></div>';
     document.body.appendChild(overlay);
     
-    document.getElementById('alertOk').onclick = () => { overlay.remove(); resolve(); };
-    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(); } };
+    const keyHandler = (e) => {
+      if (e.key === 'Escape' || e.key === 'Enter') { overlay.remove(); resolve(); document.removeEventListener('keydown', keyHandler); }
+    };
+    document.addEventListener('keydown', keyHandler);
+    overlay._cleanup = () => document.removeEventListener('keydown', keyHandler);
+
+    document.getElementById('alertOk').onclick = () => { overlay.remove(); resolve(); if (overlay._cleanup) overlay._cleanup(); };
+    overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(); if (overlay._cleanup) overlay._cleanup(); } };
   });
 }
 
@@ -410,8 +416,9 @@ class TimeoutManager {
 const timeoutManager = new TimeoutManager();
 
 // ====== 日志系统 ======
-
-const debugLog = {
+// 注意：debug.js 也定义了一份 debugLog（功能更完整），在 index.html 中紧随本文件加载
+// 这里用 window.debugLog 避免 const 重复声明冲突
+window.debugLog = window.debugLog || {
   log(level, message) {
     const prefix = '[' + new Date().toLocaleTimeString() + '] [' + level.toUpperCase() + ']';
     if (level === 'error') console.error(prefix, message);

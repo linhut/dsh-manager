@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('dshManager', {
 
   // ====== DSH 管理 ======
   getDSHInfo: () => ipcRenderer.invoke('dsh:get-info'),
+  getDSHDetectionDetail: () => ipcRenderer.invoke('dsh:get-detection-detail'),
   installDSH: (version, registry, tool) => ipcRenderer.invoke('dsh:install', version, registry, tool),
   uninstallDSH: () => ipcRenderer.invoke('dsh:uninstall'),
   checkDSHUpdate: () => ipcRenderer.invoke('dsh:check-update'),

@@ -71,6 +71,27 @@ function isSeqItem(content) {
 }
 
 /**
+ * 剥离 YAML 行内注释（引号内 '#' 不视为注释），如 'key: value # comment' → 'key: value'
+ * @private
+ */
+function stripInlineComment(line) {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === '#' && !inSingle && !inDouble) {
+      // YAML 行内注释：# 前必须有空白（或在一行开头），否则是值的一部分
+      if (i === 0 || line[i - 1] === ' ' || line[i - 1] === '\t') {
+        return line.slice(0, i).trimEnd();
+      }
+    }
+  }
+  return line;
+}
+
+/**
  * 把（已过滤注释/空行的）行集合构建为缩进树
  * @private
  */
@@ -80,8 +101,11 @@ function buildIndentTree(lines) {
   for (const line of lines) {
     const trimmed = line.trimEnd();
     if (!trimmed.trim() || trimmed.trim().startsWith('#')) continue;
+    // 剥离行内注释后再处理（YAML 中 # 前有空格即注释开始）
+    const noComment = stripInlineComment(trimmed.trim());
+    if (!noComment) continue;
     const indent = line.search(/\S/);
-    const node = { indent, content: trimmed.trim(), children: [] };
+    const node = { indent, content: noComment, children: [] };
     while (stack.length > 1 && stack[stack.length - 1].indent >= indent) {
       stack.pop();
     }

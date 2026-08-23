@@ -6,10 +6,15 @@
  */
 
 import { execa } from 'execa';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS, getDSHVersion, isDSHInstalled, compareDSHVersions } from './dsh-utils.js';
+
+/** 归一化版本号：去掉 v 前缀与首尾空白，用于等值比较 */
+function normalizeVersion(v) {
+  return String(v || '').trim().replace(/^v/i, '');
+}
 
 export class DSHVersionManager {
   constructor() {
@@ -26,7 +31,8 @@ export class DSHVersionManager {
     
     return versions.map(v => ({
       ...v,
-      isCurrent: v.version === current,
+      // 语义化比较（忽略 v 前缀差异），比字符串 === 更健壮
+      isCurrent: v.version ? normalizeVersion(v.version) === normalizeVersion(current) : false,
     }));
   }
 
@@ -34,16 +40,19 @@ export class DSHVersionManager {
    * 记录一个版本
    * @param {string} version
    */
-  async recordVersion(version) {
+  async recordVersion(version, installPath = null) {
     const versions = this._readVersions();
-    
+
     const existing = versions.find(v => v.version === version);
     if (existing) {
       existing.installedAt = new Date().toISOString();
+      // 记录实际安装路径（用于检测兜底与诊断）
+      if (installPath) existing.path = installPath;
     } else {
       versions.push({
         version,
         installedAt: new Date().toISOString(),
+        ...(installPath ? { path: installPath } : {}),
       });
     }
 
@@ -74,7 +83,7 @@ export class DSHVersionManager {
     try {
       const { stdout } = await execa('npm', [
         'view', '@deepseek-ai/dsh', 'dist-tags', '--json',
-      ], { timeout: 15_000, reject: false });
+      ], { timeout: 15_000, reject: false, windowsHide: true });
 
       if (stdout && stdout.trim()) {
         const tags = JSON.parse(stdout);
@@ -156,7 +165,11 @@ export class DSHVersionManager {
   _readVersions() {
     try {
       if (existsSync(this.versionsFile)) {
-        return JSON.parse(readFileSync(this.versionsFile, 'utf-8'));
+        const data = JSON.parse(readFileSync(this.versionsFile, 'utf-8'));
+        // 校验必须是数组（防止坏文件/异常结构导致 find/filter 崩溃）
+        if (Array.isArray(data)) return data;
+        // 非法结构：备份坏文件并重置（避免反复解析失败）
+        try { renameSync(this.versionsFile, this.versionsFile + '.corrupt-' + Date.now()); } catch {}
       }
     } catch {}
     return [];

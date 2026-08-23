@@ -120,9 +120,9 @@ export async function installPortableNode(opts = {}) {
     if (process.platform === 'win32') {
       // Windows 用系统 tar.exe（内置 bsdtar >= 10.1803），提取 zip 文件
       const tarPath = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
-      await execa(tarPath, ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000 });
+      await execa(tarPath, ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000, windowsHide: true });
     } else {
-      await execa('tar', ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000 });
+      await execa('tar', ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000, windowsHide: true });
     }
   } catch (error) {
     // 解压失败清理残留
@@ -140,7 +140,7 @@ export async function installPortableNode(opts = {}) {
     ? join(nodeDir, 'npm.cmd')
     : join(nodeDir, 'bin', 'npm');
   try {
-    const { stdout } = await execa(bin, ['--version'], { timeout: 10_000 });
+    const { stdout } = await execa(bin, ['--version'], { timeout: 10_000, windowsHide: true });
     if (!stdout || !stdout.trim()) throw new Error('node --version 无输出');
     log(`✅ 便携版 Node ${stdout.trim()} 安装成功`);
     return { success: true, version: stdout.trim(), bin, npmBin };
@@ -170,7 +170,7 @@ export async function getPortableNodeInfo() {
     : join(DSH_PATHS.envNodeDir, 'bin', 'node');
   if (!existsSync(bin)) return { installed: false, version: null, bin: null };
   try {
-    const { stdout } = await execa(bin, ['--version'], { reject: false, timeout: 10_000 });
+    const { stdout } = await execa(bin, ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
     return { installed: true, version: (stdout || '').trim() || null, bin };
   } catch {
     return { installed: false, version: null, bin: null };

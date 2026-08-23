@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { shell, BrowserWindow, dialog } from 'electron';
+import { shell, BrowserWindow, dialog, clipboard, app } from 'electron';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,9 +74,12 @@ async function spawnDSHWeb() {
   if (rt.lowMemory) {
     nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
   }
-  const child = execa('node', [cliPath, ...startArgs], {
+  // 注入 --require 无窗口补丁（强制所有子进程 windowsHide: true，根治 bash 弹窗）
+  const patchPath = join(__dirname, 'no-window-patch.cjs');
+  const startArgsWithPatch = ['--require', patchPath, cliPath, ...startArgs];
+  const child = execa('node', startArgsWithPatch, {
     detached: true,                // 所有平台脱离父进程树，防止被回收
-    windowsHide: false,            // 显示 DSH 控制台窗口（便于查看 DSH 实时日志）
+    windowsHide: !nodeEnv.DSH_SHOW_CONSOLE, // 默认隐藏；设置 DSH_SHOW_CONSOLE=1 可显示控制台窗口
     stdio: ['ignore', 'pipe', 'pipe'],
     env: nodeEnv,
     reject: false,                 // 不抛异常，由调用方统一处理失败
@@ -119,6 +122,11 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:get-info', async () => {
     const { getDSHInfo } = await loadCore();
     return await getDSHInfo();
+  });
+
+  ipcMain.handle('dsh:get-detection-detail', async () => {
+    const { getDSHDetectionDetail } = await loadCore();
+    return getDSHDetectionDetail();
   });
 
   ipcMain.handle('dsh:install', async (_, version, registry, tool = 'auto') => {
@@ -607,9 +615,11 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       if (rt.lowMemory) {
         nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
       }
-      const child = execa('node', [cliPath, ...startArgs], {
+      const patchPath = join(__dirname, 'no-window-patch.cjs');
+      const startArgsWithPatch = ['--require', patchPath, cliPath, ...startArgs];
+      const child = execa('node', startArgsWithPatch, {
         detached: true,
-        windowsHide: false,        // 显示 DSH 控制台窗口
+        windowsHide: !nodeEnv.DSH_SHOW_CONSOLE, // 默认隐藏；设置 DSH_SHOW_CONSOLE=1 可显示
         stdio: ['ignore', 'pipe', 'pipe'],
         env: nodeEnv,
         reject: false,
@@ -684,9 +694,14 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     });
     try {
       const result = await installer.switchVersion(version);
-      // 记录切换后的版本
+      // 记录切换后的版本（含安装路径，供检测兜底与诊断）
       const vm = new DSHVersionManager();
-      if (result.newVersion) await vm.recordVersion(result.newVersion);
+      let dshPath = null;
+      try {
+        const { getDSHPath } = await loadCore();
+        dshPath = await getDSHPath();
+      } catch {}
+      if (result.newVersion) await vm.recordVersion(result.newVersion, dshPath);
       return result;
     } catch (error) {
       // 切换失败：进度回显失败原因
@@ -1246,17 +1261,37 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   // ====== 系统 ======
   ipcMain.handle('shell:open-external', async (_, url) => {
-    return shell.openExternal(url);
+    if (!url) return { success: false, error: 'URL 为空' };
+    // 仅允许 http/https/mailto 协议，防止 file:/// smb:// 自定义协议被利用
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+        return { success: false, error: '不允许的协议: ' + parsed.protocol };
+      }
+    } catch {
+      return { success: false, error: '无效的 URL' };
+    }
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
   });
 
   ipcMain.handle('app:get-version', () => {
+    // 优先通过 Electron app.getVersion() 获取（打包后版本自动匹配），文件读取仅作开发兜底
+    try {
+      const v = app.getVersion();
+      if (v && v !== '0.0.0' && v !== '0.0.0.0') return v;
+    } catch {}
     try {
       const pkg = JSON.parse(
         readFileSync(join(__dirname, '../package.json'), 'utf-8')
       );
       return pkg.version;
     } catch {
-      return '1.3.5';
+      return '0.0.0';
     }
   });
 
@@ -1264,13 +1299,12 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   // ====== 剪贴板 ======
   ipcMain.handle('app:copy-to-clipboard', async (_, text) => {
     try {
-      const { clipboard } = require('electron');
       clipboard.writeText(text);
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
     }
-  }),
+  });
   ipcMain.handle('app:check-pnpm', async () => {
     const { checkPnpm, getPnpmInstallGuide } = await loadCore();
     const result = await checkPnpm();
@@ -1296,6 +1330,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         timeout: 180_000,
         reject: false,
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       });
       child.stdout?.on('data', (chunk) => {
         const text = String(chunk).trim();
@@ -1378,7 +1413,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       };
       pushProgress({ level: 'info', message: `开始安装 Node.js（平台: ${platform}）...` });
 
-      const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'] };
+      const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true };
       let child;
       if (platform === 'win32') {
         child = execa('winget', ['install', '--id', 'OpenJS.NodeJS.LTS', '--silent', '--accept-source-agreements', '--accept-package-agreements'], cmdOptions);
@@ -1424,7 +1459,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       };
       pushProgress({ level: 'info', message: `开始安装 git（平台: ${platform}）...` });
 
-      const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'] };
+      const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true };
       let child;
       if (platform === 'win32') {
         child = execa('winget', ['install', '--id', 'Git.Git', '--silent', '--accept-source-agreements', '--accept-package-agreements'], cmdOptions);
@@ -1515,7 +1550,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15_000);
         const resp = await fetch(url, {
-          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.3.5' },
+          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/' + currentVersion },
           signal: controller.signal,
         });
         clearTimeout(timeout);

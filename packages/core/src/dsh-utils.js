@@ -75,13 +75,63 @@ export const DSH_PATHS = {
  * 修复场景：npm uninstall 因 ENOTEMPTY 残留的 package.json（入口文件已删）会被
  * 视为未安装，避免前端误报"已安装"导致无法重新安装。
  */
+// 记录最近一次 DSH 检测的候选明细（供诊断）
+let lastDetectionAttempts = [];
+
+// resolveDSHPackageJson 短 TTL 缓存（getDSHInfo 一次调用会触发多次解析，避免重复子进程探测）
+let pkgJsonCache = { time: 0, path: null };
+const PKG_JSON_CACHE_TTL = 10_000; // 10s
+
 async function resolveDSHPackageJson() {
+  // 短 TTL 缓存：10s 内复用上次结果（避免 getDSHInfo 内多次调用重复探测）
+  const now = Date.now();
+  if (pkgJsonCache.path !== null && (now - pkgJsonCache.time) < PKG_JSON_CACHE_TTL) {
+    lastDetectionAttempts.push({ path: pkgJsonCache.path, exists: true, valid: true, reason: '缓存命中（10s 内已探测）' });
+    return pkgJsonCache.path;
+  }
+
   const candidates = [];
+  lastDetectionAttempts = []; // 每次检测重置
 
   // ① 优先检查 DSH_HOME 下的 node_modules（本地部署场景）
   candidates.push(join(DSH_PATHS.home, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
 
-  // ② 通过 npm root -g 获取 npm 全局路径
+  // ② Windows 标准 npm 全局目录（%APPDATA%\npm\node_modules，不依赖 npm 在 PATH）
+  //    Electron GUI 应用的 PATH 可能不含用户 shell 的 npm/pnpm 目录，此兜底保证检测不依赖命令可用性
+  if (process.platform === 'win32') {
+    try {
+      const appData = process.env.APPDATA;
+      if (appData) {
+        candidates.push(join(appData, 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+      }
+      const localAppData = process.env.LOCALAPPDATA;
+      if (localAppData) {
+        // pnpm 默认全局目录：%LOCALAPPDATA%\pnpm\node_modules
+        candidates.push(join(localAppData, 'pnpm', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+      }
+    } catch {}
+  }
+
+  // ③ 通过 .npmrc / 环境变量读取自定义 npm prefix（覆盖 E:\npm-global 等自定义安装）
+  //    Electron GUI 应用的 PATH 可能不含 npm，命令探测失败但配置文件仍可读取
+  try {
+    let prefix = null;
+    try {
+      const npmrcPath = join(homedir(), '.npmrc');
+      if (existsSync(npmrcPath)) {
+        const content = readFileSync(npmrcPath, 'utf-8');
+        const m = /^\s*prefix\s*=\s*(.+?)\s*$/m.exec(content);
+        if (m) prefix = m[1].trim();
+      }
+    } catch {}
+    if (!prefix && process.env.npm_config_prefix) prefix = process.env.npm_config_prefix;
+    if (!prefix && process.env.NPM_CONFIG_PREFIX) prefix = process.env.NPM_CONFIG_PREFIX;
+    if (prefix) {
+      candidates.push(join(prefix, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+    }
+  } catch {}
+
+  // ④ 通过 npm root -g 获取 npm 全局路径（npm 在 PATH 且非自定义配置场景）
   try {
     const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     if (globalRoot && globalRoot.trim()) {
@@ -89,7 +139,7 @@ async function resolveDSHPackageJson() {
     }
   } catch {}
 
-  // ③ 通过 pnpm root -g 获取 pnpm 全局路径（npm 不可用时的备选）
+  // ④ 通过 pnpm root -g 获取 pnpm 全局路径（npm 不可用时的备选）
   try {
     const { stdout: pnpmRoot } = await execa('pnpm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     if (pnpmRoot && pnpmRoot.trim()) {
@@ -97,27 +147,32 @@ async function resolveDSHPackageJson() {
     }
   } catch {}
 
-  // ④ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
+  // ⑤ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
   try {
     const { stdout } = await execa('node', [
       '-e', 'try { console.log(require.resolve("@deepseek-ai/dsh/package.json")); } catch(e) { console.log(""); }'
-    ], { reject: false, timeout: 10_000 });
+    ], { reject: false, timeout: 10_000, windowsHide: true });
     if (stdout && stdout.trim().length > 0) candidates.push(stdout.trim());
   } catch {}
 
-  // ⑤ 通过 dsh 命令本身查找：兼容 npm/pnpm 不在 PATH 但 dsh 在 PATH 的场景
+  // ⑥ 通过 dsh 命令本身查找：从命令所在目录向上逐级搜索 node_modules/@deepseek-ai/dsh
+  //    Windows: dsh.cmd 在 <prefix>，node_modules 是 <prefix> 的子目录
+  //    POSIX:   dsh 在 <prefix>/bin，node_modules 在 <prefix>/lib/node_modules 或 <prefix>/node_modules
+  //    向上遍历 5 级可覆盖所有常见布局
   try {
     const dshCmd = await resolveDSHCommand();
     if (dshCmd && dshCmd !== 'dsh' && existsSync(dshCmd)) {
-      const cmdDir = dirname(dshCmd);
-      // 直接父级 node_modules（npm 全局布局：bin 目录与 node_modules 同级）
-      candidates.push(join(cmdDir, '..', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
-      // 双层父级（某些 pnpm/其他布局）
-      candidates.push(join(cmdDir, '..', '..', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+      let dir = dirname(dshCmd);
+      for (let i = 0; i < 5; i++) {
+        candidates.push(join(dir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+        const parent = dirname(dir);
+        if (parent === dir) break; // 已到根目录
+        dir = parent;
+      }
     }
   } catch {}
 
-  // ⑥ 兜底：检查 DSH_HOME 下是否有已记录的版本文件（已安装记录）
+  // ⑦ 兜底：检查 DSH_HOME 下是否有已记录的版本文件（已安装记录）
   try {
     const versionsPath = join(DSH_PATHS.home, 'versions.json');
     if (existsSync(versionsPath)) {
@@ -133,8 +188,18 @@ async function resolveDSHPackageJson() {
     }
   } catch {}
 
+  // 统一记录每个候选的检查结果（path 去重，保留首次记录）
+  const seen = new Set();
+  const record = (p, detail) => {
+    const key = String(p);
+    if (seen.has(key)) return;
+    seen.add(key);
+    lastDetectionAttempts.push({ path: p, ...detail });
+  };
+
   for (const pkgPath of candidates) {
-    if (!pkgPath || !existsSync(pkgPath)) continue;
+    const exists = !!pkgPath && existsSync(pkgPath);
+    if (!pkgPath || !exists) { record(pkgPath, { exists: false, valid: false, reason: '路径不存在' }); continue; }
     // 校验安装可用性：package.json 可解析且 bin 入口文件存在（残留/损坏目录视为未安装）
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
@@ -143,18 +208,34 @@ async function resolveDSHPackageJson() {
         ? binEntry
         : (binEntry && typeof binEntry === 'object' ? (binEntry.dsh || Object.values(binEntry)[0]) : null);
       if (binFile) {
-        if (existsSync(join(dirname(pkgPath), binFile))) return pkgPath;
+        if (existsSync(join(dirname(pkgPath), binFile))) {
+          record(pkgPath, { exists: true, valid: true, version: pkg.version || null, reason: 'package.json + bin 入口均存在' });
+          pkgJsonCache = { time: Date.now(), path: pkgPath };
+          return pkgPath;
+        }
         // bin 入口缺失 → 损坏安装，跳过（继续探测下一个候选）
+        record(pkgPath, { exists: true, valid: false, reason: 'bin 入口缺失（' + binFile + '）' });
         continue;
       }
+      record(pkgPath, { exists: true, valid: true, version: pkg.version || null, reason: 'package.json 存在' });
+      pkgJsonCache = { time: Date.now(), path: pkgPath };
       return pkgPath;
     } catch {
       // package.json 损坏 → 视为未安装
+      record(pkgPath, { exists: true, valid: false, reason: 'package.json 损坏' });
       continue;
     }
   }
 
   return null;
+}
+
+/**
+ * 获取最近一次 DSH 检测尝试的明细（供前端诊断显示）
+ * @returns {{attempts: Array<{path: string|null, exists: boolean, valid?: boolean, version?: string|null, reason: string}>, timestamp: number}}
+ */
+export function getDSHDetectionDetail() {
+  return { attempts: lastDetectionAttempts, timestamp: Date.now() };
 }
 
 /**
@@ -212,11 +293,15 @@ export async function resolveDSHCommand() {
     }
   } catch {}
 
-  // ② 通过 npm root -g 推导全局 bin 目录（Windows: <prefix> 下有 dsh.cmd；POSIX: <prefix>/bin/dsh）
+  // ② 通过 npm root -g 推导全局 bin 目录
+  //     Windows: root -g → C:\Users\...\npm\node_modules → dirname → C:\Users\...\npm（bin 在此目录）
+  //     POSIX:   root -g → /usr/local/lib/node_modules → dirname(dirname) → /usr/local（bin 在 /usr/local/bin）
   try {
     const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     if (globalRoot && globalRoot.trim()) {
-      const prefix = dirname(globalRoot.trim());
+      const prefix = process.platform === 'win32'
+        ? dirname(globalRoot.trim())
+        : dirname(dirname(globalRoot.trim()));
       const candidates = process.platform === 'win32'
         ? [join(prefix, 'dsh.cmd'), join(prefix, 'dsh.exe'), join(prefix, 'dsh')]
         : [join(prefix, 'bin', 'dsh'), join(prefix, 'dsh')];
@@ -260,7 +345,7 @@ export async function getDSHInfo() {
   // 获取 npm 全局路径
   let npmGlobalPath = null;
   try {
-    const { stdout } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+    const { stdout } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     npmGlobalPath = stdout?.trim() || null;
   } catch {}
 
@@ -290,12 +375,17 @@ export async function getDSHInfo() {
  * @returns {number} a<b 返回负数，a>b 返回正数，相等返回 0
  */
 export function compareDSHVersions(a, b) {
+  // 预发布类型优先级：alpha < beta < rc/next < 正式版（semver 语义）
+  const TYPE_WEIGHT = { alpha: 1, beta: 2, rc: 3, next: 3 };
+
+  // 完整匹配并捕获类型 + 序号（$ 锚定避免 0.1.0-rc.10.1 被截断为 rc.10）
   const parse = (v) => {
-    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(?:rc|beta|alpha|next)\.(\d+))?/i.exec(String(v || '').trim());
-    if (!m) return { nums: [0, 0, 0], pre: Infinity };
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc|next)\.(\d+))?$/i.exec(String(v || '').trim());
+    if (!m) return { nums: [0, 0, 0], type: Infinity, pre: Infinity };
     return {
       nums: [Number(m[1]), Number(m[2]), Number(m[3])],
-      pre: m[4] !== undefined ? Number(m[4]) : Infinity,
+      type: m[4] ? (TYPE_WEIGHT[m[4].toLowerCase()] ?? 3) : Infinity,
+      pre: m[5] !== undefined ? Number(m[5]) : Infinity,
     };
   };
   const pa = parse(a);
@@ -303,6 +393,9 @@ export function compareDSHVersions(a, b) {
   for (let i = 0; i < 3; i++) {
     if (pa.nums[i] !== pb.nums[i]) return pa.nums[i] > pb.nums[i] ? 1 : -1;
   }
+  // 预发布类型优先级（alpha < beta < rc/next < 正式版）
+  if (pa.type !== pb.type) return pa.type > pb.type ? 1 : -1;
+  // 相同类型下比较预发布序号
   const diff = pa.pre - pb.pre;
   return diff > 0 ? 1 : diff < 0 ? -1 : 0;
 }
@@ -324,7 +417,7 @@ export async function listDSHVersions() {
   try {
     const { stdout } = await execa('npm', [
       'view', '@deepseek-ai/dsh', 'versions', '--json'
-    ], { reject: false });
+    ], { reject: false, timeout: 30_000, windowsHide: true });
     if (stdout) {
       const versions = JSON.parse(stdout);
       // 只保留合法语义化版本号（兼容 0.x-rc.N 预发布与未来的 1.x 正式版）

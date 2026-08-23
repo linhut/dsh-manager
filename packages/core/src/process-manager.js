@@ -32,8 +32,10 @@ export async function isPortFree(port) {
   try {
     if (process.platform === 'win32') {
       const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false , windowsHide: true});
+      // 用正则匹配端口号前后为分隔符，避免 :3080 误匹配 :30805 / :13080 等
+      const portRe = new RegExp('[:.]' + port + '(?=[^0-9]|$)', 'i');
       const lines = stdout.split(/\r?\n/).filter(l => {
-        return l.includes(`:${port}`) && l.trim().toUpperCase().includes('LISTENING');
+        return portRe.test(l) && l.trim().toUpperCase().includes('LISTENING');
       });
       return lines.length === 0;
     }
@@ -92,9 +94,10 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
     if (process.platform === 'win32') {
       // netstat -ano 提取端口行 → PID
       const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false , windowsHide: true});
+      // 用正则匹配端口号前后为分隔符，避免 :3080 误匹配 :30805 / :13080 等
+      const portRe = new RegExp('[:.]' + port + '(?=[^0-9]|$)', 'i');
       const lines = stdout.split(/\r?\n/).filter(l => {
-        // 匹配 LISTENING 状态的本地端口
-        return l.includes(`:${port}`) && l.trim().toUpperCase().includes('LISTENING');
+        return portRe.test(l) && l.trim().toUpperCase().includes('LISTENING');
       });
       if (lines.length > 0) {
         const pidMatch = lines[0].trim().split(/\s+/).pop();

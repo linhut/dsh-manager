@@ -95,9 +95,11 @@ export class DSHConfig {
             throw new Error('写入后校验不通过:\n' + v2.errors.join('\n'));
           }
         } catch (verifyErr) {
-          // 自动回滚到写前内容
+          // 自动回滚到写前内容；若原文件不存在则删除刚写入的坏文件
           if (diskContent !== null) {
             try { writeFileSync(filePath, diskContent, 'utf-8'); } catch {}
+          } else {
+            try { rmSync(filePath, { force: true }); } catch {}
           }
           throw new DSHError(
             DSHErrorCodes.CONFIG_WRITE_VERIFY_ERROR,
@@ -342,7 +344,7 @@ export class DSHConfig {
   _backupPath(filePath) {
     var d = new Date();
     var p = function(n) { return String(n).padStart(2, '0'); };
-    var ts = d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    var ts = d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + String(d.getMilliseconds()).padStart(3, '0');
     return filePath + '.bak-' + ts;
   }
 

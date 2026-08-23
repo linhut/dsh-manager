@@ -250,7 +250,7 @@ export class DSHInstaller {
             }
             // 清理 npm 全局 bin 中的 dsh 命令（Windows: dsh / dsh.cmd / dsh.ps1）
             try {
-              const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+              const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
               if (globalRoot && globalRoot.trim()) {
                 const prefix = dirname(globalRoot.trim());
                 const bins = process.platform === 'win32'
@@ -340,7 +340,7 @@ export class DSHInstaller {
       const { stdout } = await execa('npm', [
         'view', '@deepseek-ai/dsh', 'versions', '--json',
         '--registry', registry,
-      ], { timeout: 30_000, reject: false });
+      ], { timeout: 30_000, reject: false, windowsHide: true });
 
       if (stdout) {
         const versions = JSON.parse(stdout);
@@ -458,7 +458,7 @@ export class DSHInstaller {
         // wmic 已弃用/权限受限，用 PowerShell 查询命令行含 @deepseek-ai\dsh 的进程
         const script = [
           "Get-CimInstance Win32_Process |",
-          "Where-Object { $_.CommandLine -match '@deepseek-ai\\\\dsh' } |",
+          "Where-Object { $_.CommandLine -match '@deepseek-ai[\\\\/]dsh(?=[\\\\/\\\\s]|$)' } |",
           "ForEach-Object { $_.ProcessId }",
         ].join(' ');
         const { stdout } = await execa('powershell.exe', [
@@ -473,11 +473,11 @@ export class DSHInstaller {
         }
       } else {
         // POSIX：pgrep 按命令行特征匹配，kill -9 结束
-        const { stdout } = await execa('pgrep', ['-f', '@deepseek-ai/dsh'], { reject: false, timeout: 10_000 });
+        const { stdout } = await execa('pgrep', ['-f', '@deepseek-ai/dsh[/\\s]'], { reject: false, timeout: 10_000, windowsHide: true });
         const pids = stdout.split(/\r?\n/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
         for (const pid of pids) {
           try {
-            await execa('kill', ['-9', pid], { reject: false, timeout: 10_000 });
+            await execa('kill', ['-9', pid], { reject: false, timeout: 10_000, windowsHide: true });
             killed++;
           } catch {}
         }
@@ -540,7 +540,7 @@ export class DSHInstaller {
       // 不依赖 getDSHPath()（package.json 已被删时该函数返回 null，会漏掉残留目录）
       let dshPath = null;
       try {
-        const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+        const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
         if (globalRoot && globalRoot.trim()) {
           const candidate = join(globalRoot.trim(), '@deepseek-ai', 'dsh');
           if (existsSync(candidate)) dshPath = candidate;
@@ -575,7 +575,7 @@ export class DSHInstaller {
         rmSync(dshPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
         // 同步清理 npm 全局 bin 中的 dsh 命令（Windows: dsh / dsh.cmd / dsh.ps1）
         try {
-          const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+          const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
           if (globalRoot && globalRoot.trim()) {
             const prefix = dirname(globalRoot.trim());
             const bins = process.platform === 'win32'

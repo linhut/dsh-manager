@@ -379,13 +379,13 @@ export class GitHubAPI {
     const url = `${GITHUB_API}/repos/${owner}/${repo}/readme`;
 
     try {
-      const response = await fetch(url, { headers: this.headers });
-      
+      const response = await this._fetchWithRetry(url, { headers: this.headers });
+
       if (!response.ok) {
         if (response.status === 404) return null;
         throw new DSHError(
           DSHErrorCodes.GITHUB_API_ERROR,
-          `获取 README 失败: ${response.status} ${response.statusText}`
+          '获取 README 失败: ' + response.status + ' ' + response.statusText
         );
       }
 

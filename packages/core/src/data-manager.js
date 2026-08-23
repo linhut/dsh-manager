@@ -75,7 +75,7 @@ export async function cleanDSHData(opts = {}) {
   const map = {
     sessions: opts.sessions ? DSH_PATHS.sessions : null,
     storages: opts.storages ? DSH_PATHS.storages : null,
-    cache: opts.cache ? DSH_PATHS.managerDir : null,
+    cache: opts.cache ? DSH_PATHS.pluginCache : null,
   };
 
   const cleaned = [];

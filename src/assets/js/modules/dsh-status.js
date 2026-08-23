@@ -40,14 +40,35 @@ async function checkDSHStatus() {
 
     if (info.installed) {
       dot.className = 'status-dot status-ok';
-      text.textContent = `DSH ${info.version}`;
-      
-      // 不在此处检测 DSH 是否运行（避免 TCP 连接挂起）
-      // 由 tryLoadDSHWeb 在需要时检测
-      // 保留当前运行状态，不强制设为 false
+      text.textContent = 'DSH ' + info.version;
+      // 移除旧诊断按钮（如果有）
+      const oldDiag = document.getElementById('dshDiagnostic');
+      if (oldDiag) oldDiag.remove();
     } else {
       dot.className = 'status-dot status-error';
       text.textContent = 'DSH 未安装';
+      // 添加诊断按钮（点击显示检测详情）
+      let diagEl = document.getElementById('dshDiagnostic');
+      if (!diagEl) {
+        diagEl = document.createElement('span');
+        diagEl.id = 'dshDiagnostic';
+        diagEl.style.cssText = 'cursor:pointer;font-size:11px;color:var(--text-dim);margin-left:8px;text-decoration:underline;';
+        diagEl.textContent = '📋 检测详情';
+        diagEl.onclick = async () => {
+          try {
+            const detail = await window.dshManager.getDSHDetectionDetail();
+            const lines = detail.attempts.map(a =>
+              '[' + (a.exists ? 'O' : 'X') + (a.valid ? ' O' : '') + '] ' + (a.path || '(空)') + ' -> ' + a.reason
+            );
+            showAlert('DSH 检测诊断', lines.join('\n'), 'info');
+          } catch (e) {
+            showToast('获取诊断详情失败: ' + e.message, 'error');
+          }
+        };
+        if (statusEl.parentNode) {
+          statusEl.parentNode.insertBefore(diagEl, statusEl.nextSibling);
+        }
+      }
     }
     renderDashToolbar();
     renderDashInfo();

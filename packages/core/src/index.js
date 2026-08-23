@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 export { DSHInstaller } from './installer.js';
 export { DSHConfig } from './config.js';
-export { DSHUtils, getDSHInfo, DSH_PATHS, resolveDSHCommand } from './dsh-utils.js';
+export { DSHUtils, getDSHInfo, getDSHDetectionDetail, DSH_PATHS, resolveDSHCommand, compareDSHVersions } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
 export { MCPServerManager } from './mcp-manager.js';
 export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';

@@ -61,11 +61,14 @@ function createMainWindow() {
   });
 
   // 系统主题变化时同步窗口背景色（避免白/黑闪烁）
-  nativeTheme.on('updated', () => {
+  const nativeThemeHandler = () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.setBackgroundColor(getWindowBackground());
     }
-  });
+  };
+  nativeTheme.on('updated', nativeThemeHandler);
+  // 在窗口关闭时移除监听器，避免泄漏
+  mainWindow.on('closed', () => nativeTheme.removeListener('updated', nativeThemeHandler));
 
   // 加载管理界面
   mainWindow.loadFile(join(__dirname, '../src/index.html'));
@@ -86,8 +89,14 @@ function createMainWindow() {
     }
   });
 
-  // 外部链接用浏览器打开
+  // 外部链接用浏览器打开（仅允许 http/https/mailto，防止 file://、自定义协议被利用）
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) return { action: 'deny' };
+    } catch {
+      return { action: 'deny' };
+    }
     shell.openExternal(url);
     return { action: 'deny' };
   });

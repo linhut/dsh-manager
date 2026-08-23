@@ -1190,7 +1190,7 @@ async function loadMarketplace(query) {
     state.marketResults = results;
     renderMarketplaceGrid();
   } catch (err) {
-    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">加载失败</div><div class="empty-state-desc">${err.message || '请检查网络连接后刷新'}</div></div>`;
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><div class="empty-state-icon">⚠️</div><div class="empty-state-title">加载失败</div><div class="empty-state-desc">${escapeHtml(err.message || '请检查网络连接后刷新')}</div></div>`;
   }
 }
 
@@ -1271,7 +1271,7 @@ async function showPluginDetails(fullName) {
         </div>
       </div>
       <div class="modal-footer">
-        ${ghUrl ? `<button class="btn btn-secondary" onclick="window.dshManager.openExternal('${ghUrl}')">🌐 项目地址</button>` : ''}
+        ${ghUrl ? `<button class="btn btn-secondary" onclick="window.dshManager.openExternal('${escapeAttr(ghUrl)}')">🌐 项目地址</button>` : ''}
         <button class="btn btn-primary" onclick="installMarketPlugin('${escapeAttr(p.fullName)}');document.querySelector('.modal-overlay.active')?.remove();">📥 安装</button>
         <button class="btn btn-ghost" onclick="this.closest('.modal-overlay').remove()">关闭</button>
       </div>
@@ -2198,7 +2198,7 @@ async function renderVersionsPage() {
   } catch (err) {
     const infoEl = document.getElementById('versionInfo');
     if (infoEl) {
-      infoEl.innerHTML = `<p style="color:var(--error);font-size:13px;">⚠️ 版本信息加载失败：${err.message || '未知错误'}<br><span style="color:var(--text-dim);font-size:12px;">可能是网络问题（查询 npm registry 失败），可点击「刷新」重试</span></p>`;
+      infoEl.innerHTML = `<p style="color:var(--error);font-size:13px;">⚠️ 版本信息加载失败：${escapeHtml(err.message || '未知错误')}<br><span style="color:var(--text-dim);font-size:12px;">可能是网络问题（查询 npm registry 失败），可点击「刷新」重试</span></p>`;
     }
   }
 }
@@ -2338,7 +2338,7 @@ async function renderProfiles() {
   try { profiles = await window.dshManager.listProfiles(); } catch (err) { loadError = err; }
 
   if (loadError) {
-    el.innerHTML = `<p style="color:var(--error);font-size:13px;">⚠️ Profile 列表加载失败：${loadError.message || '未知错误'}</p>`;
+    el.innerHTML = `<p style="color:var(--error);font-size:13px;">⚠️ Profile 列表加载失败：${escapeHtml(loadError.message || '未知错误')}</p>`;
     return;
   }
 
@@ -2444,7 +2444,7 @@ async function mcpRenderList() {
   try {
     servers = await window.dshManager.mcpList('web');
   } catch (err) {
-    el.innerHTML = `<p style="color:var(--error);">加载失败: ${err.message}</p>`;
+    el.innerHTML = `<p style="color:var(--error);">加载失败: ${escapeHtml(err.message)}</p>`;
     return;
   }
 
@@ -3256,12 +3256,12 @@ async function renderLLMProvidersTab() {
             <tbody>
               ${providerEntries.map(([name, conf]) => `
                 <tr>
-                  <td><strong>${name}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
-                  <td><span class="badge badge-blue">${conf.provider || 'unknown'}</span></td>
-                  <td><code>${conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-')}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return m.id; }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
+                  <td><strong>${escapeHtml(name)}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
+                  <td><span class="badge badge-blue">${escapeHtml(conf.provider || 'unknown')}</span></td>
+                  <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return m.id; }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
                   <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
-                    <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${name}')">✏️ 编辑</button>
+                    <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${escapeAttr(name)}')">✏️ 编辑</button>
                     <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${escapeAttr(name)}')">🗑️ 删除</button>
                   </td>
                 </tr>
@@ -3327,7 +3327,7 @@ async function renderPresetsTab() {
                 // 兼容 DSH 官方格式：agent-presets.default = 'preset-id'（字符串）
                 const name = typeof conf === 'string' ? conf : (conf?.name || id);
                 const path = typeof conf === 'string' ? '' : (conf?.path || '-');
-                return `<tr><td><code>${id}</code></td><td><strong>${name}</strong>${typeof conf === 'string' ? ' <span class="badge badge-blue">默认引用</span>' : ''}</td><td style="font-size:12px;color:var(--text-dim);">${path}</td></tr>`;
+                return `<tr><td><code>${escapeHtml(id)}</code></td><td><strong>${escapeHtml(name)}</strong>${typeof conf === 'string' ? ' <span class="badge badge-blue">默认引用</span>' : ''}</td><td style="font-size:12px;color:var(--text-dim);">${escapeHtml(path)}</td></tr>`;
               }).join('')}
             </tbody></table></div>
           `}
@@ -3732,8 +3732,8 @@ async function refreshVersions() {
       `;
     }
   } catch (err) {
-    listEl.innerHTML = `<p style="color:var(--error);">${err.message || '加载失败'}</p>`;
-    availEl.innerHTML = `<p style="color:var(--error);">${err.message || '加载失败'}</p>`;
+    listEl.innerHTML = `<p style="color:var(--error);">${escapeHtml(err.message || '加载失败')}</p>`;
+    availEl.innerHTML = `<p style="color:var(--error);">${escapeHtml(err.message || '加载失败')}</p>`;
   }
 }
 

@@ -6,7 +6,7 @@
  */
 
 import { execa } from 'execa';
-import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
@@ -105,7 +105,7 @@ export class PluginInstaller {
       try {
         const result = await execa(await this._dshCmd(), [
           'plugin', '--profile', profile, 'remove', pluginId,
-        ], { reject: false, timeout: 60_000 });
+        ], { reject: false, timeout: 60_000, windowsHide: true });
         if (result.stdout) this._log(result.stdout);
         if (result.stderr) this._log(result.stderr, 'warn');
         dshRemoved = result.exitCode === 0;
@@ -180,11 +180,17 @@ export class PluginInstaller {
       // 检查 pnpm 是否已安装（dsh plugin 命令依赖 pnpm）
       await requirePnpm('安装插件');
 
-      const { stdout, stderr } = await execa(await this._dshCmd(), [
+      const res = await execa(await this._dshCmd(), [
         'plugin', '--profile', profile, 'add', packageName,
-      ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+      ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', reject: false, windowsHide: true });
+      if (res.failed) {
+        throw new DSHError(
+          DSHErrorCodes.PLUGIN_INSTALL_FAILED,
+          'npm 安装失败: ' + ((res.stderr || res.stdout || '').trim() || ('dsh plugin add 命令失败（退出码 ' + res.exitCode + '）'))
+        );
+      }
 
-      this._log(stdout || '');
+      this._log(res.stdout || '');
 
       // 获取 npm 包信息
       const npmInfo = await this._getNpmPackageInfo(packageName);
@@ -243,7 +249,7 @@ export class PluginInstaller {
     try {
       const { stdout, stderr } = await execa(await this._dshCmd(), [
         'plugin', '--profile', profile, 'add', gitSource,
-      ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+      ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
 
       this._log(stdout || '');
       if (stderr) this._log(stderr, 'warn');
@@ -293,7 +299,7 @@ export class PluginInstaller {
           this._log(`执行: git clone --depth 1 ${candidate} (branch: ${ref || 'main'})`);
           const { stdout, stderr } = await execa('git', [
             'clone', '--depth', '1', '--branch', ref || 'main', candidate, dest
-          ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+          ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
           this._log(stdout || '');
           if (stderr) this._log(stderr, 'warn');
           cloned = true;
@@ -309,7 +315,7 @@ export class PluginInstaller {
       this._log(`通过 dsh plugin add link:${dest} 注册到 profile ${profile}`);
       const { stdout, stderr } = await execa(await this._dshCmd(), [
         'plugin', '--profile', profile, 'add', `link:${dest}`
-      ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+      ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
       this._log(stdout || '');
       if (stderr) this._log(stderr, 'warn');
 
@@ -372,7 +378,7 @@ export class PluginInstaller {
     try {
       const { stdout } = await execa('npm', [
         'view', packageName, 'name', 'version', 'description', '--json',
-      ], { timeout: 30_000, reject: false });
+      ], { timeout: 30_000, reject: false, windowsHide: true });
       
       if (stdout) {
         return JSON.parse(stdout);
@@ -385,12 +391,20 @@ export class PluginInstaller {
    * @private
    */
   _parseSource(source) {
+    // 校验 owner/repo 合法性：仅允许字母数字、下划线、连字符、点号，防止路径穿越
+    const validateGitId = (id) => {
+      return typeof id === 'string' && /^[a-zA-Z0-9_.-]+$/.test(id);
+    };
+
     if (source.startsWith('github:')) {
       // github:owner/repo#ref（#ref 可选，固定分支/标签/commit）
       const full = source.replace('github:', '');
       const [owner, repoFull, ...rest] = full.split('/');
       const refPart = rest.length > 0 ? rest.join('/') : '';
       const [repo, ref] = this._splitRef(repoFull, refPart);
+      if (!validateGitId(owner) || !validateGitId(repo)) {
+        return { type: 'error', error: '非法的 GitHub 仓库标识: ' + owner + '/' + repo };
+      }
       return { type: 'github', owner, repo, ref, fullName: `${owner}/${repo}${ref ? '#' + ref : ''}` };
     }
     
@@ -485,6 +499,7 @@ export class PluginInstaller {
           timeout: 60_000, // 单候选 60s 超时（比之前 120s 快一倍）
           stdio: this.verbose ? 'inherit' : 'pipe',
           env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+          windowsHide: true,
         });
         const elapsed = Date.now() - start;
         this._log(`[并行克隆] ${candidate} 成功（${elapsed}ms）`, 'info');
@@ -520,12 +535,10 @@ export class PluginInstaller {
     // 将胜出目录移动到最终位置
     if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
     await new Promise(resolve => setTimeout(resolve, 0)); // 让文件系统释放
-    const { renameSync } = await import('node:fs');
     try {
       renameSync(winner.tmpDest, dest);
     } catch (err) {
       // 跨设备可能失败，用 cpSync 兜底
-      const { cpSync } = await import('node:fs');
       cpSync(winner.tmpDest, dest, { recursive: true });
       rmSync(winner.tmpDest, { recursive: true, force: true });
     }
@@ -571,6 +584,7 @@ export class PluginInstaller {
           const { stdout, stderr } = await execa('git', ['clone', '--depth', '1', candidate, dest], {
             timeout: 120_000,
             stdio: this.verbose ? 'inherit' : 'pipe',
+            windowsHide: true,
           });
           this._log(stdout || '');
           if (stderr) this._log(stderr, 'warn');
@@ -601,7 +615,7 @@ export class PluginInstaller {
       try {
         const { stdout, stderr } = await execa(await this._dshCmd(), [
           'plugin', '--profile', profile, 'add', `link:${dest}`,
-        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
         this._log(stdout || '');
         if (stderr) this._log(stderr, 'warn');
         this._log(`已通过 dsh plugin 注册到 profile ${profile}`);
@@ -654,7 +668,7 @@ export class PluginInstaller {
     const linkSource = `link:${path}`;
     const { stdout, stderr } = await execa(await this._dshCmd(), [
       'plugin', '--profile', profile, 'add', linkSource,
-    ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+    ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
     this._log(stdout || '');
     if (stderr) this._log(stderr, 'warn');
 
@@ -719,7 +733,7 @@ export class PluginInstaller {
       try {
         const { stdout, stderr } = await execa(await this._dshCmd(), [
           'plugin', '--profile', profile, 'add', `file:${dest}`,
-        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
         this._log(stdout || '');
         if (stderr) this._log(stderr, 'warn');
         this._log(`已通过 dsh plugin 注册到 profile ${profile}`);
@@ -766,6 +780,7 @@ export class PluginInstaller {
       await execa('tar', ['-xzf', tarball, '-C', tempDir], {
         timeout: 120_000,
         stdio: this.verbose ? 'inherit' : 'pipe',
+        windowsHide: true,
       });
 
       // 定位解压后的 package.json（tarball 可能含 package/ 前缀目录）
@@ -792,7 +807,7 @@ export class PluginInstaller {
       try {
         const { stdout, stderr } = await execa(await this._dshCmd(), [
           'plugin', '--profile', profile, 'add', `file:${dest}`,
-        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe' });
+        ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
         this._log(stdout || '');
         if (stderr) this._log(stderr, 'warn');
         this._log(`已通过 dsh plugin 注册到 profile ${profile}`);

@@ -132,7 +132,8 @@ export class MCPServerManager {
   }
   async remove(serverName) {
     if (!existsSync(this.patchFile)) return { success: true }; const ex = this.get(serverName); if (!ex) return { success: true };
-    const raw = readFileSync(this.patchFile, 'utf-8');
+    // CRLF 兼容：归一化行尾再匹配（_parseBlocks 已用 \r?\n 切分，但 block 用 \n 拼接）
+    const raw = readFileSync(this.patchFile, 'utf-8').replace(/\r\n/g, '\n');
     const nc = raw.replace(new RegExp('\\n?\\n?' + escapeRegExp(ex.block)), '\n').replace(/\n{3,}/g, '\n\n');
     return { success: true, backupPath: this._atomicWrite(nc) };
   }
