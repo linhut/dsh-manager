@@ -7,8 +7,27 @@
 
 import { execa } from 'execa';
 
+/** 端口扫描缓存 TTL（毫秒）：findAvailablePort 探测 20 个端口时避免重复跑 netstat */
+const PORT_CACHE_TTL = 3000;
+
 /** DSH Web 默认端口 */
 export const DSH_WEB_PORT = 3080;
+
+// 模块级缓存：Windows netstat 输出（3s TTL）
+let _netstatCache = { time: 0, stdout: '' };
+async function getNetstatLines() {
+  const now = Date.now();
+  if (now - _netstatCache.time < PORT_CACHE_TTL && _netstatCache.stdout) {
+    return _netstatCache.stdout;
+  }
+  try {
+    const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false, windowsHide: true });
+    _netstatCache = { time: now, stdout };
+    return stdout;
+  } catch {
+    return null;
+  }
+}
 
 /** 随机端口探测范围（避开常见占用区间） */
 const PORT_SCAN_MIN = 3100;
@@ -31,7 +50,8 @@ function randomPort() {
 export async function isPortFree(port) {
   try {
     if (process.platform === 'win32') {
-      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false , windowsHide: true});
+      const stdout = await getNetstatLines();
+      if (stdout === null) return true; // 探测失败视为空闲，不阻断
       // 用正则匹配端口号前后为分隔符，避免 :3080 误匹配 :30805 / :13080 等
       const portRe = new RegExp('[:.]' + port + '(?=[^0-9]|$)', 'i');
       const lines = stdout.split(/\r?\n/).filter(l => {
@@ -93,7 +113,8 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
   try {
     if (process.platform === 'win32') {
       // netstat -ano 提取端口行 → PID
-      const { stdout } = await execa('netstat', ['-ano'], { timeout: 10_000, reject: false , windowsHide: true});
+      const stdout = await getNetstatLines();
+      if (stdout === null) return base;
       // 用正则匹配端口号前后为分隔符，避免 :3080 误匹配 :30805 / :13080 等
       const portRe = new RegExp('[:.]' + port + '(?=[^0-9]|$)', 'i');
       const lines = stdout.split(/\r?\n/).filter(l => {

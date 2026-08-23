@@ -107,7 +107,16 @@ export async function setReplyLanguage(lang) {
     throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, `无效的语言取值: ${lang}`);
   }
 
-  const state = _applyToAgentsMd(lang);
+  let state;
+  try {
+    state = _applyToAgentsMd(lang);
+  } catch (error) {
+    // AGENTS.md 写入失败（磁盘满/权限）→ 包装为 DSHError
+    throw new DSHError(
+      DSHErrorCodes.CONFIG_PARSE_ERROR,
+      '写入 AGENTS.md 失败: ' + error.message
+    );
+  }
 
   const config = new DSHConfig();
   try {
@@ -118,7 +127,7 @@ export async function setReplyLanguage(lang) {
     }
   } catch (error) {
     // 配置写失败 → 回滚 AGENTS.md，保持两处一致
-    _rollbackAgentsMd(state);
+    if (state) _rollbackAgentsMd(state);
     throw error;
   }
 }

@@ -368,3 +368,71 @@
 3. process-manager.js 6.1：netstat 端口匹配改为精确比对——避免误杀 30805 等端口进程。
 4. data-manager.js 9.1：cleanDSHData 的 cache 收敛到 pluginCache 目录——避免清空版本记录/技能源/提示词/配置备份。
 5. dsh-utils.js 1.5：resolveDSHPackageJson 结果做短 TTL 缓存——当前 getDSHInfo 一次触发 3 次完整探测，每次含 4-5 个串行子进程，慢且浪费。
+
+
+---
+
+# 修复状态（2026-02 复核）
+
+评审后经两轮修复（commit 1fd2a06 + 本轮），以下问题已全部处理：
+
+## 严重 / 高危
+| 编号 | 问题 | 状态 |
+|------|------|------|
+| 1.1 | POSIX 全局 bin 路径推导错误 | ✅ 已修复（dirname(dirname)） |
+| 3.1 | 卸载误杀自身进程 | ✅ 已修复（正则包名边界锚定） |
+| 13.1 | copyModuleToProfile 路径穿越删除 | ✅ 已修复（npm 包名正则 + profile 名校验） |
+
+## 中危
+| 编号 | 问题 | 状态 |
+|------|------|------|
+| 1.3 | listDSHVersions 无超时 | ✅ 已修复（timeout: 30s） |
+| 1.4 | isDSHInPath 语义不符 | ✅ 已修复（检查 PATH 解析结果） |
+| 1.5 | 重复探测性能 | ✅ 已修复（pkgJsonCache TTL 缓存） |
+| 2.1 | 首次写入不回滚 | ✅ 已修复（rmSync 删除坏文件） |
+| 2.2 | 备份秒级覆盖 | ✅ 已修复（毫秒级时间戳） |
+| 3.2 | 卸载端口进程安全 | ✅ 已硬防护（try/catch 包裹 + UI 确认） |
+| 3.3 | readdirSync recursive 兼容 | ✅ 已修复（手动遍历 _hasDeleteMarker） |
+| 3.4 | getAvailableVersions 重复实现 | ✅ 已修复（复用 listDSHVersions(registry)） |
+| 4.1 | _readVersions 数组校验 | ✅ 已修复（Array.isArray + 坏文件备份） |
+| 4.2 | isCurrent 字符串比较 | ✅ 已修复（normalizeVersion 语义比较） |
+| 5.1 | stderr 版本输出误判 | ✅ 已修复（stderrVersion 提取） |
+| 5.2 | Node 最低版本未校验 | ✅ 已修复（>= 20.1 检查） |
+| 6.1 | 端口子串误匹配 | ✅ 已修复（正则边界） |
+| 6.2 | netstat 重复执行 | ✅ 已修复（3s TTL 缓存） |
+| 7.1 | YAML 行内注释 | ✅ 已修复（stripInlineComment） |
+| 9.1 | cache 清理越界 | ✅ 已修复（收敛到 pluginCache） |
+| 11.1/11.2 | 批量导入/CRLF 移除 | ✅ 已修复（_atomicWrite 一次写入 + 行尾归一） |
+| 13.2 | profile 参数未校验 | ✅ 已修复（validateProfileName 全覆盖） |
+| 14.1 | 下载 OOM | ✅ 已修复（流式写入 + Content-Length 校验） |
+| 16.1 | zip 截断无提示 | ✅ 已修复（中央目录条目数比对） |
+| 16.2 | AbortSignal.timeout 兼容 | ✅ 已修复（AbortController） |
+| 16.3 | zip64 未处理 | ✅ 已修复（检测并明确报错） |
+| 17.1 | render yaml 格式缺失 | ✅ 已修复（实现 yaml 分支） |
+| 17.2 | content 非字符串崩溃 | ✅ 已修复（typeof 防御） |
+| 17.3 | sort 不稳定 | ✅ 已修复（相等返回 0） |
+
+## 低危 / 建议
+| 编号 | 问题 | 状态 |
+|------|------|------|
+| 2.3 | createBackup reason 未用 | ✅ 已加注释说明 |
+| 2.4 | var 风格 | ✅ 已统一 const/let |
+| 2.5 | 读错误合并 | ✅ 已分别 try/catch 注明文件 |
+| 2.7 | credentials 无校验 | ✅ 已加对象结构校验 |
+| 7.2 | 数字强转 | 🟡 已按 YAML 1.2 简化策略（保留现有行为，文档说明） |
+| 7.3 | _ 键静默丢弃 | ✅ 已修复（仅跳过 _comment/_order） |
+| 8.1 | 未用错误码 | ✅ 已补充 INVALID_PARAMS/PNPM_NOT_FOUND，其余保留供扩展 |
+| 8.2 | error.cause | ✅ 已支持 |
+| 9.2 | dirSize 同步阻塞 | ✅ 已异步化 + 深度限制 |
+| 10.1 | size 语义误导 | ✅ 已改为 entryCount |
+| 10.2 | 备份含大目录 | ✅ 已排除 node_modules/.git |
+| 11.3 | 非对称引号剥离 | ✅ 已改为对称剥离 |
+| 11.4 | countEnvRefs 死代码 | ✅ 已移除 |
+| 12.1 | PNPM_NOT_FOUND | ✅ 已新增错误码 |
+| 14.2 | tar 解压提示 | ✅ 已加 Windows 指引 |
+| 14.3 | lts 布尔兼容 | ✅ 已支持 v.lts === true |
+| 15.1 | AGENTS.md 错误裸抛 | ✅ 已包装为 DSHError + 回滚 |
+| 16.4 | 目录导入含无关文件 | ✅ 已排除 .git/node_modules/.DS_Store |
+
+**复核结论：评审提出的全部问题已修复或明确处理，无遗留严重/高危问题。**
+

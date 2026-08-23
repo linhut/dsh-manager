@@ -33,13 +33,15 @@ export class DSHProfileManager {
       if (!entry.isDirectory()) continue;
       const path = join(this.profilesDir, entry.name);
       let mtime = null;
-      let size = 0;
+      let entryCount = 0;
       try {
         const st = statSync(path);
         mtime = st.mtime.toISOString();
-        size = st.size;
+        // 目录的 stat.size 在 Windows 上恒为 0，没有展示意义；
+        // 改为统计直接子条目数（快速、有意义的目录规模指标）
+        entryCount = readdirSync(path, { withFileTypes: true }).length;
       } catch {}
-      result.push({ name: entry.name, path, mtime, size });
+      result.push({ name: entry.name, path, mtime, size: 0, entryCount });
     }
     return result;
   }
@@ -80,7 +82,13 @@ export class DSHProfileManager {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const dest = join(this.backupDir, `${trimmed}-${timestamp}`);
     mkdirSync(this.backupDir, { recursive: true });
-    cpSync(src, dest, { recursive: true });
+    // 排除 node_modules/.git 等大目录，避免备份过慢且占空间
+    const IGNORE = new Set(['node_modules', '.git', '.DS_Store', '__pycache__', '.venv', 'venv']);
+    const filter = (src) => {
+      const base = src.split(/[\\/]/).pop();
+      return !IGNORE.has(base);
+    };
+    cpSync(src, dest, { recursive: true, filter });
 
     return { success: true, name: trimmed, backupPath: dest };
   }

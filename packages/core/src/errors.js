@@ -10,6 +10,7 @@ export const DSHErrorCodes = {
   UNKNOWN: 'UNKNOWN',
   NOT_FOUND: 'NOT_FOUND',
   ALREADY_EXISTS: 'ALREADY_EXISTS',
+  INVALID_PARAMS: 'INVALID_PARAMS',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
   
   // DSH 相关
@@ -29,6 +30,9 @@ export const DSHErrorCodes = {
   NETWORK_ERROR: 'NETWORK_ERROR',
   GITHUB_API_ERROR: 'GITHUB_API_ERROR',
   
+  // pnpm 相关
+  PNPM_NOT_FOUND: 'PNPM_NOT_FOUND',
+  
   // 插件相关
   PLUGIN_NOT_FOUND: 'PLUGIN_NOT_FOUND',
   PLUGIN_INSTALL_FAILED: 'PLUGIN_INSTALL_FAILED',
@@ -42,13 +46,13 @@ export class DSHError extends Error {
    * @param {object} [details] - 附加信息
    */
   constructor(code, message, details = {}) {
-    super(message);
+    super(message, { cause: details?.original || undefined });
     this.name = 'DSHError';
     this.code = code;
     this.details = details;
   }
 
   toString() {
-    return `[${this.code}] ${this.message}`;
+    return '[' + this.code + '] ' + this.message;
   }
 }

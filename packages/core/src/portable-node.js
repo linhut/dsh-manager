@@ -31,7 +31,7 @@ export async function getLatestLTSVersion() {
     if (!Array.isArray(list)) throw new Error('index.json 格式异常');
     // lts 字段非空即为 LTS 版本，取版本号最大者
     const ltsVersions = list
-      .filter(v => v && v.lts)
+      .filter(v => v && (v.lts === true || v.lts))
       .map(v => String(v.version || ''))
       .filter(v => /^v?\d+\.\d+\.\d+$/.test(v))
       .sort((a, b) => {
@@ -90,25 +90,51 @@ export async function installPortableNode(opts = {}) {
 
   log(`开始下载 ${fileName}（镜像源）...`);
 
-  // 2. 下载（流式，跟随重定向）
+  // 2. 下载（流式写入磁盘，低配机不把整个压缩包载入内存）
   try {
     mkdirSync(envDir, { recursive: true });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DOWNLOAD_TIMEOUT);
+    let totalBytes = 0;
     try {
       const resp = await fetch(url, { signal: controller.signal, redirect: 'follow' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const buf = Buffer.from(await resp.arrayBuffer());
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const contentLength = Number(resp.headers.get('content-length') || 0);
+      if (!resp.body) throw new Error('响应无 body');
       const fs = await import('node:fs');
-      fs.writeFileSync(downloadPath, buf);
-      log(`下载完成（${(buf.length / 1024 / 1024).toFixed(1)} MB）`);
+      const fileStream = fs.createWriteStream(downloadPath, { flags: 'w' });
+      const reader = resp.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalBytes += value.byteLength;
+          if (!fileStream.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) {
+            // 背压：等待写队列排空，避免内存激增
+            await new Promise((resolve) => fileStream.once('drain', resolve));
+          }
+          log('下载中... ' + (totalBytes / 1024 / 1024).toFixed(1) + ' MB');
+        }
+        await new Promise((resolve, reject) => {
+          fileStream.end((err) => err ? reject(err) : resolve());
+        });
+      } finally {
+        reader.releaseLock();
+      }
+      // Content-Length 校验（下载中断时提前发现，避免解压一个截断文件）
+      if (contentLength > 0 && totalBytes !== contentLength) {
+        throw new Error('下载不完整（' + totalBytes + '/' + contentLength + ' 字节）');
+      }
+      log('下载完成（' + (totalBytes / 1024 / 1024).toFixed(1) + ' MB）');
     } finally {
       clearTimeout(timer);
     }
   } catch (error) {
+    // 失败时清理残留的半个文件
+    try { rmSync(downloadPath, { force: true }); } catch {}
     throw new DSHError(
       DSHErrorCodes.DSH_INSTALL_FAILED,
-      `便携版 Node 下载失败: ${error.message}\n请检查网络，或改用系统包管理器安装。`
+      '便携版 Node 下载失败: ' + error.message + '\n请检查网络，或改用系统包管理器安装。'
     );
   }
 
@@ -127,7 +153,10 @@ export async function installPortableNode(opts = {}) {
   } catch (error) {
     // 解压失败清理残留
     rmSync(nodeDir, { recursive: true, force: true });
-    throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, `便携版 Node 解压失败: ${error.message}`);
+    const hint = process.platform === 'win32'
+      ? '\n提示：Windows 解压需要系统 tar.exe（Windows 10 1803+ 内置），否则请安装 7-Zip 等解压工具后重试。'
+      : '';
+    throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, '便携版 Node 解压失败: ' + error.message + hint);
   } finally {
     try { rmSync(downloadPath, { force: true }); } catch {}
   }

@@ -236,7 +236,8 @@ export function toYAML(obj, indent = 0) {
   let result = '';
 
   for (const [key, value] of Object.entries(obj)) {
-    if (key.startsWith('_')) continue;
+    // 仅跳过以 _ 开头的内部元数据键（如 _comment），保留合法配置键
+    if (key.startsWith('_comment') || key === '_order') continue;
 
     if (value === null || value === undefined) {
       result += prefix + key + ': null\n';

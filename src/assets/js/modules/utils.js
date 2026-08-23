@@ -430,6 +430,48 @@ window.debugLog = window.debugLog || {
   error(msg) { this.log('error', msg); },
 };
 
+// ====== IPC 统一通信层（带超时 + 错误规范化） ======
+
+/**
+ * 调用 IPC 方法，自动处理超时与错误
+ * @param {string} method - IPC 方法名（如 'dsh:get-info'）
+ * @param {...any} args - 调用参数
+ * @param {object} [opts] - 选项
+ * @param {number} [opts.timeout] - 超时毫秒（默认 30s）
+ * @param {number} [opts.retries] - 重试次数（默认 0）
+ * @returns {Promise<any>}
+ */
+async function callIPC(method, ...args) {
+  const opts = (typeof args[args.length - 1] === 'object' && !Array.isArray(args[args.length - 1]) && args[args.length - 1]?.timeout !== undefined)
+    ? args.pop()
+    : {};
+  const timeout = opts.timeout || 30000;
+  const retries = opts.retries || 0;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await timeoutManager.timeoutPromise(
+        window.dshManager[method](...args),
+        timeout,
+        method
+      );
+      return result;
+    } catch (error) {
+      const isLastAttempt = attempt === retries;
+      if (isLastAttempt) {
+        const msg = error.message || '未知错误';
+        console.error('[IPC] ' + method + ' 失败（' + (attempt + 1) + '/' + (retries + 1) + '）: ' + msg);
+        throw new Error(method + ' 调用失败: ' + msg);
+      }
+      console.warn('[IPC] ' + method + ' 重试 ' + (attempt + 1) + '/' + retries + ': ' + (error.message || ''));
+      // 指数退避：等待 1s, 2s, 4s...
+      await new Promise(r => setTimeout(r, Math.min(1000 * Math.pow(2, attempt), 10000)));
+    }
+  }
+}
+
+window.callIPC = callIPC;
+
 // Export to window for backward compatibility
 window.debugLog = debugLog;
 window.timeoutManager = timeoutManager;

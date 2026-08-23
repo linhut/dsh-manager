@@ -116,7 +116,18 @@ function unzipToMap(buf) {
         offset += 16;
       }
     } else if (sig === 0x02014b50 || sig === 0x06054b50) { // 中央目录/结束记录
+      // 从中央目录条目读取总文件数，与已解析数比对（检测截断）
+      if (sig === 0x02014b50 && offset + 42 <= buf.length) {
+        const totalEntries = view.getUint16(offset + 8, true);
+        if (totalEntries !== count) {
+          throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 
+            'zip 文件不完整（中央目录记录 ' + totalEntries + ' 个条目，实际解析 ' + count + ' 个）'
+          );
+        }
+      }
       break;
+    } else if (sig === 0x06064b50) { // zip64 格式结束记录
+      throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '不支持 zip64 格式（文件过大）');
     } else {
       break;
     }
@@ -359,8 +370,18 @@ export class SkillManager {
       rmSync(target, { recursive: true, force: true });
     }
     mkdirSync(this.userSkillsDir, { recursive: true });
-    if (st.isDirectory()) cpSync(src, target, { recursive: true });
-    else { mkdirSync(target, { recursive: true }); cpSync(skillFile, join(target, 'SKILL.md')); }
+    if (st.isDirectory()) {
+      // 排除 .git、node_modules、.DS_Store 等无关目录
+      const ignore = ['.git', 'node_modules', '.DS_Store', '__pycache__', '.venv', 'venv'];
+      const filter = (src) => {
+        const base = src.split(/[\\/]/).pop();
+        return !ignore.includes(base);
+      };
+      cpSync(src, target, { recursive: true, filter });
+    } else {
+      mkdirSync(target, { recursive: true });
+      cpSync(skillFile, join(target, 'SKILL.md'));
+    }
     return { success: true, name, path: join(target, 'SKILL.md'), source: 'user' };
   }
 
@@ -389,10 +410,16 @@ export class SkillManager {
     let buf = null;
     for (const ref of candidates) {
       try {
-        const resp = await fetch('https://codeload.github.com/' + owner + '/' + repo + '/zip/refs/heads/' + encodeURIComponent(ref), {
-          signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-        });
-        if (resp.ok) { buf = Buffer.from(await resp.arrayBuffer()); break; }
+        const abortController = new AbortController();
+        const timeoutTimer = setTimeout(() => abortController.abort(), DOWNLOAD_TIMEOUT_MS);
+        try {
+          const resp = await fetch('https://codeload.github.com/' + owner + '/' + repo + '/zip/refs/heads/' + encodeURIComponent(ref), {
+            signal: abortController.signal,
+          });
+          if (resp.ok) { buf = Buffer.from(await resp.arrayBuffer()); break; }
+        } finally {
+          clearTimeout(timeoutTimer);
+        }
       } catch { /* 尝试下一个分支 */ }
     }
     if (!buf) throw new DSHError(DSHErrorCodes.NETWORK_ERROR, '下载失败：仓库 ' + owner + '/' + repo + ' 分支 ' + branch + ' 不可访问');

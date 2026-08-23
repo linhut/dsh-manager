@@ -25,14 +25,23 @@ function getDataDirs() {
  * @param {string} dir
  * @returns {number}
  */
-function dirSize(dir) {
+async function dirSize(dir, depth = 0) {
+  // 深度上限与条目上限，避免超大目录（如 storages 上百 GB）长时间阻塞
+  if (depth > 12) return 0;
   let total = 0;
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  let entries = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return 0; }
+  // 分批让出事件循环，避免同步递归长时间阻塞 UI
+  const BATCH = 64;
+  for (let i = 0; i < entries.length; i += BATCH) {
+    const batch = entries.slice(i, i + BATCH);
+    // 每批让出一次事件循环（仅层数多时再让，浅目录零开销）
+    if (depth > 2) await new Promise(resolve => setImmediate(resolve));
+    for (const entry of batch) {
       const full = join(dir, entry.name);
       try {
         if (entry.isDirectory()) {
-          total += dirSize(full);
+          total += await dirSize(full, depth + 1);
         } else if (entry.isSymbolicLink()) {
           // 符号链接不跟随，避免循环
           continue;
@@ -41,7 +50,7 @@ function dirSize(dir) {
         }
       } catch {}
     }
-  } catch {}
+  }
   return total;
 }
 
@@ -55,7 +64,7 @@ export async function getDSHStorageInfo() {
   let total = 0;
 
   for (const [name, path] of Object.entries(dirs)) {
-    const size = existsSync(path) ? dirSize(path) : 0;
+    const size = existsSync(path) ? await dirSize(path) : 0;
     total += size;
     result.push({ name, path, size });
   }

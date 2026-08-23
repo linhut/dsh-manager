@@ -62,9 +62,17 @@ export class MasterPromptManager {
     }
     if (filter.query) {
       const q = String(filter.query).toLowerCase();
-      items = items.filter((p) => p.content.toLowerCase().includes(q) || (p.description || "").toLowerCase().includes(q));
+      items = items.filter((p) => {
+        const content = typeof p.content === 'string' ? p.content : '';
+        const desc = typeof p.description === 'string' ? p.description : '';
+        return content.toLowerCase().includes(q) || desc.toLowerCase().includes(q);
+      });
     }
-    return items.sort((a, b) => a.createdAt > b.createdAt ? -1 : 1);
+    return items.sort((a, b) => {
+      if (a.createdAt > b.createdAt) return -1;
+      if (a.createdAt < b.createdAt) return 1;
+      return 0;
+    });
   }
 
   /**
@@ -171,6 +179,17 @@ export class MasterPromptManager {
       }
       lines.push("");
       return lines.join("\n");
+    }
+
+    if (format === "yaml") {
+      const yamlLines = ["master_prompts:"];
+      for (const p of prompts) {
+        yamlLines.push("  - content: " + JSON.stringify(p.content));
+        if (p.description) yamlLines.push("    description: " + JSON.stringify(p.description));
+        yamlLines.push("    enabled: " + (p.enabled ? 'true' : 'false'));
+        if (p.category) yamlLines.push("    category: " + JSON.stringify(p.category));
+      }
+      return yamlLines.join("\n");
     }
 
     const lines = ["[全局工作指令]"];

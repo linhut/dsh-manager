@@ -6,13 +6,87 @@
  */
 
 import { shell, BrowserWindow, dialog, clipboard, app } from 'electron';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLog } from './debug-logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/**
+ * 无窗口补丁源码（写入真实文件系统后通过 --require 注入 DSH 进程）
+ * 强制所有 child_process.spawn/exec/execFile/fork 使用 windowsHide: true，
+ * 根治 DSH Agent bash 调用弹窗问题。不修改 DSH 包文件，升级不丢失。
+ */
+const NO_WINDOW_PATCH_SOURCE = `'use strict';
+const cp = require('child_process');
+const origSpawn = cp.spawn;
+const origSpawnSync = cp.spawnSync;
+const origExec = cp.exec;
+const origExecSync = cp.execSync;
+const origExecFile = cp.execFile;
+const origExecFileSync = cp.execFileSync;
+const origFork = cp.fork;
+function forceNoWindow(options) {
+  if (process.platform !== 'win32') return options;
+  if (options && typeof options === 'object') options.windowsHide = true;
+  return options;
+}
+cp.spawn = function(cmd, args, options) {
+  if (args && typeof args === 'object' && !Array.isArray(args)) return origSpawn.call(this, cmd, forceNoWindow(args));
+  return origSpawn.call(this, cmd, args, forceNoWindow(options));
+};
+cp.spawnSync = function(cmd, args, options) {
+  if (args && typeof args === 'object' && !Array.isArray(args)) return origSpawnSync.call(this, cmd, forceNoWindow(args));
+  return origSpawnSync.call(this, cmd, args, forceNoWindow(options));
+};
+cp.exec = function(cmd, options, callback) {
+  if (typeof options === 'function' || options === undefined) return origExec.call(this, cmd, options, callback);
+  return origExec.call(this, cmd, forceNoWindow(options), callback);
+};
+cp.execSync = function(cmd, options) {
+  return origExecSync.call(this, cmd, forceNoWindow(options));
+};
+cp.execFile = function(file, args, options, callback) {
+  if (typeof args === 'function') return origExecFile.call(this, file, args, options);
+  if (typeof options === 'function') return origExecFile.call(this, file, args, forceNoWindow(options), callback);
+  return origExecFile.call(this, file, args, forceNoWindow(options), callback);
+};
+cp.execFileSync = function(file, args, options) {
+  if (args && typeof args === 'object' && !Array.isArray(args)) return origExecFileSync.call(this, file, forceNoWindow(args));
+  return origExecFileSync.call(this, file, args, forceNoWindow(options));
+};
+cp.fork = function(modulePath, args, options) {
+  if (args && typeof args === 'object' && !Array.isArray(args)) return origFork.call(this, modulePath, args);
+  return origFork.call(this, modulePath, args, forceNoWindow(options));
+};
+if (process.env.DSH_DEBUG) {
+  try {
+    const { appendFileSync, existsSync, mkdirSync } = require('fs');
+    const { join } = require('path');
+    const os = require('os');
+    const debugLog = join(process.env.DSH_HOME || (os.homedir() + '/.dsh'), 'manager', 'no-window-patch.log');
+    if (!existsSync(require('path').dirname(debugLog))) mkdirSync(require('path').dirname(debugLog), { recursive: true });
+    appendFileSync(debugLog, '[' + new Date().toISOString() + '] [INFO] no-window-patch 已加载, 进程: ' + process.pid + '\\n');
+  } catch (e) { console.error('no-window-patch init error:', e.message); }
+}`;
+
+/**
+ * 将无窗口补丁写入真实文件系统（userData 目录，不在 asar 内），返回可被系统 node --require 的路径
+ * @private
+ */
+function getPatchPath() {
+  const patchDir = join(app.getPath('userData'), 'patches');
+  if (!existsSync(patchDir)) mkdirSync(patchDir, { recursive: true });
+  const patchPath = join(patchDir, 'no-window-patch.cjs');
+  try {
+    writeFileSync(patchPath, NO_WINDOW_PATCH_SOURCE, 'utf-8');
+  } catch (e) {
+    writeLog('error', '写入无窗口补丁失败: ' + (e?.message || e));
+  }
+  return patchPath;
+}
 
 // 动态导入核心模块（使用相对路径，确保打包后可用）
 let core, marketplace;
@@ -74,9 +148,9 @@ async function spawnDSHWeb() {
   if (rt.lowMemory) {
     nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
   }
-  // 注入 --require 无窗口补丁（强制所有子进程 windowsHide: true，根治 bash 弹窗）
-  const patchPath = join(__dirname, 'no-window-patch.cjs');
-  const startArgsWithPatch = ['--require', patchPath, cliPath, ...startArgs];
+  // 注入 --require 无窗口补丁（写入真实文件系统，强制所有子进程 windowsHide: true）
+  const patchRealPath = getPatchPath();
+  const startArgsWithPatch = ['--require', patchRealPath, cliPath, ...startArgs];
   const child = execa('node', startArgsWithPatch, {
     detached: true,                // 所有平台脱离父进程树，防止被回收
     windowsHide: !nodeEnv.DSH_SHOW_CONSOLE, // 默认隐藏；设置 DSH_SHOW_CONSOLE=1 可显示控制台窗口
@@ -615,8 +689,8 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       if (rt.lowMemory) {
         nodeEnv.NODE_OPTIONS = `--max-old-space-size=${rt.maxOldSpace}`;
       }
-      const patchPath = join(__dirname, 'no-window-patch.cjs');
-      const startArgsWithPatch = ['--require', patchPath, cliPath, ...startArgs];
+      const patchRealPath = getPatchPath();
+      const startArgsWithPatch = ['--require', patchRealPath, cliPath, ...startArgs];
       const child = execa('node', startArgsWithPatch, {
         detached: true,
         windowsHide: !nodeEnv.DSH_SHOW_CONSOLE, // 默认隐藏；设置 DSH_SHOW_CONSOLE=1 可显示

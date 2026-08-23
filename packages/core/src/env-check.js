@@ -23,10 +23,15 @@ async function checkCommand(cmd, label) {
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }
-    if (stderr) {
+    // 部分工具把版本信息输出到 stderr，也认
+    if (stderr && stderr.trim()) {
+      const stderrVersion = stderr.trim().match(/v?\d+\.\d+\.\d+/);
+      if (stderrVersion) {
+        return { installed: true, version: stderrVersion[0], error: null };
+      }
       return { installed: false, version: null, error: stderr.trim() };
     }
-    return { installed: false, version: null, error: `${label} 命令未找到` };
+    return { installed: false, version: null, error: label + ' 命令未找到' };
   } catch (error) {
     return { installed: false, version: null, error: error.message };
   }
@@ -153,12 +158,19 @@ export async function requireNodeAndNpm(operation = '执行此操作') {
   if (!node.installed) {
     const guide = getNodeInstallGuide();
     throw new Error(
-      `未检测到 Node.js，请先安装 Node.js（含 npm）后再${operation}\n\n安装命令: ${guide}\n\n安装完成后重启 DSH Manager 即可。`
+      '未检测到 Node.js，请先安装 Node.js（含 npm）后再' + operation + '\n\n安装命令: ' + guide + '\n\n安装完成后重启 DSH Manager 即可。'
+    );
+  }
+  // 校验最低版本（readdirSync recursive 需要 Node 20.1+）
+  const nodeVer = (node.version || '').replace(/^v/, '').split('.').map(Number);
+  if (nodeVer[0] < 20 || (nodeVer[0] === 20 && nodeVer[1] < 1)) {
+    throw new Error(
+      'Node.js 版本过低（' + node.version + '），需要 >= 20.1。请升级 Node.js 后再' + operation + '\n\n升级命令: 前往 https://nodejs.org 下载 LTS 版本'
     );
   }
   if (!npm.installed) {
     throw new Error(
-      `检测到 Node.js（${node.version}）但 npm 不可用，请修复 npm 后再${operation}\n\n可尝试: npm install -g npm@latest 或重新安装 Node.js。`
+      '检测到 Node.js（' + node.version + '）但 npm 不可用，请修复 npm 后再' + operation + '\n\n可尝试: npm install -g npm@latest 或重新安装 Node.js。'
     );
   }
   return { node, npm };

@@ -35,10 +35,7 @@ function yamlDict(indent, obj) {
   const pad = ' '.repeat(indent);
   return Object.entries(obj).map(([k, v]) => pad + k + ': ' + yamlString(v)).join('\n');
 }
-function countEnvRefs(text) {
-  const m = text.match(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g);
-  return m ? m.length : 0;
-}
+// countEnvRefs removed — unused (use getEnvVarNames instead)
 function getEnvVarNames(text) {
   const m = text.match(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g);
   if (!m) return [];
@@ -52,7 +49,10 @@ function parseKvLine(line) {
   if (ci < 0) return null;
   const key = content.slice(0, ci).trim();
   let value = content.slice(ci + 1).trim();
-  value = value.replace(/^['"]*|['"]*$/g, '');
+  // 对称引号剥离：仅当首尾引号相同时才剥除
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
   const js = value.match(/^!!js\s+process\.env\.([A-Za-z_][A-Za-z0-9_]*)$/);
   if (js) value = '\${' + js[1] + '}';
   return { indent, key, value };

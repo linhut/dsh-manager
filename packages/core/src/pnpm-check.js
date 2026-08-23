@@ -8,6 +8,8 @@
 import { execa } from 'execa';
 import { DSHError, DSHErrorCodes } from './errors.js';
 
+// pnpm-check 专用错误码（已注册到 DSHErrorCodes.PNPM_NOT_FOUND）
+
 /**
  * 检测 pnpm 是否已安装
  * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
@@ -52,7 +54,7 @@ export async function requirePnpm(operation = '执行此操作') {
   if (!result.installed) {
     const guide = getPnpmInstallGuide();
     throw new DSHError(
-      DSHErrorCodes.PLUGIN_INSTALL_FAILED,
+      DSHErrorCodes.PNPM_NOT_FOUND,
       `未找到 pnpm，请先安装 pnpm 后再${operation}\n\n安装命令: ${guide}\n\n安装后重启 DSH Manager 即可。`
     );
   }

@@ -413,11 +413,11 @@ export function sortDSHVersionsDesc(versions) {
  * 列出已安装的 DSH 版本（npm 全局缓存）
  * @returns {Promise<string[]>}
  */
-export async function listDSHVersions() {
+export async function listDSHVersions(registry) {
   try {
-    const { stdout } = await execa('npm', [
-      'view', '@deepseek-ai/dsh', 'versions', '--json'
-    ], { reject: false, timeout: 30_000, windowsHide: true });
+    const args = ['view', '@deepseek-ai/dsh', 'versions', '--json'];
+    if (registry) args.push('--registry', registry);
+    const { stdout } = await execa('npm', args, { reject: false, timeout: 30_000, windowsHide: true });
     if (stdout) {
       const versions = JSON.parse(stdout);
       // 只保留合法语义化版本号（兼容 0.x-rc.N 预发布与未来的 1.x 正式版）
@@ -456,7 +456,12 @@ export async function checkDSHIntegrity() {
  * @returns {Promise<boolean>}
  */
 export async function isDSHInPath() {
-  return isDSHInstalled();
+  try {
+    const cmd = await resolveDSHCommand();
+    return !!cmd && cmd !== 'dsh';
+  } catch {
+    return false;
+  }
 }
 
 /**

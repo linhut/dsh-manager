@@ -9,7 +9,7 @@ import { execa } from 'execa';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
-import { DSH_PATHS, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, sortDSHVersionsDesc } from './dsh-utils.js';
+import { DSH_PATHS, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions } from './dsh-utils.js';
 import { requireNodeAndNpm } from './env-check.js';
 
 /**
@@ -337,20 +337,8 @@ export class DSHInstaller {
   async getAvailableVersions() {
     try {
       const registry = this.options.registry || INSTALL_OPTIONS.defaultRegistry;
-      const { stdout } = await execa('npm', [
-        'view', '@deepseek-ai/dsh', 'versions', '--json',
-        '--registry', registry,
-      ], { timeout: 30_000, reject: false, windowsHide: true });
-
-      if (stdout) {
-        const versions = JSON.parse(stdout);
-        // 只保留合法语义化版本号，并按语义化版本降序（最新在前）
-        // 注意：不能用字符串 .reverse() —— rc.10 会被排在 rc.9 前面
-        return sortDSHVersionsDesc(
-          versions.filter(v => typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v.trim()))
-        );
-      }
-      return [];
+      // 复用 dsh-utils 的 listDSHVersions，传入 registry 保持一致
+      return await listDSHVersions(registry);
     } catch {
       return [];
     }
@@ -489,6 +477,24 @@ export class DSHInstaller {
   }
 
   /**
+   * 递归检查目录下是否存在 .DELETE. 标记文件（手动遍历，兼容 Node <20.1 无 recursive 选项）
+   * @param {string} dir - 起始目录
+   * @param {number} [depth] - 剩余递归深度（防深层遍历拖慢）
+   * @returns {boolean}
+   * @private
+   */
+  _hasDeleteMarker(dir, depth = 8) {
+    if (!dir || depth <= 0) return false;
+    let entries = [];
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+    for (const e of entries) {
+      if (e.name.includes('.DELETE.')) return true;
+      if (e.isDirectory() && this._hasDeleteMarker(join(dir, e.name), depth - 1)) return true;
+    }
+    return false;
+  }
+
+  /**
    * 强制删除目录（Windows 文件锁兜底）
    *
    * 直接 rmSync 在目录被进程/杀毒软件短暂占用时同样会抛 ENOTEMPTY，
@@ -564,8 +570,7 @@ export class DSHInstaller {
       // ② 存在 npm 清理残留的 .DELETE. 临时文件 → 上次卸载被中断
       if (!reason) {
         try {
-          const entries = readdirSync(join(dshPath, 'node_modules'), { recursive: true });
-          if (entries.some(e => e.includes('.DELETE.'))) {
+          if (this._hasDeleteMarker(join(dshPath, 'node_modules'))) {
             reason = '残留 .DELETE. 临时文件';
           }
         } catch {}

@@ -26,23 +26,31 @@ export class DSHConfig {
       return { settings: {}, credentials: {} };
     }
 
+    let settings = {};
     try {
       const content = readFileSync(this.configPath, 'utf-8');
-      const settings = this._parseYAML(content);
-      
-      let credentials = {};
-      if (existsSync(this.credPath)) {
-        const credContent = readFileSync(this.credPath, 'utf-8');
-        credentials = this._parseYAML(credContent);
-      }
-
-      return { settings, credentials };
+      settings = this._parseYAML(content);
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.CONFIG_PARSE_ERROR,
-        `配置解析失败: ${error.message}`
+        'settings 文件解析失败 (' + this.configPath + '): ' + error.message
       );
     }
+
+    let credentials = {};
+    if (existsSync(this.credPath)) {
+      try {
+        const credContent = readFileSync(this.credPath, 'utf-8');
+        credentials = this._parseYAML(credContent);
+      } catch (error) {
+        throw new DSHError(
+          DSHErrorCodes.CONFIG_PARSE_ERROR,
+          '凭据文件解析失败 (' + this.credPath + '): ' + error.message
+        );
+      }
+    }
+
+    return { settings, credentials };
   }
 
   /**
@@ -54,7 +62,14 @@ export class DSHConfig {
     const filePath = type === 'credentials' ? this.credPath : this.configPath;
     const dir = dirname(filePath);
 
-    // 写前结构校验（settings 专属） + 自动修复字符串模型项
+    // 写前结构校验
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+      throw new DSHError(
+        DSHErrorCodes.INVALID_PARAMS,
+        '写入内容必须为非数组对象，收到 ' + (config === null ? 'null' : typeof config)
+      );
+    }
+
     if (type === 'settings') {
       config = this._normalizeModels(config);
       const v = this.validateSettings(config);
@@ -65,6 +80,7 @@ export class DSHConfig {
         );
       }
     }
+    // type === 'credentials' 只校验对象结构，不校验具体字段
 
     const yaml = this._toYAML(config);
 
@@ -325,8 +341,8 @@ export class DSHConfig {
         if (Array.isArray(pcfg.models)) {
           pcfg.models = pcfg.models.map(function(m) {
             if (typeof m === 'string') {
-              var s = m.trim();
-              var m2 = /^id\s*:\s*(.+)$/.exec(s);
+              const s = m.trim();
+              const m2 = /^id\s*:\s*(.+)$/.exec(s);
               return { id: m2 ? m2[1].trim() : s };
             }
             return m;
@@ -342,9 +358,9 @@ export class DSHConfig {
    * @private
    */
   _backupPath(filePath) {
-    var d = new Date();
-    var p = function(n) { return String(n).padStart(2, '0'); };
-    var ts = d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + String(d.getMilliseconds()).padStart(3, '0');
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const ts = d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + String(d.getMilliseconds()).padStart(3, '0');
     return filePath + '.bak-' + ts;
   }
 
@@ -355,10 +371,10 @@ export class DSHConfig {
   _pruneBackups(dir, filePath) {
     const MAX = 10;
     try {
-      var prefix = filePath.split(/[/\\]/).pop();
-      var entries = readdirSync(dir);
-      var backups = entries.filter(function(f) { return f.startsWith(prefix + '.bak-'); }).sort().reverse();
-      for (var i = MAX; i < backups.length; i++) {
+      const prefix = filePath.split(/[/\\]/).pop();
+      const entries = readdirSync(dir);
+      const backups = entries.filter(f => f.startsWith(prefix + '.bak-')).sort().reverse();
+      for (let i = MAX; i < backups.length; i++) {
         rmSync(join(dir, backups[i]), { force: true });
       }
     } catch (e) {}
@@ -375,12 +391,12 @@ export class DSHConfig {
     const dir = dirname(filePath);
     if (!existsSync(dir)) return [];
     try {
-      var prefix = filePath.split(/[/\\]/).pop();
-      return readdirSync(dir).filter(function(f) { return f.startsWith(prefix + '.bak-'); }).map(function(f) {
-        var full = join(dir, f);
-        var st = statSync(full);
+      const prefix = filePath.split(/[/\\]/).pop();
+      return readdirSync(dir).filter(f => f.startsWith(prefix + '.bak-')).map(f => {
+        const full = join(dir, f);
+        const st = statSync(full);
         return { name: f, path: full, mtime: st.mtimeMs, size: st.size };
-      }).sort(function(a, b) { return b.mtime - a.mtime; });
+      }).sort((a, b) => b.mtime - a.mtime);
     } catch (e) { return []; }
   }
 
@@ -390,6 +406,7 @@ export class DSHConfig {
    * @returns {Promise<{name: string, path: string}>}
    */
   async createBackup(reason) {
+    // reason 参数保留供扩展使用（当前未在备份名中体现）
     const filePath = this.configPath;
     if (!existsSync(filePath)) {
       throw new DSHError(DSHErrorCodes.NOT_FOUND, '配置文件不存在，无法备份');
@@ -409,16 +426,16 @@ export class DSHConfig {
   async restoreBackup(nameOrIndex) {
     const filePath = this.configPath;
     const backups = await this.listBackups('settings');
-    var target = backups.find(function(b) { return b.name === nameOrIndex || b.path === nameOrIndex; });
+    const target = backups.find(b => b.name === nameOrIndex || b.path === nameOrIndex);
     if (!target && /^\d+$/.test(String(nameOrIndex))) {
-      var idx = Number(nameOrIndex);
+      const idx = Number(nameOrIndex);
       target = backups[idx];
     }
     if (!target) {
       throw new DSHError(DSHErrorCodes.NOT_FOUND, '未找到备份: ' + nameOrIndex);
     }
     // 还原前先备份当前文件
-    var prePath = null;
+    let prePath = null;
     if (existsSync(filePath)) {
       prePath = filePath + '.bak-pre-restore-' + Date.now();
       copyFileSync(filePath, prePath);
@@ -427,16 +444,16 @@ export class DSHConfig {
     copyFileSync(target.path, filePath);
     // 校验还原内容
     try {
-      var restored = this._parseYAML(readFileSync(filePath, 'utf-8'));
+      let restored = this._parseYAML(readFileSync(filePath, 'utf-8'));
       restored = this._normalizeModels(restored);
-      var v = this.validateSettings(restored);
+      const v = this.validateSettings(restored);
       if (!v.ok) {
         // 自动修复：将字符串模型转为对象后重写
-        var yaml = this._toYAML(restored);
+        const yaml = this._toYAML(restored);
         writeFileSync(filePath, yaml, 'utf-8');
         // 再次校验
         restored = this._parseYAML(readFileSync(filePath, 'utf-8'));
-        var v2 = this.validateSettings(restored);
+        const v2 = this.validateSettings(restored);
         if (!v2.ok) {
           // 修复后仍失败 → 回滚
           if (prePath) {
@@ -464,8 +481,8 @@ export class DSHConfig {
    */
   async checkConfig() {
     try {
-      var content = readFileSync(this.configPath, 'utf-8');
-      var settings = this._parseYAML(content);
+      const content = readFileSync(this.configPath, 'utf-8');
+      let settings = this._parseYAML(content);
       // 自动修复模型格式
       settings = this._normalizeModels(settings);
       return this.validateSettings(settings);
