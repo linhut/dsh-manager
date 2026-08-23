@@ -89,12 +89,48 @@ async function resolveDSHPackageJson() {
     }
   } catch {}
 
-  // ③ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
+  // ③ 通过 pnpm root -g 获取 pnpm 全局路径（npm 不可用时的备选）
+  try {
+    const { stdout: pnpmRoot } = await execa('pnpm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+    if (pnpmRoot && pnpmRoot.trim()) {
+      candidates.push(join(pnpmRoot.trim(), '@deepseek-ai', 'dsh', 'package.json'));
+    }
+  } catch {}
+
+  // ④ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
   try {
     const { stdout } = await execa('node', [
       '-e', 'try { console.log(require.resolve("@deepseek-ai/dsh/package.json")); } catch(e) { console.log(""); }'
     ], { reject: false, timeout: 10_000 });
     if (stdout && stdout.trim().length > 0) candidates.push(stdout.trim());
+  } catch {}
+
+  // ⑤ 通过 dsh 命令本身查找：兼容 npm/pnpm 不在 PATH 但 dsh 在 PATH 的场景
+  try {
+    const dshCmd = await resolveDSHCommand();
+    if (dshCmd && dshCmd !== 'dsh' && existsSync(dshCmd)) {
+      const cmdDir = dirname(dshCmd);
+      // 直接父级 node_modules（npm 全局布局：bin 目录与 node_modules 同级）
+      candidates.push(join(cmdDir, '..', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+      // 双层父级（某些 pnpm/其他布局）
+      candidates.push(join(cmdDir, '..', '..', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+    }
+  } catch {}
+
+  // ⑥ 兜底：检查 DSH_HOME 下是否有已记录的版本文件（已安装记录）
+  try {
+    const versionsPath = join(DSH_PATHS.home, 'versions.json');
+    if (existsSync(versionsPath)) {
+      const records = JSON.parse(readFileSync(versionsPath, 'utf-8'));
+      if (Array.isArray(records) && records.length > 0) {
+        // 遍历所有记录，尝试从记录的路径查找
+        for (const rec of records) {
+          if (rec.path && existsSync(join(rec.path, 'package.json'))) {
+            candidates.push(join(rec.path, 'package.json'));
+          }
+        }
+      }
+    }
   } catch {}
 
   for (const pkgPath of candidates) {
@@ -162,12 +198,23 @@ export async function resolveDSHCommand() {
   // ① 优先 PATH 中的 dsh
   try {
     const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 5_000, windowsHide: true });
-    if (stdout && stdout.trim()) return 'dsh';
+    if (stdout && stdout.trim()) {
+      // dsh 在 PATH 中，尝试获取完整路径（用于推导 package.json 位置）
+      try {
+        const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+        const { stdout: fullPath } = await execa(whichCmd, ['dsh'], { reject: false, timeout: 5_000, windowsHide: true });
+        if (fullPath && fullPath.trim()) {
+          const path = fullPath.trim().split('\n')[0].trim(); // where 可能返回多行
+          if (path && (existsSync(path) || path.endsWith('.cmd') || path.endsWith('.exe'))) return path;
+        }
+      } catch {}
+      return 'dsh';
+    }
   } catch {}
 
   // ② 通过 npm root -g 推导全局 bin 目录（Windows: <prefix> 下有 dsh.cmd；POSIX: <prefix>/bin/dsh）
   try {
-    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000 });
+    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     if (globalRoot && globalRoot.trim()) {
       const prefix = dirname(globalRoot.trim());
       const candidates = process.platform === 'win32'

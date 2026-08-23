@@ -145,7 +145,18 @@ dsh-manager/
 │   ├── index.html      # 主页面
 │   └── assets/
 │       ├── css/style.css  # 暗色主题样式
-│       └── js/app.js      # 应用逻辑
+│       └── js/
+│           ├── app.js      # 应用初始化与页面渲染
+│           └── modules/    # 模块化架构
+│               ├── state.js        # 全局响应式状态
+│               ├── utils.js        # 工具库 + Toast + 模态确认 + 缓存 + 超时管理
+│               ├── debug.js        # 调试日志
+│               ├── theme.js        # 主题切换
+│               ├── dsh-status.js   # DSH/npm/pnpm/依赖状态检测
+│               ├── dsh-control.js  # DSH Webview/启动/停止/诊断
+│               ├── page-manager.js # 页面生命周期管理（懒加载）
+│               ├── constants.js    # 魔法字符串集中管理
+│               └── shortcuts.js    # 键盘快捷键
 ├── packages/           # 核心逻辑
 │   ├── core/           # DSH 安装、配置、版本管理
 │   └── marketplace/    # 插件市场
@@ -157,9 +168,11 @@ dsh-manager/
 
 ## 八、未来规划
 
-- [ ] 自动检测 DSH 运行状态并启动/停止
-- [ ] 插件市场分类和评分
+- [x] 自动检测 DSH 运行状态并启动/停止（dsh-status/dsh-control 模块）
+- [x] 插件市场分类和评分（分类/范围/排序筛选）
+- [x] 主题切换（亮色/暗色/跟随系统）
 - [ ] 多语言支持 (英文/中文)
-- [ ] 自动更新
+- [ ] 自动更新（DSH Manager 本体）
 - [ ] 系统托盘
-- [ ] 主题切换
+- [ ] 将 app.js 剩余渲染函数进一步拆分为 pages/ 页面模块
+- [ ] IPC 调用统一通信层（错误码 + 超时 + 重试）

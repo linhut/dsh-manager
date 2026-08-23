@@ -6,7 +6,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -86,5 +86,63 @@ describe('Version Consistency', () => {
     const mktPkg = JSON.parse(read('packages/marketplace/package.json'));
     const versions = [rootPkg.version, corePkg.version, mktPkg.version];
     assert.equal(new Set(versions).size, 1, 'Versions differ: ' + versions.join(', '));
+  });
+});
+
+
+describe('T7: 新增架构检查', () => {
+  it('should have IPC event consistency (send ↔ on)', () => {
+    const ipc = read('electron/ipc-handlers.js');
+    const main = read('electron/main.js');
+    const preload = read('electron/preload.cjs');
+    const sendEvents = [...ipc.matchAll(/\.send\s*\(\s*'([^']+)'/g), ...main.matchAll(/\.send\s*\(\s*'([^']+)'/g)].map(m => m[1]);
+    const onEvents = [...preload.matchAll(/ipcRenderer\.on\s*\(\s*'([^']+)'/g)].map(m => m[1]);
+    const uniqueSends = [...new Set(sendEvents)];
+    const uniqueOns = [...new Set(onEvents)];
+    const missingOns = uniqueSends.filter(e => !uniqueOns.includes(e));
+    const missingSends = uniqueOns.filter(e => !uniqueSends.includes(e));
+    assert.equal(missingOns.length, 0, 'Send events without listeners: ' + missingOns.join(', '));
+    assert.equal(missingSends.length, 0, 'Listeners without send events: ' + missingSends.join(', '));
+  });
+
+  it('should load new module files', () => {
+    for (const m of ['constants.js', 'shortcuts.js', 'page-manager.js']) {
+      assert.ok(existsSync(join(root, 'src/assets/js/modules/' + m)), m + ' exists');
+    }
+  });
+
+  it('should have no native confirm() calls in renderer', () => {
+    const app = read('src/assets/js/app.js');
+    const mods = readdirSync(join(root, 'src/assets/js/modules')).filter(f => f.endsWith('.js'));
+    const allJS = [app, ...mods.map(f => read('src/assets/js/modules/' + f))].join('\n');
+    // 排除 showConfirm()，只查原生 confirm()
+    const native = [...allJS.matchAll(/(?:^|[^.\w])(confirm|alert)\s*\(/g)];
+    const real = native.filter(m => {
+      const before = allJS.slice(Math.max(0, m.index - 20), m.index);
+      return !before.includes('show') && !before.includes('.confirming');
+    });
+    assert.equal(real.length, 0, 'Native confirm()/alert() found: ' + real.length);
+  });
+
+  it('should have no eval() or new Function() calls', () => {
+    const app = read('src/assets/js/app.js');
+    const mods = readdirSync(join(root, 'src/assets/js/modules')).filter(f => f.endsWith('.js'));
+    const allJS = [app, ...mods.map(f => read('src/assets/js/modules/' + f))].join('\n');
+    assert.equal((allJS.match(/[^.\w]eval\s*\(/g) || []).length, 0, 'No eval() allowed');
+    assert.equal((allJS.match(/[^.\w]Function\s*\(/g) || []).length, 0, 'No new Function() allowed');
+  });
+
+  it('should have package-lock.json version matching root', () => {
+    const lock = JSON.parse(read('package-lock.json'));
+    const rootPkg = JSON.parse(read('package.json'));
+    assert.equal(lock.version, rootPkg.version, 'Lock ' + lock.version + ' vs root ' + rootPkg.version);
+  });
+
+  it('should use timeoutManager.timeoutPromise in app.js', () => {
+    assert.ok(read('src/assets/js/app.js').includes('timeoutManager.timeoutPromise'), 'timeoutManager used');
+  });
+
+  it('should call initKeyboardShortcuts in app.js', () => {
+    assert.ok(read('src/assets/js/app.js').includes('initKeyboardShortcuts()'), 'shortcuts initialized');
   });
 });

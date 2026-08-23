@@ -123,9 +123,8 @@ async function checkPnpmStatus() {
       statusEl.style.cursor = 'pointer';
       statusEl.title = '点击一键安装 pnpm';
       statusEl.onclick = () => {
-        if (confirm('pnpm 未安装，插件管理功能不可用。\n是否立即一键安装 pnpm？（npm install -g pnpm）')) {
-          installPnpm();
-        }
+        showConfirm('安装 pnpm', 'pnpm 未安装，插件管理功能不可用。\n是否立即一键安装 pnpm？（npm install -g pnpm）', { confirmText: '一键安装' })
+          .then((ok) => { if (ok) installPnpm(); });
       };
     }
   } catch (err) {
@@ -202,7 +201,7 @@ async function repairDepsFromUI() {
       return;
     }
     const issues = health.issues || 0;
-    const ok = confirm('依赖完整性检查发现 ' + issues + ' 个问题。\n\n点击确定将从 DSH 全局安装副本复制缺失/损坏的包文件到当前 profile。\n\n此操作不会影响已安装的插件和配置。');
+    const ok = await showConfirm('修复依赖', '依赖完整性检查发现 ' + issues + ' 个问题。\n\n点击确定将从 DSH 全局安装副本复制缺失/损坏的包文件到当前 profile。\n\n此操作不会影响已安装的插件和配置。', { confirmText: '开始修复' });
     if (!ok) return;
     showToast('正在修复依赖...', 'info');
     const result = await window.dshManager.repairDeps('web', {});

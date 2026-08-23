@@ -70,78 +70,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {}
   }
 
-  // 首次渲染页面（让用户尽快看到内容，不因检测阻塞）
-  // 低配置优化：plugins/skills/versions 为重型页面（会执行 dsh 命令/网络请求），
-  // 改为进入对应页面时由 switchPage 懒加载，避免启动时全部跑一遍拖慢应用
-  if (window.pageManager) {
-    // Page manager handles lazy loading
-    pageManager.navigate('install');
-  } else {
-    renderInstallPage();
-    renderSettingsPage();
-    renderAboutPage();
+  // 初始化键盘快捷键（模块化后由 shortcuts.js 提供）
+  if (typeof initKeyboardShortcuts === 'function') {
+    initKeyboardShortcuts();
   }
 
-  // 异步检测 DSH 状态（带超时保护，不阻塞 UI）
-  // 注意：Promise.race 不会取消超时定时器，必须在回调里用完成标志防止
-  // 检测成功后仍把状态覆盖成"检测超时"
-  let dshCheckDone = false;
-  Promise.race([
-    checkDSHStatus().then(() => { dshCheckDone = true; }),
-    new Promise(r => setTimeout(() => {
-      if (!dshCheckDone) {
-        console.warn('checkDSHStatus 超时，跳过');
-        updateStatusToError('dshStatus', 'DSH 检测超时');
-      }
-      r();
-    }, 30_000))
-  ]).then(() => {
-    if (state.dshInstalled && autoStartConsole) {
-      tryLoadDSHWeb();
-    }
-  }).catch(() => {});
-
-  // 异步检测 pnpm 状态（带超时保护）
-  let pnpmCheckDone = false;
-  Promise.race([
-    checkPnpmStatus().then(() => { pnpmCheckDone = true; }),
-    new Promise(r => setTimeout(() => {
-      if (!pnpmCheckDone) {
-        console.warn('checkPnpmStatus 超时，跳过');
-        updateStatusToError('pnpmStatus', 'pnpm 检测超时');
-      }
-      r();
-    }, 30_000))
-  ]).catch(() => {});
-
-  // 异步检测 npm 状态（带超时保护）
-  let npmCheckDone = false;
-  Promise.race([
-    checkNpmStatus().then(() => { npmCheckDone = true; }),
-    new Promise(r => setTimeout(() => {
-      if (!npmCheckDone) {
-        console.warn('checkNpmStatus 超时，跳过');
-        updateStatusToError('npmStatus', 'npm 检测超时');
-      }
-      r();
-    }, 30_000))
-  ]).catch(() => {});
-
-  // 异步检测依赖完整性（带超时保护）
-  let depsCheckDone = false;
-  Promise.race([
-    checkDepsHealth().then(() => { depsCheckDone = true; }),
-    new Promise(r => setTimeout(() => {
-      if (!depsCheckDone) {
-        console.warn('checkDepsHealth 超时，跳过');
-        const el = document.getElementById('depsHealthStatus');
-        if (el) { el.querySelector('.status-text').textContent = '依赖检测超时'; }
-      }
-      r();
-    }, 30_000))
-  ]).catch(() => {});
-
   // 读取 Manager 设置（自动打开控制台 / 启动时检查更新）
+  // TDZ 修复：在异步检测之前声明，避免 Promise 回调读到未初始化变量
   let autoStartConsole = true;
   let checkUpdatesOnStartup = true;
   try {
@@ -166,12 +101,69 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch {}
 
-  //   // 等 checkDSHStatus 完成后再尝试加载 DSH Web
-  // (已移至 Promise.race .then() 中)
+  // 注册页面到 PageManager（修复导航：此前从未调用 register，导航实际无效）
+  if (window.pageManager) {
+    pageManager.register('dashboard', { render: () => { tryLoadDSHWeb(); } });
+    pageManager.register('install', { render: () => renderInstallPage() });
+    pageManager.register('plugins', { render: () => renderPluginsPage() });
+    pageManager.register('skills', { render: () => renderSkillsPage() });
+    pageManager.register('versions', { render: () => renderVersionsPage() });
+    pageManager.register('settings', { render: () => renderSettingsPage() });
+    pageManager.register('prompts', { render: () => renderPromptsPage() });
+    pageManager.register('about', { render: () => renderAboutPage() });
+  }
+
+  // 首次渲染页面（让用户尽快看到内容，不因检测阻塞）
+  // 低配置优化：plugins/skills/versions 为重型页面，进入时由 PageManager 懒加载
+  if (window.pageManager) {
+    pageManager.navigate('install');
+  } else {
+    renderInstallPage();
+    renderSettingsPage();
+    renderAboutPage();
+  }
+
+  // 异步检测 DSH 状态（带超时保护，统一使用 timeoutManager）
+  const dshStatusCheck = timeoutManager.timeoutPromise(checkDSHStatus(), 30_000, 'DSH 状态检测')
+    .catch(() => {
+      console.warn('checkDSHStatus 超时，跳过');
+      updateStatusToError('dshStatus', 'DSH 检测超时');
+    });
+
+  // 等 checkDSHStatus 完成后尝试加载 DSH Web（只有首次安装/启动成功才自动打开控制台）
+  (async () => {
+    try {
+      await dshStatusCheck;
+      if (state.dshInstalled && autoStartConsole) {
+        tryLoadDSHWeb();
+      }
+    } catch {}
+  })();
+
+  // 异步检测 pnpm 状态（带超时保护）
+  timeoutManager.timeoutPromise(checkPnpmStatus(), 30_000, 'pnpm 状态检测')
+    .catch(() => {
+      console.warn('checkPnpmStatus 超时，跳过');
+      updateStatusToError('pnpmStatus', 'pnpm 检测超时');
+    });
+
+  // 异步检测 npm 状态（带超时保护）
+  timeoutManager.timeoutPromise(checkNpmStatus(), 30_000, 'npm 状态检测')
+    .catch(() => {
+      console.warn('checkNpmStatus 超时，跳过');
+      updateStatusToError('npmStatus', 'npm 检测超时');
+    });
+
+  // 异步检测依赖完整性（带超时保护）
+  timeoutManager.timeoutPromise(checkDepsHealth(), 30_000, '依赖完整性检测')
+    .catch(() => {
+      console.warn('checkDepsHealth 超时，跳过');
+      const el = document.getElementById('depsHealthStatus');
+      if (el) { el.querySelector('.status-text').textContent = '依赖检测超时'; }
+    });
 
   // 开启"启动时检查 DSH 更新"则静默检查一次
-  // 低配置优化：延迟 15 秒执行，避开启动高峰期（dsh 状态检测等子进程并发），
-  // 避免低配机器在启动瞬间因多个子进程争抢 CPU/IO 而卡顿
+  // 低配置优化：延迟 15 秒执行，避开启动高峰期（dsh 状态检测等子进程并发）
   if (checkUpdatesOnStartup) {
     setTimeout(() => { try { checkDSHUpdateStartup(); } catch {} }, 15_000);
   }
@@ -276,7 +268,7 @@ function renderInstallPage() {
         </div>
         <div class="card-body">
           ${state.dshInstalled
-            ? `<p>当前版本: <strong>${state.dshVersion}</strong></p>
+            ? `<p>当前版本: <strong>${escapeHtml(state.dshVersion)}</strong></p>
                <p style="margin-top:8px;color:var(--text-dim);">DSH 已就绪，可以开始使用</p>`
             : `<p>DeepSeek Harness 尚未安装。</p>
                <p style="margin-top:8px;color:var(--text-dim);">点击下方按钮一键安装</p>`
@@ -474,7 +466,7 @@ async function installPortableNode() {
 }
 
 async function uninstallPortableNode() {
-  if (!confirm('确定卸载便携版 Node 吗？将删除 ~/.dsh/env/node 目录，无系统残留。')) return;
+  if (!(await showConfirm('卸载便携版 Node', '确定卸载便携版 Node 吗？将删除 ~/.dsh/env/node 目录，无系统残留。', { confirmText: '卸载', confirmVariant: 'danger' }))) return;
   try {
     await window.dshManager.uninstallNodejsPortable();
     showToast('✅ 便携版 Node 已卸载', 'success');
@@ -693,7 +685,7 @@ async function upgradeDSH() {
     if (!update.current) {
       const latest = update.latest || '最新版';
       showToast(`DSH 未安装，最新版本为 ${latest}`, 'warning');
-      if (confirm(`检测到 DSH 尚未安装。\n最新版本: ${latest}\n是否立即下载并安装？`)) {
+      if (await showConfirm('安装 DSH', `检测到 DSH 尚未安装。\n最新版本: ${latest}\n是否立即下载并安装？`, { confirmText: '立即安装' })) {
         await window.dshManager.installDSH(null, null, 'auto');
         showToast('DSH 安装成功！', 'success');
         await checkDSHStatus();
@@ -704,7 +696,7 @@ async function upgradeDSH() {
     }
     if (update.hasUpdate) {
       showToast(`发现新版本: ${update.latest}`, 'info');
-      if (confirm(`发现新版本 DSH ${update.latest}（当前: ${update.current}），是否升级？`)) {
+      if (await showConfirm('升级 DSH', `发现新版本 DSH ${update.latest}（当前: ${update.current}），是否升级？`, { confirmText: '立即升级' })) {
         await window.dshManager.installDSH(null, null);
         showToast('DSH 升级成功！', 'success');
         await checkDSHStatus();
@@ -751,7 +743,7 @@ async function runDoctor() {
 
 // ====== 卸载 DSH ======
 async function uninstallDSH() {
-  if (!confirm('确定要卸载 DSH 吗？此操作不会删除配置和数据文件。')) return;
+  if (!(await showConfirm('卸载 DSH', '确定要卸载 DSH 吗？此操作不会删除配置和数据文件。', { confirmText: '卸载', confirmVariant: 'danger' }))) return;
   try {
     await window.dshManager.uninstallDSH();
     showToast('DSH 已卸载', 'success');
@@ -781,7 +773,7 @@ async function diagnoseAndFixPlugins() {
     }
 
     const reasons = diag.invalid.map(p => `• ${p.id}: ${p.reason}`).join('\n');
-    const ok = confirm(`检测到 ${diag.invalid.length} 个无效插件条目（可能导致 DSH 启动失败）：\n\n${reasons}\n\n是否一键移除？`);
+    const ok = await showConfirm('移除无效插件', `检测到 ${diag.invalid.length} 个无效插件条目（可能导致 DSH 启动失败）：\n\n${reasons}\n\n是否一键移除？`, { confirmText: '一键移除', confirmVariant: 'danger' });
     if (!ok) return;
 
     showToast('正在移除无效条目...', 'info');
@@ -1295,7 +1287,7 @@ async function showPluginDetails(fullName) {
     let html = '';
     // package.json 信息
     if (info.packageJson && Object.keys(info.packageJson).length > 0) {
-      html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">📦 ${info.packageJson.npmPackage || ''}${info.packageJson.version ? ` @ ${info.packageJson.version}` : ''}${info.packageJson.dshPlugin ? ' · dsh-plugin' : ''}${info.packageJson.cordisPlugin ? ' · cordis' : ''}</div>`;
+      html += `<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">📦 ${escapeHtml(info.packageJson.npmPackage || '')}${info.packageJson.version ? ` @ ${escapeHtml(info.packageJson.version)}` : ''}${info.packageJson.dshPlugin ? ' · dsh-plugin' : ''}${info.packageJson.cordisPlugin ? ' · cordis' : ''}</div>`;
     }
     // README 图片预览（AppStore 风格截图展示，最多 3 张）
     if (info.readme) {
@@ -1305,14 +1297,15 @@ async function showPluginDetails(fullName) {
           <p style="font-size:12px;color:var(--text-dim);margin-bottom:6px;"><strong>🖼️ 预览</strong></p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             ${imgMatches.map(u => {
-              const src = u.startsWith('http') ? u : `https://raw.githubusercontent.com/${fullName}/main/${u.replace(/^\.?\//, '')}`;
-              return `<img src="${src}" style="max-width:100%;max-height:160px;border-radius:var(--radius-sm);border:1px solid var(--border);" loading="lazy" onerror="this.style.display='none'">`;
+              const rawSrc = u.startsWith('http') ? u : `https://raw.githubusercontent.com/${fullName}/main/${u.replace(/^\.?\//, '')}`;
+              const src = /^(https?:|data:image\/)/.test(rawSrc) ? rawSrc : '';
+              return `<img src="${escapeAttr(src)}" style="max-width:100%;max-height:160px;border-radius:var(--radius-sm);border:1px solid var(--border);" loading="lazy" onerror="this.style.display='none'">`;
             }).join('')}
           </div>
         </div>`;
       }
       const plain = info.readme.replace(/```[\s\S]*?```/g, '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/[#>*_`~\[\]()!-]/g, '').replace(/\s+/g, ' ').trim();
-      html += `<div style="font-size:12px;color:var(--text-muted);line-height:1.7;background:var(--bg-primary);padding:12px;border-radius:var(--radius-sm);max-height:240px;overflow-y:auto;margin-bottom:12px;">${plain.slice(0, 600)}${plain.length > 600 ? '...' : ''}</div>`;
+      html += `<div style="font-size:12px;color:var(--text-muted);line-height:1.7;background:var(--bg-primary);padding:12px;border-radius:var(--radius-sm);max-height:240px;overflow-y:auto;margin-bottom:12px;">${escapeHtml(plain.slice(0, 600))}${plain.length > 600 ? '...' : ''}</div>`;
     }
     // 最近版本
     if (info.releases && info.releases.length > 0) {
@@ -1320,8 +1313,8 @@ async function showPluginDetails(fullName) {
         <p style="margin-bottom:4px;"><strong>🏷️ 最近版本</strong></p>
         ${info.releases.slice(0, 5).map(r => `
           <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);">
-            <span>${r.tag || r.name}</span>
-            <span>${r.publishedAt ? new Date(r.publishedAt).toLocaleDateString() : ''}</span>
+            <span>${escapeHtml(r.tag || r.name)}</span>
+            <span>${escapeHtml(r.publishedAt ? new Date(r.publishedAt).toLocaleDateString() : '')}</span>
           </div>`).join('')}
       </div>`;
     }
@@ -1329,7 +1322,7 @@ async function showPluginDetails(fullName) {
   } catch (err) {
     const extraEl = document.getElementById('pluginDetailExtra');
     if (extraEl) {
-      extraEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px;">⚠️ 详情加载失败：${err.message || '网络错误'}（可在项目地址查看）</p>`;
+      extraEl.innerHTML = `<p style="color:var(--text-dim);font-size:12px;">⚠️ 详情加载失败：${escapeHtml(err.message || '网络错误')}（可在项目地址查看）</p>`;
     }
   }
 }
@@ -1576,7 +1569,7 @@ async function runBatchInstall() {
 }
 
 async function uninstallPlugin(id) {
-  if (!confirm(`确定要卸载插件 "${id}" 吗？`)) return;
+  if (!(await showConfirm('卸载插件', `确定要卸载插件 "${id}" 吗？`, { confirmText: '卸载', confirmVariant: 'danger' }))) return;
   try {
     const result = await window.dshManager.uninstallPlugin(id);
     if (result && result.success === false) {
@@ -1893,7 +1886,7 @@ async function toggleSkillInvocation(encodedName, kind, value) {
 }
 async function deleteSkill(encodedName) {
   const name = decodeURIComponent(encodedName);
-  if (!confirm('确定删除技能 ' + name + '？该操作不可恢复。')) return;
+  if (!(await showConfirm('删除技能', '确定删除技能 ' + name + '？该操作不可恢复。', { confirmText: '删除', confirmVariant: 'danger' }))) return;
   try { await window.dshManager.skillsDelete(name); showToast('已删除: ' + name, 'success'); renderSkillsPage(); }
   catch (e) { showToast('删除失败: ' + e.message, 'error'); }
 }
@@ -2157,7 +2150,7 @@ async function renderVersionsPage() {
         </div>
         <div class="card-body" style="text-align:center;padding:20px;">
           <div style="font-size:48px;margin-bottom:12px;">📦</div>
-          <div style="font-size:24px;font-weight:700;color:var(--primary-light);">${state.dshVersion || '未安装'}</div>
+          <div style="font-size:24px;font-weight:700;color:var(--primary-light);">${escapeHtml(state.dshVersion || '未安装')}</div>
           <p style="color:var(--text-dim);margin-top:8px;">DeepSeek Harness</p>
           <div style="margin-top:16px;">
             <button class="btn btn-primary" onclick="upgradeDSH()">🔄 检查更新</button>
@@ -2274,7 +2267,7 @@ function bindSwitchVersionProgress() {
 }
 
 async function switchDSHVersion(version) {
-  if (!confirm(`确定要切换到 DSH ${version} 吗？\n将先卸载当前版本，再安装目标版本。`)) return;
+  if (!(await showConfirm('切换版本', `确定要切换到 DSH ${version} 吗？\n将先卸载当前版本，再安装目标版本。`, { confirmText: '切换', confirmVariant: 'primary' }))) return;
   ensureSwitchProgressUI();
   updateSwitchVersionProgress({ message: '开始切换版本...' });
   bindSwitchVersionProgress();
@@ -2384,7 +2377,7 @@ async function createProfile() {
 }
 
 async function backupProfile(name) {
-  if (!confirm(`确定备份 Profile "${name}" 吗？`)) return;
+  if (!(await showConfirm('备份 Profile', `确定备份 Profile "${name}" 吗？`, { confirmText: '备份', confirmVariant: 'primary' }))) return;
   try {
     const result = await window.dshManager.backupProfile(name);
     showToast(`已备份到 ${result.backupPath}`, 'success');
@@ -2432,7 +2425,7 @@ async function renderDataManagement() {
 
 async function cleanData(key) {
   const labels = { sessions: '会话', storages: '存储', cache: '管理器/缓存' };
-  if (!confirm(`确定清空${labels[key] || key}数据吗？此操作不可恢复。`)) return;
+  if (!(await showConfirm('清理数据', `确定清空${labels[key] || key}数据吗？此操作不可恢复。`, { confirmText: '清空', confirmVariant: 'danger' }))) return;
   try {
     const result = await window.dshManager.cleanDSHData({ [key]: true });
     showToast(`已清理: ${(result.cleaned || []).join(', ') || '无' }`, 'success');
@@ -2723,7 +2716,7 @@ async function mcpSave() {
 }
 
 async function mcpRemove(serverName) {
-  if (!confirm(`确定要删除 MCP 服务端 "${serverName}" 吗？`)) return;
+  if (!(await showConfirm('删除 MCP 服务端', `确定要删除 MCP 服务端 "${serverName}" 吗？`, { confirmText: '删除', confirmVariant: 'danger' }))) return;
   try {
     await window.dshManager.mcpRemove(serverName, 'web');
     showToast(`MCP 服务端 ${serverName} 已删除`, 'success');
@@ -2923,7 +2916,7 @@ async function togglePrompt(id, enabled) {
   } catch (e) { showToast('操作失败: ' + e.message, 'error'); }
 }
 async function deletePrompt(id) {
-  if (!confirm('确定删除此提示词？')) return;
+  if (!(await showConfirm('删除提示词', '确定删除此提示词？', { confirmText: '删除', confirmVariant: 'danger' }))) return;
   try {
     await window.dshManager.promptDelete(id);
     showToast('已删除', 'success');
@@ -3452,7 +3445,7 @@ async function saveLLMProvider() {
 }
 
 async function deleteLLMProvider(name) {
-  if (!confirm(`确定删除 LLM 提供商 "${name}"？`)) return;
+  if (!(await showConfirm('删除 LLM 提供商', `确定删除 LLM 提供商 "${name}"？`, { confirmText: '删除', confirmVariant: 'danger' }))) return;
   try { await window.dshManager.deleteLLMProvider(name); showToast(`🗑️ 已删除 "${name}"`, 'success'); openSettingsTab('llm'); }
   catch (err) { showToast('删除失败: ' + err.message, 'error'); }
 }
@@ -3745,7 +3738,7 @@ async function refreshVersions() {
 }
 
 async function switchVersion(version) {
-  if (!confirm(`是否确定要切换到 DSH ${version}？\n将先卸载当前版本，再安装目标版本。`)) return;
+  if (!(await showConfirm('切换版本', `是否确定要切换到 DSH ${version}？\n将先卸载当前版本，再安装目标版本。`, { confirmText: '切换', confirmVariant: 'primary' }))) return;
   ensureSwitchProgressUI();
   updateSwitchVersionProgress({ message: '开始切换版本...' });
   bindSwitchVersionProgress();
@@ -3771,7 +3764,7 @@ async function installVersion(version) {
 }
 
 async function removeVersion(version) {
-  if (!confirm(`确定删除 DSH ${version} 版本？`)) return;
+  if (!(await showConfirm('删除版本', `确定删除 DSH ${version} 版本？`, { confirmText: '删除', confirmVariant: 'danger' }))) return;
   showToast('版本删除功能需要手动操作 npm', 'warning');
 }
 
@@ -3815,54 +3808,7 @@ async function checkAppUpdateUI() {
   }
 }
 
-// ====== 键盘快捷键 ======
-document.addEventListener('keydown', (e) => {
-  // Ctrl+Shift+D: 调试面板
-  if (e.ctrlKey && e.shiftKey && e.key === 'D') {
-    e.preventDefault();
-    toggleDebugPanel();
-  }
-  // Ctrl+1~8: 页面切换
-  if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-    const pageMap = {
-      '1': 'dashboard', '2': 'install', '3': 'plugins',
-      '4': 'skills', '5': 'versions', '6': 'settings',
-      '7': 'prompts', '8': 'about',
-    };
-    const page = pageMap[e.key];
-    if (page && page !== state.currentPage) {
-      e.preventDefault();
-      switchPage(page);
-    }
-  }
-  // Ctrl+F: 聚焦搜索框
-  if (e.ctrlKey && e.key === 'f' && !e.shiftKey && !e.altKey && !e.metaKey) {
-    const inputs = document.querySelectorAll('.search-box input, input[type="text"]');
-    for (const input of inputs) {
-      if (input.offsetParent !== null) { // visible
-        e.preventDefault();
-        input.focus();
-        input.select();
-        return;
-      }
-    }
-  }
-  // Escape: 关闭模态框
-  if (e.key === 'Escape') {
-    const modal = document.querySelector('.modal-overlay.active');
-    if (modal) {
-      e.preventDefault();
-      modal.remove();
-    }
-  }
-  // F5: 刷新当前页面
-  if (e.key === 'F5' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
-    e.preventDefault();
-    const current = state.currentPage || 'dashboard';
-    switchPage(current);
-    showToast('已刷新当前页面', 'info', 2000);
-  }
-});
+// ====== 键盘快捷键（已移至 modules/shortcuts.js） ======
 
 // ====== 调试面板（切换显示/隐藏调试日志） ======
 function toggleDebugPanel() {

@@ -104,7 +104,7 @@ function renderDSHNotRunningPlaceholder() {
     '<div class="placeholder-content">',
     '<img src="assets/images/logo-large.png" alt="DSH Manager" class="placeholder-icon" style="width:64px;height:64px;">',
     '<h2>DSH 已安装但未运行</h2>',
-    '<p>DeepSeek Harness ' + state.dshVersion + ' 已安装，但服务未启动。</p>',
+    '<p>DeepSeek Harness ' + escapeHtml(state.dshVersion || '') + ' 已安装，但服务未启动。</p>',
     '<div class="placeholder-hint" title="管理器会以独立进程托管 DSH，不随终端会话退出">🛡️ 点击下方按钮，由管理器托管启动</div>',
     '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">',
     '<button class="btn btn-primary btn-lg" onclick="tryStartDSH()">🚀 启动 DSH</button>',
@@ -176,10 +176,9 @@ async function tryStartDSH() {
         if (badPlugins.length > 0) {
           const names = badPlugins.map(function(p) { return p.id; }).join('、');
           const msg = '检测到 ' + badPlugins.length + ' 个无效插件（' + names + '）导致 DSH 无法启动。\n是否一键移除并重新启动？';
-          if (confirm(msg)) {
-            fixAndRestartDSH(badPlugins.map(function(p) { return p.id; }));
-            return;
-          }
+          showConfirm('移除无效插件', msg, { confirmText: '移除并重启', cancelText: '取消', confirmVariant: 'danger' })
+            .then(function(ok) { if (ok) fixAndRestartDSH(badPlugins.map(function(p) { return p.id; })); });
+          return;
         }
       }
       showToast('❌ DSH 启动失败: ' + detail, 'error');
@@ -289,10 +288,10 @@ function renderDashToolbar() {
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
         ${statusBadge}
-        <span style="font-size:12px;color:var(--text-muted);">v${state.dshVersion || '-'}</span>
+        <span style="font-size:12px;color:var(--text-muted);">v${escapeHtml(state.dshVersion || '-')}</span>
       </div>
       <div style="display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;">
-        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('${state.dshUrl}')" title="在系统浏览器中打开 DSH Web">🌐 浏览器打开</button>
+        <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('${escapeAttr(state.dshUrl)}')" title="在系统浏览器中打开 DSH Web">🌐 浏览器打开</button>
         ${state.dshRunning
           ? '<button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>'
           : (state.dshInstalled ? '<button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>' : '')}
@@ -340,7 +339,6 @@ async function runDSHDiagnosis() {
     showToast('正在诊断 DSH 服务...', 'info');
     const result = await window.dshManager.diagnoseDSH();
     
-    // 构建诊断结果模态框
     // 构建诊断结果模态框
     const issuesHtml = result.issues && result.issues.length > 0
       ? result.issues.map(function(i) { return '<div style="color:var(--error);padding:4px 0;">⚠️ ' + escapeHtml(i) + '</div>'; }).join('')
@@ -418,6 +416,7 @@ async function renderDashInfo() {
     return;
   }
   el.style.display = 'block';
+  const esc = escapeHtml;
   el.innerHTML =
     `<div class="card" style="margin-bottom:12px;">
       <div class="card-header">
@@ -425,12 +424,12 @@ async function renderDashInfo() {
         <span class="badge ${state.dshRunning ? 'badge-green' : 'badge-gray'}">${state.dshRunning ? '运行中' : '未运行'}</span>
       </div>
       <div class="card-body" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px 16px;font-size:12px;color:var(--text-muted);">
-        <div>📦 DSH 版本: <strong>${state.dshVersion || '-'}</strong></div>
-        <div>⚙️ Node.js: <strong>${info.nodeVersion || '-'}</strong></div>
-        <div>💻 平台: <strong>${info.platform || '-'} / ${info.arch || '-'}</strong></div>
-        <div>🏠 主目录: <strong title="${info.home || ''}" style="word-break:break-all;">${info.home || '-'}</strong></div>
-        <div>📡 全局路径: <strong title="${info.npmGlobalPath || ''}" style="word-break:break-all;">${info.npmGlobalPath || '-'}</strong></div>
-        <div>🌐 Web 地址: <strong>${state.dshUrl}</strong></div>
+        <div>📦 DSH 版本: <strong>${esc(state.dshVersion || '-')}</strong></div>
+        <div>⚙️ Node.js: <strong>${esc(info.nodeVersion || '-')}</strong></div>
+        <div>💻 平台: <strong>${esc(info.platform || '-')} / ${esc(info.arch || '-')}</strong></div>
+        <div>🏠 主目录: <strong title="${escapeAttr(info.home || '')}" style="word-break:break-all;">${esc(info.home || '-')}</strong></div>
+        <div>📡 全局路径: <strong title="${escapeAttr(info.npmGlobalPath || '')}" style="word-break:break-all;">${esc(info.npmGlobalPath || '-')}</strong></div>
+        <div>🌐 Web 地址: <strong>${esc(state.dshUrl)}</strong></div>
         <div id="processStatusCell">🔌 端口 ${getCurrentDSHPort()}: <strong>检测中...</strong></div>
       </div>
     </div>
@@ -442,9 +441,9 @@ async function renderDashInfo() {
     const cell = document.getElementById('processStatusCell');
     if (cell) {
       if (proc.portInUse) {
-        cell.innerHTML = `🔌 端口 ${proc.port}: <strong class="badge badge-red">占用中${proc.pid ? ` (PID ${proc.pid}${proc.command ? ' · ' + proc.command : ''})` : ''}</strong>`;
+        cell.innerHTML = `🔌 端口 ${escapeHtml(proc.port)}: <strong class="badge badge-red">占用中${proc.pid ? ` (PID ${escapeHtml(proc.pid)}${proc.command ? ' · ' + escapeHtml(proc.command) : ''})` : ''}</strong>`;
       } else {
-        cell.innerHTML = `🔌 端口 ${proc.port}: <span class="badge badge-green">空闲</span>`;
+        cell.innerHTML = `🔌 端口 ${escapeHtml(proc.port)}: <span class="badge badge-green">空闲</span>`;
       }
     }
   } catch {}

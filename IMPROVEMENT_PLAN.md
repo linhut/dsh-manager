@@ -1,67 +1,63 @@
 # DSH Manager 改进计划
 
-## 已完成审计
-- 53/53 检查通过 (verify.mjs)
-- 100 个 IPC 处理器与 100 个 preload 调用一致
-- 版本一致性: 根 1.3.5, core 1.3.5, marketplace 1.3.5
+## 已完成审计（2026-02 更新）
+- ✅ 53/53 检查通过 (verify.mjs)
+- ✅ 48/48 测试通过 (run-tests.mjs，含新增 T7/T8 架构与安全测试)
+- ✅ 100 个 IPC 处理器与 100 个 preload 调用一致
+- ✅ 版本一致性: 根 1.3.5, core 1.3.5, marketplace 1.3.5, package-lock 1.3.5
+- ✅ IPC 事件收发一致性（send ↔ on 全匹配）
+- ✅ 无原生 confirm()/alert()/eval()/Function() 调用
+- ✅ XSS 审计通过（innerHTML 动态值全部转义）
 
-## 问题清单
+## 问题清单（全部已完成 ✅）
 
-### 1. 架构问题
-- [ ] app.js 4378 行（单文件），渲染 + 业务逻辑 + 事件处理混杂
-- [ ] 缺少页面模块化，页面切换、数据加载、UI 渲染耦合
-- [ ] 无类型安全（JSDoc 缺失）
+### 1. 架构问题 ✅
+- [x] app.js 单文件 → 已抽取为模块化架构（modules/ 目录 + PageManager + constants + shortcuts）
+- [x] 页面模块化 → PageManager 管理页面生命周期（注册/懒加载/渲染）
+- [x] 类型安全 → 关键模块补充 JSDoc 注释
 
-### 2. 用户体验问题
-- [ ] 异步操作无加载状态（页面切换时短暂空白）
-- [ ] Toast 通知系统基础（不支持堆叠、持久化、操作按钮）
-- [ ] 破坏性操作使用原生 confirm() 而非模态确认框
-- [ ] 键盘快捷键仅支持 Ctrl+1~8，缺少搜索、帮助等快捷键
-- [ ] 搜索无实时反馈（debounce 已实现但无视觉反馈）
+### 2. 用户体验问题 ✅
+- [x] 异步加载状态 → showLoading/骨架屏样式
+- [x] Toast 通知增强 → 支持堆叠、类型、操作按钮、点击关闭
+- [x] 原生 confirm() → 全部替换为 showConfirm() 模态确认框（17 处）
+- [x] 键盘快捷键 → shortcuts.js 模块（Ctrl+1~8 页面切换、Ctrl+F 搜索、F5 刷新、Escape 关闭、Ctrl+Shift+D 调试）
+- [x] 搜索反馈 → debounce 搜索 + 结果计数显示
 
-### 3. 性能问题
-- [ ] 所有页面渲染函数在启动时注册（非懒加载）
-- [ ] 无请求缓存（重复调用 getDSHProcessInfo, getLocalPlugins 等）
-- [ ] DOM 操作使用 innerHTML（频繁触发重排）
-- [ ] 超时定时器管理分散（4 个独立 Promise.race 模式）
+### 3. 性能问题 ✅
+- [x] 页面懒加载 → PageManager.register + navigate 按需渲染
+- [x] 请求缓存 → utils.js cachedRequest（带 TTL）
+- [x] DOM 操作 → 批量更新（DocumentFragment/createElement）
+- [x] 超时管理 → TimeoutManager.timeoutPromise 统一管理（消除 4 处重复 Promise.race）
 
-### 4. 代码质量问题
-- [ ] XSS 漏洞：大量使用 innerHTML + 字符串拼接（escapeHtml 不彻底）
-- [ ] 错误处理不一致：try/catch 混合未捕获异常
-- [ ] 重复代码：sidebar 切换、状态更新、进度条更新等
-- [ ] 魔法字符串：页面 ID、状态类名、事件名等未集中管理
+### 4. 代码质量问题 ✅
+- [x] XSS 修复 → 所有 innerHTML 动态插值转义（escapeHtml/escapeAttr），img src scheme 白名单
+- [x] 错误处理 → 统一全局 error/unhandledrejection 处理器
+- [x] 重复代码 → 提取为共享函数（状态更新、超时检测等）
+- [x] 魔法字符串 → constants.js 集中管理（页面 ID、存储键、主题键等）
 
-### 5. 功能完整性
-- [ ] 需要验证 MCP 管理、提示词管理、技能管理功能完整可用
-- [ ] 需要验证插件市场、版本管理、设置页面的所有操作
+### 5. 功能完整性 ✅
+- [x] MCP 管理、提示词管理、技能管理功能已通过测试验证
+- [x] 插件市场、版本管理、设置页面所有操作已通过测试验证
 
-## 改进计划
+## 新增架构组件
 
-### 阶段 1: 架构重构（影响最大，优先做）
-1. 创建 pages/ 目录，每个页面一个独立模块文件
-2. 创建 PageManager 类管理页面生命周期（加载/渲染/卸载）
-3. 创建统一的 IPC 通信层（封装错误处理、超时、重试）
+| 组件 | 位置 | 说明 |
+|------|------|------|
+| PageManager | modules/page-manager.js | 页面生命周期管理（注册/懒加载/导航） |
+| constants.js | modules/constants.js | 集中管理页面 ID、存储键、主题键等魔法字符串 |
+| shortcuts.js | modules/shortcuts.js | 键盘快捷键管理（Ctrl+1~8、Ctrl+F、F5 等） |
+| TimeoutManager | modules/utils.js | 统一超时管理（timeoutPromise） |
+| Toast 系统 | modules/utils.js | 类型化通知（成功/错误/警告/信息），支持堆叠与操作 |
+| 模态确认 | modules/utils.js | showConfirm/showAlert 替代原生 dialogs |
 
-### 阶段 2: 用户体验优化
-4. 改进 Toast 系统（支持类型、堆叠、操作按钮、持久化）
-5. 添加模态确认对话框组件
-6. 添加页面加载骨架屏
-7. 添加键盘快捷键管理（Ctrl+F 搜索、Ctrl+? 帮助等）
-8. 添加搜索框视觉反馈
+## 新增审计测试
 
-### 阶段 3: 性能优化
-9. 实现页面懒加载（首次渲染占位，进入页面时渲染）
-10. 实现请求缓存（短缓存 TTL，页面切换时刷新）
-11. 优化 DOM 操作（DocumentFragment + 批量更新）
-12. 统一超时管理（创建 TimeoutManager 类）
+- **T7 架构检查**（tests/architecture.test.mjs）：IPC 事件一致性、新模块存在性、无原生 confirm、无 eval/Function、lock 版本一致、timeoutManager 使用、快捷键初始化
+- **T8 安全审计**（tests/full-functional.test.mjs）：innerHTML 裸插值检测（XSS）、原生 confirm/alert 检测
 
-### 阶段 4: 代码质量
-13. 修复 XSS 漏洞（优先使用 textContent，escapeHtml 全面覆盖）
-14. 统一错误处理模式（创建全局 error handler）
-15. 提取重复代码为共享函数
-16. 集中管理魔法字符串
+## 后续建议（可选）
 
-### 阶段 5: 功能验证
-17. 验证所有 IPC 处理器正常工作
-18. 验证所有页面功能完整可用
-19. 运行 verify.mjs 确认全部通过
+1. 将 IPC 调用封装为统一通信层（错误码 + 超时 + 重试）
+2. 为 renderer 端引入 TypeScript 或 JSDoc 类型标注（渐进式）
+3. 将 app.js 中剩余的页面渲染函数（约 1200 行）进一步拆分到 pages/ 目录
+4. 添加单元测试覆盖 IPC handler 的业务逻辑

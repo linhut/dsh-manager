@@ -69,6 +69,46 @@ describe('T2: 页面渲染与导航', () => {
     assert.ok(src.includes('register(id, page'), 'register method');
     assert.ok(src.includes('async navigate(id'), 'navigate method');
   });
+
+  it('should register all pages with pageManager', () => {
+    const app = read('src/assets/js/app.js');
+    for (const page of ['dashboard', 'install', 'plugins', 'skills', 'versions', 'settings', 'prompts', 'about']) {
+      assert.ok(app.includes(`pageManager.register('${page}',`),
+        `Page not registered: ${page}`);
+    }
+  });
+
+  it('should have constants.js module', () => {
+    const src = read('src/assets/js/modules/constants.js');
+    assert.ok(src.includes('PAGE_IDS'), 'PAGE_IDS');
+    assert.ok(src.includes('STORAGE_KEYS'), 'STORAGE_KEYS');
+    assert.ok(src.includes('STATUS_CLASSES'), 'STATUS_CLASSES');
+    assert.ok(src.includes('SETTINGS_TABS'), 'SETTINGS_TABS');
+    assert.ok(src.includes('PAGE_ORDER'), 'PAGE_ORDER');
+  });
+
+  it('should have shortcuts.js module', () => {
+    const src = read('src/assets/js/modules/shortcuts.js');
+    assert.ok(src.includes('function initKeyboardShortcuts'), 'initKeyboardShortcuts');
+  });
+
+  it('should load constants.js before state.js in index.html', () => {
+    const html = read('src/index.html');
+    const constPos = html.indexOf('modules/constants.js');
+    const statePos = html.indexOf('modules/state.js');
+    assert.ok(constPos >= 0, 'constants.js loaded');
+    assert.ok(statePos >= 0, 'state.js loaded');
+    assert.ok(constPos < statePos, 'constants.js must load before state.js');
+  });
+
+  it('should load shortcuts.js before app.js in index.html', () => {
+    const html = read('src/index.html');
+    const shortPos = html.indexOf('modules/shortcuts.js');
+    const appPos = html.indexOf('app.js');
+    assert.ok(shortPos >= 0, 'shortcuts.js loaded');
+    assert.ok(appPos >= 0, 'app.js loaded');
+    assert.ok(shortPos < appPos, 'shortcuts.js must load before app.js');
+  });
 });
 
 // ====== T3: IPC 全链路一致性 ======
@@ -256,5 +296,51 @@ describe('T6: 安全审计', () => {
     const funcCalls = allJS.match(/[^.\w]Function\s*\(/g);
     assert.equal(evalCalls ? evalCalls.length : 0, 0, 'No eval() allowed');
     assert.equal(funcCalls ? funcCalls.length : 0, 0, 'No Function() allowed');
+  });
+});
+
+// ====== T8: XSS 安全审计 ======
+describe('T8: XSS 安全审计', () => {
+  it('should escape dynamic values in innerHTML (no bare state/info/proc interpolation)', () => {
+    const app = read('src/assets/js/app.js');
+    const control = read('src/assets/js/modules/dsh-control.js');
+    const files = [app, control];
+    // 只检查 innerHTML/html+= 赋值行（textContent 赋值是安全的）
+    const dangerous = [
+      /\$\{state\.dshUrl\}/,
+      /\$\{state\.dshVersion\}/,
+      /\$\{info\.home\}/,
+      /\$\{info\.npmGlobalPath\}/,
+      /\$\{proc\.port\}/,
+      /\$\{proc\.pid\}/,
+      /\$\{proc\.command\}/,
+    ];
+    let findings = [];
+    for (const f of files) {
+      const fLines = f.split('\n');
+      fLines.forEach((line, i) => {
+        if (!/innerHTML/.test(line) && !/html \+=/.test(line)) return;
+        for (const re of dangerous) {
+          if (re.test(line)) {
+            findings.push('line ' + (i + 1) + ': ' + re);
+          }
+        }
+      });
+    }
+    assert.equal(findings.length, 0, 'Unescaped: ' + findings.join('; '));
+  });
+
+  it('should have no native confirm() or alert() calls', () => {
+    const app = read('src/assets/js/app.js');
+    const modules = readdirSync(join(root, 'src/assets/js/modules'))
+      .filter(f => f.endsWith('.js')).map(f => read('src/assets/js/modules/' + f));
+    const allJS = [app, ...modules].join('\n');
+    // showConfirm/showAlert 是安全的，需排除
+    const natives = [...allJS.matchAll(/(?:^|[^.\w])(confirm|alert)\s*\(/g)];
+    const real = natives.filter(m => {
+      const before = allJS.slice(Math.max(0, m.index - 20), m.index);
+      return !before.includes('show') && !before.includes('.confirming');
+    });
+    assert.equal(real.length, 0, 'Native confirm()/alert() calls found: ' + real.length);
   });
 });
