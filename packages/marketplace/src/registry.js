@@ -256,7 +256,7 @@ export class PluginRegistry {
         createdAt: '2024-06-15T08:00:00Z',
         updatedAt: '2024-12-20T10:30:00Z',
         pushedAt: '2024-12-20T10:30:00Z',
-        defaultBranch: 'main',
+        defaultBranch: 'master',
         isTemplate: false,
         archived: false,
         recommended: true,
@@ -354,11 +354,12 @@ export class PluginRegistry {
   async getPluginDetails(fullName) {
     const [owner, repo] = fullName.split('/');
     
-    const [details, readme, releases, packageJson] = await Promise.all([
-      this.github.getRepoDetails(owner, repo),
+    const details = await this.github.getRepoDetails(owner, repo);
+    const defaultBranch = details.defaultBranch || 'main';
+    const [readme, releases, packageJson] = await Promise.all([
       this.github.getReadme(owner, repo),
       this.github.getReleases(owner, repo),
-      this.github.getPackageJson(owner, repo),
+      this.github.getPackageJson(owner, repo, defaultBranch),
     ]);
 
     // 从 package.json 提取插件信息
@@ -924,7 +925,7 @@ export class PluginRegistry {
       return { hasUpdate: false, currentVersion: null, latestVersion: null };
     }
 
-    // 从 GitHub 获取最新版本
+    // 从 GitHub 获取最新版本（release tag）
     if (plugin.source && plugin.source.startsWith('github:')) {
       const fullName = plugin.source.replace('github:', '');
       const [owner, repo] = fullName.split('/');
@@ -936,8 +937,24 @@ export class PluginRegistry {
         // 使用已修复的语义化版本比较（支持 alpha/beta/rc 预发布类型排序）
         const hasUpdate = compareDSHVersions(latestTag, currentVersion) > 0;
         
-        return { hasUpdate, currentVersion, latestVersion: latestTag };
+        // 如果 release tag 检测到更新，直接返回
+        if (hasUpdate) {
+          return { hasUpdate, currentVersion, latestVersion: latestTag };
+        }
       }
+      
+      // 兜底：从 npm registry 获取最新版本（因为 GitHub release 可能不是最新 tag）
+      const packageName = repo;
+      try {
+        const { stdout } = await execa('npm', ['view', packageName, 'version', '--json'], { reject: false, timeout: 15_000, windowsHide: true });
+        if (stdout) {
+          const npmVersion = JSON.parse(stdout).replace(/^v/, '');
+          const npmUpdate = compareDSHVersions(npmVersion, plugin.version) > 0;
+          if (npmUpdate) {
+            return { hasUpdate: true, currentVersion: plugin.version, latestVersion: npmVersion };
+          }
+        }
+      } catch {}
     }
 
     // 从 npm 获取最新版本

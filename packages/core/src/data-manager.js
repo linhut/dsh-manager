@@ -48,7 +48,7 @@ async function dirSize(dir, depth = 0) {
         } else {
           total += statSync(full).size;
         }
-      } catch {}
+      } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     }
   }
   return total;
@@ -96,7 +96,7 @@ export async function cleanDSHData(opts = {}) {
         rmSync(join(path, entry), { recursive: true, force: true });
         removed++;
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     if (removed > 0) cleaned.push(name);
   }
 

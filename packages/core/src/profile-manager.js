@@ -40,7 +40,7 @@ export class DSHProfileManager {
         // 目录的 stat.size 在 Windows 上恒为 0，没有展示意义；
         // 改为统计直接子条目数（快速、有意义的目录规模指标）
         entryCount = readdirSync(path, { withFileTypes: true }).length;
-      } catch {}
+      } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
       result.push({ name: entry.name, path, mtime, size: 0, entryCount });
     }
     return result;

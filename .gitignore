@@ -54,6 +54,10 @@ electron/preload.js
 # Temp debug scripts
 scripts/_*.mjs
 
+# Backup files
+*.bak
+*.bak-*
+
 # Debug and test artifacts
 _fix-*.mjs
 _recovered-*.js

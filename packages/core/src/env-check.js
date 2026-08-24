@@ -61,7 +61,7 @@ export async function checkPortableNode() {
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), bin };
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   return { installed: false, version: null, bin };
 }
 

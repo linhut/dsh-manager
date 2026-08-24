@@ -30,7 +30,7 @@ export class MasterPromptManager {
         const data = JSON.parse(readFileSync(PROMPTS_FILE, "utf-8"));
         return Array.isArray(data.prompts) ? data.prompts : [];
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     return [];
   }
 

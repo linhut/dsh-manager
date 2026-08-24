@@ -12,6 +12,9 @@ import { join, dirname } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { parseYAML } from './yaml-utils.js';
 
+/** DSH npm 包名 */
+export const DSH_PACKAGE_NAME = '@deepseek-ai/dsh';
+
 /**
  * DSH 路径配置
  */
@@ -109,7 +112,7 @@ async function resolveDSHPackageJson() {
         // pnpm 默认全局目录：%LOCALAPPDATA%\pnpm\node_modules
         candidates.push(join(localAppData, 'pnpm', 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   }
 
   // ③ 通过 .npmrc / 环境变量读取自定义 npm prefix（覆盖 E:\npm-global 等自定义安装）
@@ -123,13 +126,13 @@ async function resolveDSHPackageJson() {
         const m = /^\s*prefix\s*=\s*(.+?)\s*$/m.exec(content);
         if (m) prefix = m[1].trim();
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     if (!prefix && process.env.npm_config_prefix) prefix = process.env.npm_config_prefix;
     if (!prefix && process.env.NPM_CONFIG_PREFIX) prefix = process.env.NPM_CONFIG_PREFIX;
     if (prefix) {
       candidates.push(join(prefix, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ④ 通过 npm root -g 获取 npm 全局路径（npm 在 PATH 且非自定义配置场景）
   try {
@@ -137,7 +140,7 @@ async function resolveDSHPackageJson() {
     if (globalRoot && globalRoot.trim()) {
       candidates.push(join(globalRoot.trim(), '@deepseek-ai', 'dsh', 'package.json'));
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ④ 通过 pnpm root -g 获取 pnpm 全局路径（npm 不可用时的备选）
   try {
@@ -145,15 +148,15 @@ async function resolveDSHPackageJson() {
     if (pnpmRoot && pnpmRoot.trim()) {
       candidates.push(join(pnpmRoot.trim(), '@deepseek-ai', 'dsh', 'package.json'));
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ⑤ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
   try {
     const { stdout } = await execa('node', [
-      '-e', 'try { console.log(require.resolve("@deepseek-ai/dsh/package.json")); } catch(e) { console.log(""); }'
+      `-e`, `try { console.log(require.resolve("${DSH_PACKAGE_NAME}/package.json")); } catch(e) { console.log(""); }`
     ], { reject: false, timeout: 10_000, windowsHide: true });
     if (stdout && stdout.trim().length > 0) candidates.push(stdout.trim());
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ⑥ 通过 dsh 命令本身查找：从命令所在目录向上逐级搜索 node_modules/@deepseek-ai/dsh
   //    Windows: dsh.cmd 在 <prefix>，node_modules 是 <prefix> 的子目录
@@ -170,7 +173,7 @@ async function resolveDSHPackageJson() {
         dir = parent;
       }
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ⑦ 兜底：检查 DSH_HOME 下是否有已记录的版本文件（已安装记录）
   try {
@@ -186,7 +189,7 @@ async function resolveDSHPackageJson() {
         }
       }
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // 统一记录每个候选的检查结果（path 去重，保留首次记录）
   const seen = new Set();
@@ -288,10 +291,10 @@ export async function resolveDSHCommand() {
           const path = fullPath.trim().split('\n')[0].trim(); // where 可能返回多行
           if (path && (existsSync(path) || path.endsWith('.cmd') || path.endsWith('.exe'))) return path;
         }
-      } catch {}
+      } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
       return 'dsh';
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ② 通过 npm root -g 推导全局 bin 目录
   //     Windows: root -g → C:\Users\...\npm\node_modules → dirname → C:\Users\...\npm（bin 在此目录）
@@ -309,7 +312,7 @@ export async function resolveDSHCommand() {
         if (existsSync(c)) return c;
       }
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ③ 兜底：返回 'dsh'，让调用方得到原始错误信息
   return 'dsh';
@@ -347,7 +350,7 @@ export async function getDSHInfo() {
   try {
     const { stdout } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
     npmGlobalPath = stdout?.trim() || null;
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   return {
     installed: true,
@@ -415,7 +418,7 @@ export function sortDSHVersionsDesc(versions) {
  */
 export async function listDSHVersions(registry) {
   try {
-    const args = ['view', '@deepseek-ai/dsh', 'versions', '--json'];
+    const args = ['view', DSH_PACKAGE_NAME, 'versions', '--json'];
     if (registry) args.push('--registry', registry);
     const { stdout } = await execa('npm', args, { reject: false, timeout: 30_000, windowsHide: true });
     if (stdout) {

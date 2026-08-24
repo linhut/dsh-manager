@@ -261,7 +261,7 @@ export class PluginInstaller {
       this.registry.registerLocalPlugin({
         id: pluginId,
         name: info.name || repo,
-        version: info.latestRelease || 'main',
+        version: info.latestRelease || info.version || 'main',
         source: `github:${owner}/${repo}`,
         profile,
         type: 'github',
@@ -274,7 +274,7 @@ export class PluginInstaller {
         success: true,
         id: pluginId,
         name: info.name || repo,
-        version: info.latestRelease || 'main',
+        version: info.latestRelease || info.version || 'main',
         path: '',
       };
     } catch (error) {
@@ -296,9 +296,9 @@ export class PluginInstaller {
       let lastError = null;
       for (const candidate of githubProxyUrls(gitUrl)) {
         try {
-          this._log(`执行: git clone --depth 1 ${candidate} (branch: ${ref || 'main'})`);
+          this._log(`执行: git clone --depth 1 ${candidate} (branch: ${ref || info.defaultBranch || 'main'})`);
           const { stdout, stderr } = await execa('git', [
-            'clone', '--depth', '1', '--branch', ref || 'main', candidate, dest
+            'clone', '--depth', '1', '--branch', ref || info.defaultBranch || 'main', candidate, dest
           ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
           this._log(stdout || '');
           if (stderr) this._log(stderr, 'warn');
@@ -331,7 +331,7 @@ export class PluginInstaller {
       this.registry.registerLocalPlugin({
         id: pluginId,
         name: info.name || repo,
-        version: info.latestRelease || 'main',
+        version: info.latestRelease || info.version || 'main',
         source: `github:${owner}/${repo}`,
         profile,
         type: 'github',
@@ -340,7 +340,7 @@ export class PluginInstaller {
         repoUrl: `https://github.com/${owner}/${repo}`,
       });
 
-      return { success: true, id: pluginId, name: info.name || repo, version: info.latestRelease || 'main', path: dest };
+      return { success: true, id: pluginId, name: info.name || repo, version: info.latestRelease || info.version || 'main', path: dest };
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -355,7 +355,8 @@ export class PluginInstaller {
   async _getGitHubPluginInfo(owner, repo) {
     try {
       const details = await this.registry.github.getRepoDetails(owner, repo);
-      const packageJson = await this.registry.github.getPackageJson(owner, repo);
+      const defaultBranch = details.defaultBranch || 'main';
+      const packageJson = await this.registry.github.getPackageJson(owner, repo, defaultBranch);
       const releases = await this.registry.github.getReleases(owner, repo, 1);
       
       return {
@@ -365,6 +366,7 @@ export class PluginInstaller {
         npmPackage: packageJson?.name || null,
         version: packageJson?.version || null,
         latestRelease: releases[0]?.tag?.replace(/^v/, '') || null,
+        defaultBranch,
       };
     } catch {
       return { id: repo, name: repo };

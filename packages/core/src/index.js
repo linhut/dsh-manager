@@ -33,7 +33,7 @@ export function getVersion() {
   try {
     const pkgPath = fileURLToPath(new URL('../package.json', import.meta.url));
     version = JSON.parse(readFileSync(pkgPath, 'utf-8')).version || version;
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   return {
     name: 'dsh-manager',
     version,

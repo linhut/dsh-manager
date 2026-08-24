@@ -888,7 +888,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         // 将插件安装日志推送到渲染进程，驱动实时进度提示
         const win = getMainWindow();
         if (win && !win.isDestroyed()) {
-          win.webContents.send('plugin-install-progress', data);
+          win.webContents.send('dsh:plugin-install-progress', data);
         }
       },
     });
@@ -945,7 +945,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       onProgress: (data) => {
         // 将批量安装中每条插件的进度推送到渲染进程
         if (win && !win.isDestroyed()) {
-          win.webContents.send('plugin-install-progress', data);
+          win.webContents.send('dsh:plugin-install-progress', data);
         }
       },
     });
@@ -1394,7 +1394,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const win = getMainWindow();
       const pushProgress = (data) => {
         if (win && !win.isDestroyed()) {
-          win.webContents.send('env-install-progress', data);
+          win.webContents.send('dsh:env-install-progress', data);
         }
       };
       pushProgress({ level: 'info', message: '开始安装 pnpm（npm install -g pnpm）...' });
@@ -1439,7 +1439,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const win = getMainWindow();
       const pushProgress = (data) => {
         if (win && !win.isDestroyed()) {
-          win.webContents.send('env-install-progress', data);
+          win.webContents.send('dsh:env-install-progress', data);
         }
       };
       pushProgress({ level: 'info', message: '开始安装便携版 Node.js（镜像下载）...' });
@@ -1482,7 +1482,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const win = getMainWindow();
       const pushProgress = (data) => {
         if (win && !win.isDestroyed()) {
-          win.webContents.send('env-install-progress', data);
+          win.webContents.send('dsh:env-install-progress', data);
         }
       };
       pushProgress({ level: 'info', message: `开始安装 Node.js（平台: ${platform}）...` });
@@ -1528,7 +1528,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const win = getMainWindow();
       const pushProgress = (data) => {
         if (win && !win.isDestroyed()) {
-          win.webContents.send('env-install-progress', data);
+          win.webContents.send('dsh:env-install-progress', data);
         }
       };
       pushProgress({ level: 'info', message: `开始安装 git（平台: ${platform}）...` });

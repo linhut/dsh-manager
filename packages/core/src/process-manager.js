@@ -144,7 +144,7 @@ export async function getDSHProcessInfo(port = DSH_WEB_PORT) {
           base.pid = pid;
           base.command = parts[0] || null;
         }
-      } catch {}
+      } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     }
   } catch {
     // 任何探测失败均视为空闲，不阻断

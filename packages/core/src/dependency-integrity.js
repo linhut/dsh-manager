@@ -46,7 +46,7 @@ function countFiles(dirPath) {
       if (entry.isDirectory()) count += countFiles(fp);
       else if (entry.isFile()) count++;
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   return count;
 }
 
@@ -54,7 +54,7 @@ function getPackageJson(nmRoot, name) {
   try {
     const p = join(nmRoot, name, "package.json");
     if (existsSync(p)) return JSON.parse(readFileSync(p, "utf-8"));
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   return null;
 }
 
@@ -202,7 +202,7 @@ function findInNodeModules(nmRoot, name, depth = 0) {
         if (found) return found;
       }
     }
-  } catch {}
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   return null;
 }
 
@@ -266,7 +266,7 @@ export async function copyModuleToProfile(profile, moduleName) {
       if (binDir && existsSync(binDir)) {
         env.PATH = binDir + (process.platform === "win32" ? ";" : ":") + (env.PATH || "");
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     // ① pnpm add（安装到 profile 并更新锁文件，符合 DSH 官方 pnpm 管理方式）
     try {
       const pnpmRes = await execa("pnpm", ["add", moduleName, "--loglevel=error"], {
@@ -279,7 +279,7 @@ export async function copyModuleToProfile(profile, moduleName) {
       if (pnpmRes.exitCode === 0 && isPackageUsable(profileNm, moduleName)) {
         return { success: true, method: 'installed-in-profile' };
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     // ② 兜底 npm install
     try {
       const npmRes = await execa("npm", ["install", moduleName, "--no-audit", "--no-fund", "--loglevel=error"], {
@@ -291,7 +291,7 @@ export async function copyModuleToProfile(profile, moduleName) {
       if (npmRes.exitCode === 0 && isPackageUsable(profileNm, moduleName)) {
         return { success: true, method: 'installed-in-profile' };
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
     return { success: false, method: 'none', error: `全局无该模块且 profile 内安装失败: ${moduleName}` };
   } catch (error) {
@@ -328,7 +328,7 @@ export async function repairProfileDependencies(profile) {
       if (binDir && existsSync(binDir)) {
         env.PATH = binDir + (process.platform === "win32" ? ";" : ":") + (env.PATH || "");
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     return env;
   };
 
@@ -474,7 +474,7 @@ export async function repairAllProfiles(options) {
     try {
       const entries = readdirSync(pd, { withFileTypes: true });
       for (const e of entries) { if (e.isDirectory()) { const pf = join(pd, e.name, "package.json"); if (existsSync(pf)) profiles.push(e.name); } }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   }
   for (const p of profiles) results[p] = await repairProfileFromGlobal(p, options);
   const tr = Object.values(results).reduce((s, r) => s + r.repaired.length, 0);

@@ -159,13 +159,22 @@ export class PluginManager {
   async getStats() {
     const local = this.registry.getLocalPlugins();
     
+    // 检查更新
+    let updates = [];
+    try {
+      updates = await this.registry.checkAllUpdates();
+    } catch (e) {
+      // 更新检查失败不影响统计
+      console.warn('[dsh-manager] 获取插件更新状态失败:', e?.message);
+    }
+    
     return {
       total: local.length,
       enabled: local.filter(p => p.enabled !== false).length,
       disabled: local.filter(p => p.enabled === false).length,
       fromGitHub: local.filter(p => p.type === 'github').length,
       fromNpm: local.filter(p => p.type === 'npm').length,
-      needsUpdate: 0, // 将在下面更新
+      needsUpdate: updates.filter(u => u.hasUpdate).length,
     };
   }
 }

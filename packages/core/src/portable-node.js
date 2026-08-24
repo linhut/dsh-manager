@@ -131,7 +131,7 @@ export async function installPortableNode(opts = {}) {
     }
   } catch (error) {
     // 失败时清理残留的半个文件
-    try { rmSync(downloadPath, { force: true }); } catch {}
+    try { rmSync(downloadPath, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     throw new DSHError(
       DSHErrorCodes.DSH_INSTALL_FAILED,
       '便携版 Node 下载失败: ' + error.message + '\n请检查网络，或改用系统包管理器安装。'
@@ -158,7 +158,7 @@ export async function installPortableNode(opts = {}) {
       : '';
     throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, '便携版 Node 解压失败: ' + error.message + hint);
   } finally {
-    try { rmSync(downloadPath, { force: true }); } catch {}
+    try { rmSync(downloadPath, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   }
 
   // 4. 校验

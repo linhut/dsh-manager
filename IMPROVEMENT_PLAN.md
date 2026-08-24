@@ -90,3 +90,22 @@
 2. 将 app.js 中剩余的页面渲染函数（约 1200 行）进一步拆分到 pages/ 目录
 3. 添加单元测试覆盖 IPC handler 的业务逻辑
 4. 添加 E2E 测试（Playwright + Electron）
+
+## 本轮改进（2026-08 更新）
+- ✅ 版本一致性修复: root/core/marketplace/lock 统一为 1.3.6
+- ✅ 提示词页面增强: 添加搜索框（关键词过滤）、分类过滤按钮、批量启用/禁用/删除已禁用操作、按分类分组显示（可折叠）
+- ✅ 修复核心包 40+ 处空 catch 块：添加 console.warn 日志记录错误信息
+- ✅ 提取魔法字符串 `@deepseek-ai/dsh` 为 `DSH_PACKAGE_NAME` 常量（dsh-utils.js）
+- ✅ 修复 IPC 事件命名一致性：`plugin-install-progress` → `dsh:plugin-install-progress`，`env-install-progress` → `dsh:env-install-progress`
+- ✅ 修复 marketplace manager.js `getStats()` 中 `needsUpdate` 硬编码为 0 的问题
+- ✅ 所有审计通过：67/67 测试、53/53 verify、43/43 MCP
+- ✅ 修复 gongwen-skill 安装/更新问题：
+  - getPackageJson 使用仓库实际默认分支而非硬编码 main
+  - _getGitHubPluginInfo 返回 defaultBranch 并传递正确分支
+  - git clone 降级路径使用 info.defaultBranch 而非硬编码 main
+  - featured 插件 gongwen-skill defaultBranch → master
+  - checkPluginUpdate 增加 npm registry 兜底版本检测
+  - getPluginDetails 传递 defaultBranch 给 getPackageJson
+  - skill-manager importFromGitHub 通过 API 获取仓库实际默认分支
+  - app.js README 图片 URL 使用 info.defaultBranch 而非硬编码 main
+  - 版本号 1.3.6 → 1.3.7

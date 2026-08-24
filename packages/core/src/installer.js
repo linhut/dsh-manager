@@ -9,7 +9,7 @@ import { execa } from 'execa';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
-import { DSH_PATHS, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions } from './dsh-utils.js';
+import { DSH_PATHS, DSH_PACKAGE_NAME, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions } from './dsh-utils.js';
 import { requireNodeAndNpm } from './env-check.js';
 
 /**
@@ -101,8 +101,8 @@ export class DSHInstaller {
   async _installWithTool(version, tool) {
     // 构建包名
     const packageName = version
-      ? `@deepseek-ai/dsh@${version}`
-      : '@deepseek-ai/dsh';
+      ? `${DSH_PACKAGE_NAME}@${version}`
+      : DSH_PACKAGE_NAME;
 
     this._ensureDSHHome();
 
@@ -206,24 +206,24 @@ export class DSHInstaller {
       const dshCmd = await resolveDSHCommand();
       await execa(dshCmd, ['stop'], { reject: false, timeout: 15_000, windowsHide: true });
       this._log('已尝试停止 DSH 进程');
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     try {
       const { stopProcessByPort } = await import('./process-manager.js');
       await stopProcessByPort(3080);
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     // ①.5 终止所有命令行匹配 @deepseek-ai/dsh 的残留 node 进程：
     //      detached 启动的 web 子进程可能不随 `dsh stop` 退出，
     //      仍持有 node_modules 内文件句柄，是 npm uninstall ENOTEMPTY 的主因
     try {
       const killed = await this._killDSHProcesses();
       if (killed > 0) this._log(`已终止 ${killed} 个残留 DSH 进程`);
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
     // ② npm uninstall（失败时自动重试一次，规避瞬时文件锁）
     // 注意：DSH 含 400+ 个依赖包，实测完整卸载需约 4 分钟，超时不可设太短
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        await execa('npm', ['uninstall', '-g', '@deepseek-ai/dsh'], { windowsHide: true,
+        await execa('npm', ['uninstall', '-g', DSH_PACKAGE_NAME], { windowsHide: true,
           timeout: this.options.npmUninstallTimeout || this.options.npmInstallTimeout,
           stdio: this.options.verbose ? 'inherit' : 'pipe',
         });
@@ -235,7 +235,7 @@ export class DSHInstaller {
         this._log(`npm 卸载尝试 ${attempt}/2 失败: ${error.message}`, 'warn');
         if (attempt === 1 && isLocked) {
           // 再次终止残留进程，等待文件锁释放（杀毒软件/索引服务可能短暂持有句柄）
-          try { await this._killDSHProcesses(); } catch {}
+          try { await this._killDSHProcesses(); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
           await new Promise(r => setTimeout(r, 3000));
           continue;
         }
@@ -261,7 +261,7 @@ export class DSHInstaller {
                   if (existsSync(bp)) rmSync(bp, { force: true, maxRetries: 5, retryDelay: 300 });
                 }
               }
-            } catch {}
+            } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
             this._log('已手动删除 DSH 全局目录');
             return { success: true, method: 'manual' };
           }
@@ -457,17 +457,17 @@ export class DSHInstaller {
           try {
             await execa('taskkill', ['/PID', pid, '/F', '/T'], { reject: false, timeout: 10_000, windowsHide: true });
             killed++;
-          } catch {}
+          } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
         }
       } else {
         // POSIX：pgrep 按命令行特征匹配，kill -9 结束
-        const { stdout } = await execa('pgrep', ['-f', '@deepseek-ai/dsh[/\\s]'], { reject: false, timeout: 10_000, windowsHide: true });
+        const { stdout } = await execa('pgrep', ['-f', DSH_PACKAGE_NAME + '[/\\s]'], { reject: false, timeout: 10_000, windowsHide: true });
         const pids = stdout.split(/\r?\n/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
         for (const pid of pids) {
           try {
             await execa('kill', ['-9', pid], { reject: false, timeout: 10_000, windowsHide: true });
             killed++;
-          } catch {}
+          } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
         }
       }
     } catch {
@@ -509,7 +509,7 @@ export class DSHInstaller {
     try {
       if (existsSync(dir)) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
       if (!existsSync(dir)) return true;
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
     // 重命名到临时名，解除路径级句柄后删除
     const tmp = join(dirname(dir), '.dsh-uninstall-' + Date.now());
@@ -517,7 +517,7 @@ export class DSHInstaller {
       renameSync(dir, tmp);
       rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
       if (!existsSync(dir)) return true;
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
     // 最后：等待句柄释放后重试几次
     for (let i = 0; i < 5; i++) {
@@ -525,7 +525,7 @@ export class DSHInstaller {
       try {
         if (existsSync(dir)) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
         if (!existsSync(dir)) return true;
-      } catch {}
+      } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     }
     return !existsSync(dir);
   }
@@ -551,7 +551,7 @@ export class DSHInstaller {
           const candidate = join(globalRoot.trim(), '@deepseek-ai', 'dsh');
           if (existsSync(candidate)) dshPath = candidate;
         }
-      } catch {}
+      } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
       if (!dshPath) dshPath = await getDSHPath();
       if (!dshPath || !existsSync(dshPath)) return { cleaned: false, reason: null };
 
@@ -573,7 +573,7 @@ export class DSHInstaller {
           if (this._hasDeleteMarker(join(dshPath, 'node_modules'))) {
             reason = '残留 .DELETE. 临时文件';
           }
-        } catch {}
+        } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
       }
       if (reason) {
         this._log(`检测到损坏的 DSH 全局目录（${reason}），安装前先清理: ${dshPath}`, 'warn');
@@ -591,7 +591,7 @@ export class DSHInstaller {
               if (existsSync(bp)) rmSync(bp, { force: true, maxRetries: 5, retryDelay: 300 });
             }
           }
-        } catch {}
+        } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
         return { cleaned: true, reason };
       }
       return { cleaned: false, reason: null };
@@ -625,7 +625,7 @@ export class DSHInstaller {
         env.PATH = binDir + delimiter + (env.PATH || '');
         this._log(`已将 pnpm 全局 bin 目录加入 PATH: ${binDir}`);
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     return env;
   }
 

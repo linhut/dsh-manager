@@ -169,9 +169,9 @@ export class DSHVersionManager {
         // 校验必须是数组（防止坏文件/异常结构导致 find/filter 崩溃）
         if (Array.isArray(data)) return data;
         // 非法结构：备份坏文件并重置（避免反复解析失败）
-        try { renameSync(this.versionsFile, this.versionsFile + '.corrupt-' + Date.now()); } catch {}
+        try { renameSync(this.versionsFile, this.versionsFile + '.corrupt-' + Date.now()); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     return [];
   }
 

@@ -114,10 +114,10 @@ export class MCPServerManager {
     return lines.join('\n');
   }
   _atomicWrite(nc) {
-    let bk = ''; if (existsSync(this.patchFile)) { try { const ts = Date.now(); bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch {} } catch (e) { console.warn('[mcp] 备份失败:', e.message); } }
+    let bk = ''; if (existsSync(this.patchFile)) { try { const ts = Date.now(); bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } } catch (e) { console.warn('[mcp] 备份失败:', e.message); } }
     const dir = dirname(this.patchFile); if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const tmp = this.patchFile + '.tmp-' + Date.now();
-    try { writeFileSync(tmp, nc, 'utf-8'); renameSync(tmp, this.patchFile); } catch (err) { try { if (existsSync(tmp)) renameSync(tmp, this.patchFile); } catch {} throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'MCP 写入失败: ' + err.message); }
+    try { writeFileSync(tmp, nc, 'utf-8'); renameSync(tmp, this.patchFile); } catch (err) { try { if (existsSync(tmp)) renameSync(tmp, this.patchFile); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'MCP 写入失败: ' + err.message); }
     return bk;
   }
   async add(cfg) {
@@ -161,8 +161,8 @@ export class MCPServerManager {
     return { success: true, added: add, updated: upd, skipped: skip, warnings: w };
   }
   exportJson() { const ms = {}; for (const s of this.list()) { const e = {}; if (s.transport === 'streamable-http') { e.type = 'http'; e.url = s.url || ''; if (s.headers) e.headers = s.headers; } else { e.command = s.command || ''; if (s.args) e.args = s.args; if (s.env) e.env = s.env; if (s.cwd) e.cwd = s.cwd; } ms[s.serverName] = e; } return JSON.stringify({ mcpServers: ms }, null, 2); }
-  async backup() { if (!existsSync(this.patchFile)) return { success: true, backupPath: null }; const ts = Date.now(); const bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch {} return { success: true, backupPath: bk }; }
-  async listBackups() { const dir = dirname(this.patchFile); if (!existsSync(dir)) return []; const entries = []; try { const { readdirSync } = await import('node:fs'); for (const f of readdirSync(dir)) { const m = f.match(/^cordis\.patch\.yml\.bak-(\d+)$/); if (!m) continue; const p = join(dir, f); try { const st = statSync(p); entries.push({ path: p, name: f, mtime: st.mtime.toISOString() }); } catch {} } } catch {} return entries.sort((a, b) => b.mtime.localeCompare(a.mtime)); }
+  async backup() { if (!existsSync(this.patchFile)) return { success: true, backupPath: null }; const ts = Date.now(); const bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } return { success: true, backupPath: bk }; }
+  async listBackups() { const dir = dirname(this.patchFile); if (!existsSync(dir)) return []; const entries = []; try { const { readdirSync } = await import('node:fs'); for (const f of readdirSync(dir)) { const m = f.match(/^cordis\.patch\.yml\.bak-(\d+)$/); if (!m) continue; const p = join(dir, f); try { const st = statSync(p); entries.push({ path: p, name: f, mtime: st.mtime.toISOString() }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } } } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } return entries.sort((a, b) => b.mtime.localeCompare(a.mtime)); }
   getInstallHint() { return 'dsh plugin --profile ' + this.profile + ' add ' + MCP_PLUGIN_NAME; }
 }
 function escapeRegExp(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }

@@ -113,9 +113,9 @@ export class DSHConfig {
         } catch (verifyErr) {
           // 自动回滚到写前内容；若原文件不存在则删除刚写入的坏文件
           if (diskContent !== null) {
-            try { writeFileSync(filePath, diskContent, 'utf-8'); } catch {}
+            try { writeFileSync(filePath, diskContent, 'utf-8'); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
           } else {
-            try { rmSync(filePath, { force: true }); } catch {}
+            try { rmSync(filePath, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
           }
           throw new DSHError(
             DSHErrorCodes.CONFIG_WRITE_VERIFY_ERROR,
@@ -377,7 +377,7 @@ export class DSHConfig {
       for (let i = MAX; i < backups.length; i++) {
         rmSync(join(dir, backups[i]), { force: true });
       }
-    } catch (e) {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
   }
 
   /**
@@ -457,7 +457,7 @@ export class DSHConfig {
         if (!v2.ok) {
           // 修复后仍失败 → 回滚
           if (prePath) {
-            try { copyFileSync(prePath, filePath); rmSync(prePath, { force: true }); } catch {}
+            try { copyFileSync(prePath, filePath); rmSync(prePath, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
           }
           throw new DSHError(DSHErrorCodes.CONFIG_VALIDATION_ERROR, '还原失败：备份内容校验不通过，已回滚\n' + v2.errors.join('\n'));
         }
@@ -466,12 +466,12 @@ export class DSHConfig {
       if (e instanceof DSHError) throw e;
       // 解析失败 → 回滚
       if (prePath) {
-        try { copyFileSync(prePath, filePath); rmSync(prePath, { force: true }); } catch {}
+        try { copyFileSync(prePath, filePath); rmSync(prePath, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
       }
       throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '还原失败：备份文件解析失败，已回滚');
     }
     // 清理 restore 前备份
-    if (prePath) { try { rmSync(prePath, { force: true }); } catch {} }
+    if (prePath) { try { rmSync(prePath, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } }
     return { success: true, name: target.name, path: target.path };
   }
 

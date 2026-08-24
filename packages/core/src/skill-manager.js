@@ -405,8 +405,27 @@ export class SkillManager {
    * 从 GitHub 下载并导入技能（codeload zip → 解压 → 定位 SKILL.md → 原子安装）
    */
   async importFromGitHub(url, options = {}) {
-    const { owner, repo, branch, subPath } = this.parseGitHubUrl(url);
-    const candidates = [branch, branch === 'main' ? 'master' : branch].filter((v, i, a) => a.indexOf(v) === i);
+    const { owner, repo, branch: parsedBranch, subPath } = this.parseGitHubUrl(url);
+    // 尝试从 GitHub API 获取仓库的默认分支
+    let defaultBranch = parsedBranch;
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 5000);
+      try {
+        const resp = await fetch('https://api.github.com/repos/' + owner + '/' + repo, {
+          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.3.5' },
+          signal: ac.signal,
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.default_branch) defaultBranch = data.default_branch;
+        }
+      } finally {
+        clearTimeout(t);
+      }
+    } catch {}
+    // 构建候选列表：首选 API 返回的默认分支，其次解析出的分支，再尝试常见分支
+    const candidates = [defaultBranch, parsedBranch, 'main', 'master'].filter((v, i, a) => a.indexOf(v) === i);
     let buf = null;
     for (const ref of candidates) {
       try {
@@ -455,7 +474,7 @@ export class SkillManager {
       installed.push(rel);
     }
     // 记录来源仓库（供后续同步更新使用）
-    try { this.recordSkillSource(name, url); } catch {}
+    try { this.recordSkillSource(name, url); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     return { success: true, name, path: join(target, 'SKILL.md'), source: 'user', installed };
   }
 
@@ -512,7 +531,7 @@ export class SkillManager {
       if (existsSync(this.sourceRegistryPath)) {
         return JSON.parse(readFileSync(this.sourceRegistryPath, 'utf-8')) || {};
       }
-    } catch {}
+    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
     return {};
   }
 

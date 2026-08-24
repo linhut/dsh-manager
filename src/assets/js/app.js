@@ -1297,7 +1297,7 @@ async function showPluginDetails(fullName) {
           <p style="font-size:12px;color:var(--text-dim);margin-bottom:6px;"><strong>🖼️ 预览</strong></p>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             ${imgMatches.map(u => {
-              const rawSrc = u.startsWith('http') ? u : `https://raw.githubusercontent.com/${fullName}/main/${u.replace(/^\.?\//, '')}`;
+              const rawSrc = u.startsWith('http') ? u : `https://raw.githubusercontent.com/${fullName}/${info.defaultBranch || 'main'}/${u.replace(/^\.?\//, '')}`;
               const src = /^(https?:|data:image\/)/.test(rawSrc) ? rawSrc : '';
               return `<img src="${escapeAttr(src)}" style="max-width:100%;max-height:160px;border-radius:var(--radius-sm);border:1px solid var(--border);" loading="lazy" onerror="this.style.display='none'">`;
             }).join('')}
@@ -2820,33 +2820,103 @@ async function renderPromptsPage() {
     const isEnabled = (p) => p.enabled !== false;
     const enabledCount = prompts.filter(isEnabled).length;
     const disabledCount = prompts.length - enabledCount;
-    const itemsHtml = prompts.length === 0
-      ? '<p style="color:var(--text-dim);padding:24px;text-align:center;">暂无提示词，点击"添加提示词"创建</p>'
-      : prompts.map((p, i) => {
-          const catLabel = p.category || 'general';
-          return '<div class="card" style="margin-bottom:8px;border-left:3px solid ' + (isEnabled(p) ? 'var(--success)' : 'var(--border)') + ';">' +
-            '<div class="card-body" style="display:flex;align-items:flex-start;gap:12px;padding:12px;">' +
-            '<div style="flex:1;min-width:0;">' +
-            '<div style="font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(p.content) + '</div>' +
-            (p.description ? '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' + escapeHtml(p.description) + '</div>' : '') +
-            '<div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">' +
-            '<span class="badge badge-gray">' + escapeHtml(catLabel) + '</span>' +
-            '<span class="badge ' + (isEnabled(p) ? 'badge-green' : 'badge-gray') + '">' + (isEnabled(p) ? '启用' : '禁用') + '</span>' +
+    
+    // 搜索和分类过滤状态
+    const searchQuery = (document.getElementById('promptSearch')?.value || '').trim().toLowerCase();
+    const activeCategory = state.promptCategory || 'all';
+    
+    // 过滤
+    let filtered = prompts;
+    if (searchQuery) {
+      filtered = filtered.filter(p => 
+        (p.content || '').toLowerCase().includes(searchQuery) ||
+        (p.description || '').toLowerCase().includes(searchQuery)
+      );
+    }
+    if (activeCategory !== 'all') {
+      filtered = filtered.filter(p => p.category === activeCategory);
+    }
+    
+    // 按分类分组
+    const byCategory = {};
+    for (const p of filtered) {
+      const cat = p.category || 'general';
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(p);
+    }
+    const catOrder = ['general', 'behavior', 'reporting', 'workflow', 'custom'];
+    const sortedCats = Object.keys(byCategory).sort((a, b) => {
+      const ia = catOrder.indexOf(a);
+      const ib = catOrder.indexOf(b);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    });
+    
+    const Q = String.fromCharCode(39);
+    
+    // 分类按钮
+    const categories = stats && stats.categories ? Object.keys(stats.categories) : [];
+    const allCats = [...new Set(['all', ...catOrder.filter(c => categories.includes(c) || categories.length === 0), ...categories.filter(c => !catOrder.includes(c))])];
+    const categoryButtons = allCats.map(cat => {
+      const catLabel = cat === 'all' ? '全部' : ({general: '通用', behavior: '行为规范', reporting: '报告要求', workflow: '工作流程', custom: '自定义'}[cat] || cat);
+      return '<button class="btn btn-sm ' + (activeCategory === cat ? 'btn-primary' : 'btn-secondary') + '" onclick="filterPromptCategory(' + Q + cat + Q + ')">' + escapeHtml(catLabel) + '</button>';
+    }).join('');
+    
+    // 分组渲染
+    const itemsHtml = filtered.length === 0
+      ? '<div class="empty-state" style="padding:40px;"><div class="empty-state-icon">📋</div><div class="empty-state-title">' + (searchQuery ? '未找到匹配的提示词' : '暂无提示词') + '</div><div class="empty-state-desc">' + (searchQuery ? '请更换关键词搜索' : '点击"添加提示词"创建') + '</div></div>'
+      : sortedCats.map(cat => {
+          const catItems = byCategory[cat];
+          const catLabel = {general: '通用', behavior: '行为规范', reporting: '报告要求', workflow: '工作流程', custom: '自定义'}[cat] || cat;
+          const catKey = 'promptCat_' + cat;
+          const collapsed = state[catKey] === true;
+          return '<div style="margin-bottom:12px;">' +
+            '<div class="setting-section" style="cursor:pointer;margin:0 0 8px;" onclick="togglePromptCategory(' + Q + cat + Q + ')">' +
+            '<span style="font-size:10px;margin-right:4px;">' + (collapsed ? '▶' : '▼') + '</span>' +
+            '<span class="setting-section-title">' + escapeHtml(catLabel) + '（' + catItems.length + '）</span>' +
             '</div>' +
-            '</div>' +
-            '<div style="display:flex;gap:4px;flex-shrink:0;">' +
-            '<button class="btn btn-xs btn-ghost" onclick="togglePrompt(\'' + escapeAttr(p.id) + '\', ' + !isEnabled(p) + ')">' + (isEnabled(p) ? '禁用' : '启用') + '</button>' +
-            '<button class="btn btn-xs btn-ghost" onclick="editPrompt(\'' + escapeAttr(p.id) + '\')">编辑</button>' +
-            '<button class="btn btn-xs btn-ghost" onclick="deletePrompt(\'' + escapeAttr(p.id) + '\')">删除</button>' +
-            '</div>' +
-            '</div></div>';
+            (collapsed ? '' : catItems.map(p => {
+              return '<div class="card" style="margin-bottom:6px;border-left:3px solid ' + (isEnabled(p) ? 'var(--success)' : 'var(--border)') + ';">' +
+                '<div class="card-body" style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;">' +
+                '<div style="flex:1;min-width:0;">' +
+                '<div style="font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word;">' + escapeHtml(p.content) + '</div>' +
+                (p.description ? '<div style="font-size:11px;color:var(--text-dim);margin-top:4px;">' + escapeHtml(p.description) + '</div>' : '') +
+                '<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;">' +
+                '<span class="badge ' + (isEnabled(p) ? 'badge-green' : 'badge-gray') + '">' + (isEnabled(p) ? '启用' : '禁用') + '</span>' +
+                '</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:4px;flex-shrink:0;align-items:flex-start;">' +
+                '<button class="btn btn-xs btn-ghost" onclick="togglePrompt(' + Q + escapeAttr(p.id) + Q + ', ' + !isEnabled(p) + ')" title="' + (isEnabled(p) ? '禁用' : '启用') + '">' + (isEnabled(p) ? '⏸' : '▶️') + '</button>' +
+                '<button class="btn btn-xs btn-ghost" onclick="editPrompt(' + Q + escapeAttr(p.id) + Q + ')">✏️</button>' +
+                '<button class="btn btn-xs btn-ghost" style="color:var(--error);" onclick="deletePrompt(' + Q + escapeAttr(p.id) + Q + ')">🗑️</button>' +
+                '</div>' +
+                '</div></div>';
+            }).join(''))
+            + '</div>';
         }).join('');
-    el.innerHTML = '<div style="margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">' +
+    
+    el.innerHTML = '<div style="margin-bottom:16px;display:flex;flex-direction:column;gap:10px;">' +
+      // 第一行：操作按钮 + 搜索
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
       '<button class="btn btn-primary" onclick="showAddPromptDialog()">＋ 添加提示词</button>' +
       '<button class="btn btn-secondary" onclick="renderPromptsPage()">🔄 刷新</button>' +
       '<span style="font-size:12px;color:var(--text-dim);">共 ' + prompts.length + ' 条（启用 ' + enabledCount + '，禁用 ' + disabledCount + '）</span>' +
-      (stats && stats.categories ? '<span style="font-size:11px;color:var(--text-dim);">分类: ' + Object.keys(stats.categories).join(', ') + '</span>' : '') +
+      '<span style="flex:1;"></span>' +
+      '<div class="search-box" style="max-width:260px;">' +
+      '<svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
+      '<input type="text" id="promptSearch" placeholder="搜索提示词..." value="' + escapeAttr(searchQuery) + '" oninput="debouncedPromptSearch(this.value)" style="padding-left:30px;font-size:12px;">' +
       '</div>' +
+      '</div>' +
+      // 第二行：分类过滤 + 批量操作
+      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
+      '<span style="font-size:11px;color:var(--text-dim);">分类:</span>' +
+      categoryButtons +
+      '<span style="flex:1;"></span>' +
+      '<button class="btn btn-xs btn-ghost" onclick="batchTogglePrompts(true)" title="启用所有提示词">✅ 全部启用</button>' +
+      '<button class="btn btn-xs btn-ghost" onclick="batchTogglePrompts(false)" title="禁用所有提示词">⏸ 全部禁用</button>' +
+      (disabledCount > 0 ? '<button class="btn btn-xs btn-ghost" style="color:var(--error);" onclick="batchDeleteDisabled()" title="删除所有禁用的提示词">🗑️ 删除已禁用</button>' : '') +
+      '</div>' +
+      '</div>' +
+      // 渲染输出预览
       '<div style="margin-bottom:16px;"><div class="card" style="border-color:var(--primary);"><div class="card-body" style="padding:12px;font-size:12px;color:var(--text-secondary);line-height:1.6;">' +
       '渲染输出（启用中的提示词将注入 Agent 上下文）：<br><code style="display:block;padding:8px;margin-top:4px;background:var(--bg-secondary);border-radius:4px;white-space:pre-wrap;font-size:11px;">' +
       escapeHtml(prompts.filter(isEnabled).map(p => p.content).join('\n')) +
@@ -2856,6 +2926,7 @@ async function renderPromptsPage() {
     el.innerHTML = '<div class="card" style="border-color:var(--error);"><div class="card-body"><p style="color:var(--error);">加载失败: ' + escapeHtml(e.message) + '</p><button class="btn btn-sm btn-ghost" onclick="renderPromptsPage()">重试</button></div></div>';
   }
 }
+
 async function showAddPromptDialog() {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay active';
@@ -2973,6 +3044,79 @@ async function updatePrompt(id) {
     document.querySelector('.modal-overlay')?.remove();
     renderPromptsPage();
   } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+}
+
+
+// ====== 提示词搜索去抖 ======
+let _promptSearchTimer = null;
+function debouncedPromptSearch(value) {
+  if (_promptSearchTimer) clearTimeout(_promptSearchTimer);
+  _promptSearchTimer = setTimeout(() => renderPromptsPage(), 300);
+}
+
+// ====== 提示词分类过滤 ======
+function filterPromptCategory(category) {
+  state.promptCategory = category;
+  renderPromptsPage();
+}
+
+// ====== 切换提示词分类折叠 ======
+function togglePromptCategory(cat) {
+  const key = 'promptCat_' + cat;
+  state[key] = !state[key];
+  renderPromptsPage();
+}
+
+// ====== 批量操作：全部启用/禁用 ======
+async function batchTogglePrompts(enabled) {
+  try {
+    const prompts = await window.dshManager.promptList({});
+    const target = prompts.filter(p => (p.enabled !== false) !== enabled);
+    if (target.length === 0) {
+      showToast('没有需要' + (enabled ? '启用' : '禁用') + '的提示词', 'info');
+      return;
+    }
+    const label = enabled ? '启用' : '禁用';
+    if (!(await showConfirm('批量' + label, '确定' + label + ' ' + target.length + ' 个提示词吗？', { confirmText: label, confirmVariant: 'primary' }))) return;
+    showToast('正在' + label + '...', 'info');
+    for (const p of target) {
+      try {
+        await window.dshManager.promptToggle(p.id, enabled);
+      } catch (e) {
+        console.warn('批量' + label + '失败:', p.id, e.message);
+      }
+    }
+    showToast('已' + label + ' ' + target.length + ' 个提示词', 'success');
+    renderPromptsPage();
+  } catch (e) {
+    showToast('批量操作失败: ' + e.message, 'error');
+  }
+}
+
+// ====== 批量删除禁用提示词 ======
+async function batchDeleteDisabled() {
+  try {
+    const prompts = await window.dshManager.promptList({ enabled: false });
+    if (prompts.length === 0) {
+      showToast('没有禁用的提示词', 'info');
+      return;
+    }
+    if (!(await showConfirm('批量删除', '确定删除 ' + prompts.length + ' 个已禁用的提示词吗？此操作不可恢复。', { confirmText: '删除全部', confirmVariant: 'danger' }))) return;
+    showToast('正在删除...', 'info');
+    let deleted = 0;
+    for (const p of prompts) {
+      try {
+        await window.dshManager.promptDelete(p.id);
+        deleted++;
+      } catch (e) {
+        console.warn('批量删除失败:', p.id, e.message);
+      }
+    }
+    showToast('已删除 ' + deleted + ' 个提示词', 'success');
+    renderPromptsPage();
+  } catch (e) {
+    showToast('批量删除失败: ' + e.message, 'error');
+  }
 }
 
 // ====== Toast 通知 ======
