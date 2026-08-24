@@ -1455,7 +1455,7 @@ function showInstallProgressModal(label, title = '安装') {
       if (msgEl) msgEl.textContent = msg;
       if (spinner) spinner.textContent = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : '⏳';
     },
-    done: (msg, type = 'success') => {
+    done: (msg, type = 'success', needsRestart = false) => {
       const spinner = document.getElementById('installSpinner');
       const bar = document.getElementById('installProgressBar');
       const closeBtn = document.getElementById('installCloseBtn');
@@ -1463,7 +1463,35 @@ function showInstallProgressModal(label, title = '安装') {
       if (spinner) spinner.textContent = type === 'success' ? '✅' : '❌';
       if (bar) bar.innerHTML = '<div style="width:100%;height:100%;background:' + (type === 'success' ? 'var(--success, #22C55E)' : 'var(--error, #EF4444)') + ';border-radius:2px;"></div>';
       if (msgEl) msgEl.textContent = msg;
-      if (closeBtn) { closeBtn.style.display = ''; closeBtn.textContent = '关闭'; }
+      if (closeBtn) {
+        closeBtn.style.display = '';
+        if (needsRestart) {
+          closeBtn.textContent = '稍后重启';
+          // 添加重启按钮
+          const footer = closeBtn.closest('.modal-footer');
+          if (footer && !footer.querySelector('.restart-dsh-btn')) {
+            const restartBtn = document.createElement('button');
+            restartBtn.className = 'btn btn-primary restart-dsh-btn';
+            restartBtn.textContent = '🔄 重启 DSH 以生效';
+            restartBtn.onclick = async () => {
+              restartBtn.disabled = true;
+              restartBtn.textContent = '⏳ 正在重启...';
+              try {
+                await window.dshManager.restartDSH();
+                closeInstallProgressModal();
+                showToast('✅ 重启成功，新插件已加载', 'success');
+              } catch (err) {
+                restartBtn.disabled = false;
+                restartBtn.textContent = '🔄 重启失败，点击重试';
+                showToast('重启失败: ' + err.message, 'error');
+              }
+            };
+            footer.prepend(restartBtn);
+          }
+        } else {
+          closeBtn.textContent = '关闭';
+        }
+      }
     }
   };
 }
@@ -1479,7 +1507,8 @@ async function installMarketPlugin(fullName) {
       if (data && data.message) modal.update(data.message, data.level);
     });
     const result = await window.dshManager.installPlugin(source);
-    modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
+    const restartHint = result.needsRestart ? '，重启后生效' : '';
+    modal.done(`✅ 插件 ${result.name} 安装成功${restartHint}！`, 'success', !!result.needsRestart);
     // 刷新本地插件列表，同步市场卡片安装状态（强制刷新）
     try { state.localPlugins = await window.dshManager.getLocalPlugins(true); } catch { state.localPlugins = []; }
     const section = document.getElementById('marketplaceSection');
@@ -1504,7 +1533,8 @@ async function installPluginSource() {
       if (data && data.message) modal.update(data.message, data.level);
     });
     const result = await window.dshManager.installPlugin(source);
-    modal.done(`✅ 插件 ${result.name} 安装成功！`, 'success');
+    const restartHint = result.needsRestart ? '，重启后生效' : '';
+    modal.done(`✅ 插件 ${result.name} 安装成功${restartHint}！`, 'success', !!result.needsRestart);
     if (input) input.value = '';
     try { state.localPlugins = await window.dshManager.getLocalPlugins(true); } catch { state.localPlugins = []; }
     const section2 = document.getElementById('marketplaceSection');
@@ -1551,8 +1581,9 @@ async function runBatchInstall() {
     const results = await window.dshManager.batchInstallPlugins(sources);
     const ok = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success);
+    const anyNeedsRestart = results.some(r => r.success && r.needsRestart);
     const msg = `批量安装完成：${ok}/${results.length} 成功${failed.length ? `，${failed.length} 失败` : ''}`;
-    modal.done(msg, failed.length ? 'warning' : 'success');
+    modal.done(msg, failed.length ? 'warning' : 'success', anyNeedsRestart);
     if (failed.length > 0) {
       const detail = failed.map(r => `${r.source}: ${r.error || '未知错误'}`).join('\n');
       modal.update('失败详情:\n' + detail, 'error');
@@ -1576,7 +1607,16 @@ async function uninstallPlugin(id) {
       showToast('卸载失败: ' + (result.error || 'dsh plugin remove 未确认成功'), 'error');
       return;
     }
-    showToast('插件已卸载', 'success');
+    showToast('插件已卸载' + (result?.needsRestart ? '，重启后生效' : ''), 'success', 6000, result?.needsRestart ? {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => {
+          showToast('重启成功，插件已卸载', 'success');
+        }).catch(err => {
+          showToast('重启失败: ' + err.message, 'error');
+        });
+      }
+    } : {});
     renderPluginsPage();
   } catch (err) {
     showToast('卸载失败: ' + err.message, 'error');
@@ -1926,7 +1966,17 @@ async function importSkillFromGitHubModal() {
 }
 async function importSkillFromGitHub(url) {
   showToast('正在从 GitHub 下载技能...', 'info');
-  try { const r = await window.dshManager.skillsImportGitHub(url, { overwrite: false }); showToast('导入成功: ' + r.name, 'success'); renderSkillsPage(); }
+  try {
+    const r = await window.dshManager.skillsImportGitHub(url, { overwrite: false });
+    showToast('导入成功: ' + r.name + '（新会话生效，重启立即可用）', 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，技能已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
+    renderSkillsPage();
+  }
   catch (e) { showToast('导入失败: ' + e.message, 'error'); }
 }
 async function importSkillFromDir() {
@@ -1935,7 +1985,14 @@ async function importSkillFromDir() {
     const res = await window.dshManager.selectSkillDirectory();
     if (!res || res.canceled || !res.path) return;
     const r = await window.dshManager.skillsImportDir(res.path, { overwrite: false });
-    showToast('导入成功: ' + r.name, 'success'); renderSkillsPage();
+    showToast('导入成功: ' + r.name + '（新会话生效，重启立即可用）', 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，技能已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
+    renderSkillsPage();
   } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
 }
 

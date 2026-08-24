@@ -126,7 +126,7 @@ export class PluginInstaller {
       //    避免"本地列表已删但实际仍安装"的不一致状态。
       if (dshRemoved) {
         this.registry.unregisterLocalPlugin(pluginId);
-        return { success: true, method: 'official' };
+        return { success: true, needsRestart: true, method: 'official'};
       }
       // 官方命令失败但已清理 patch → 保守保留本地条目，提示用户
       this._log(`dsh plugin remove 未确认成功（${dshError || '未知原因'}），本地条目保留以便重试`, 'warn');
@@ -213,6 +213,7 @@ export class PluginInstaller {
 
       return {
         success: true,
+        needsRestart: true,
         id: pluginId,
         name: info.name || packageName,
         version: npmInfo.version || 'latest',
@@ -272,6 +273,7 @@ export class PluginInstaller {
 
       return {
         success: true,
+        needsRestart: true,
         id: pluginId,
         name: info.name || repo,
         version: info.latestRelease || info.version || 'main',
@@ -340,7 +342,7 @@ export class PluginInstaller {
         repoUrl: `https://github.com/${owner}/${repo}`,
       });
 
-      return { success: true, id: pluginId, name: info.name || repo, version: info.latestRelease || info.version || 'main', path: dest };
+      return { success: true, needsRestart: true, id: pluginId, name: info.name || repo, version: info.latestRelease || info.version || 'main', path: dest};
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -637,7 +639,7 @@ export class PluginInstaller {
         repoUrl: url,
       });
 
-      return { success: true, id: pluginId, name: pluginId, version, path: dest };
+      return { success: true, needsRestart: true, id: pluginId, name: pluginId, version, path: dest};
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -686,7 +688,7 @@ export class PluginInstaller {
       description: pkg?.description || '',
     });
 
-    return { success: true, id: pluginId, name: pluginId, version: pkg?.version || 'local', path };
+    return { success: true, needsRestart: true, id: pluginId, name: pluginId, version: pkg?.version || 'local', path};
   }
 
   /**
@@ -754,7 +756,7 @@ export class PluginInstaller {
         description: pkg.description || '',
       });
 
-      return { success: true, id: pluginId, name: pluginName, version: pkg.version || 'local', path: dest };
+      return { success: true, needsRestart: true, id: pluginId, name: pluginName, version: pkg.version || 'local', path: dest};
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -828,7 +830,7 @@ export class PluginInstaller {
         description: pkg.description || '',
       });
 
-      return { success: true, id: pluginName, name: pluginName, version: pkg.version || 'local', path: dest };
+      return { success: true, needsRestart: true, id: pluginName, name: pluginName, version: pkg.version || 'local', path: dest};
     } catch (error) {
       throw new DSHError(
         DSHErrorCodes.PLUGIN_INSTALL_FAILED,

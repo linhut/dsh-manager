@@ -109,3 +109,11 @@
   - skill-manager importFromGitHub 通过 API 获取仓库实际默认分支
   - app.js README 图片 URL 使用 info.defaultBranch 而非硬编码 main
   - 版本号 1.3.6 → 1.3.7
+- ✅ 新增"安装完成后重启提示"功能（v1.3.8）：
+  - installer.js 所有成功返回（安装/卸载）新增 needsRestart: true 标志
+  - preload.cjs 新增 restartDSH（组合 dsh:stop + dsh:start）
+  - app.js 安装进度模态框支持"重启 DSH 以生效"按钮
+  - 插件安装（市场/自定义源/批量安装）完成后若需要重启自动提示
+  - 插件卸载完成后 toast 提示"重启后生效"并提供重启按钮
+  - 技能导入（GitHub/目录）完成后提示"新会话生效"并提供重启按钮
+  - 版本号 1.3.7 → 1.3.8
