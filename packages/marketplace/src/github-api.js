@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { DSHError, DSHErrorCodes } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, getVersion } from '../../core/src/index.js';
 
 const GITHUB_API = 'https://api.github.com';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
@@ -72,7 +72,7 @@ export class GitHubAPI {
     this.token = options.token || process.env.GITHUB_TOKEN || null;
     this.headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'dsh-manager/1.3.5',
+      'User-Agent': 'dsh-manager/' + (getVersion().version || '1.3.9'),
       ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
     };
   }

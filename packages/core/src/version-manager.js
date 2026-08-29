@@ -7,9 +7,20 @@
 
 import { execa } from 'execa';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS, getDSHVersion, isDSHInstalled, compareDSHVersions } from './dsh-utils.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+/** DSH Manager 自身版本（读取仓库根 package.json，避免硬编码漂移） */
+const MANAGER_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 /** 归一化版本号：去掉 v 前缀与首尾空白，用于等值比较 */
 function normalizeVersion(v) {
@@ -106,7 +117,7 @@ export class DSHVersionManager {
       const timeoutId = setTimeout(() => controller.abort(), 15_000);
       const response = await fetch(
         'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest',
-        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/1.3.5' } }
+        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/' + MANAGER_VERSION } }
       );
       clearTimeout(timeoutId);
 

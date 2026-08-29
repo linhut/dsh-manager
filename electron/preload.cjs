@@ -31,10 +31,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   doctorCheck: () => ipcRenderer.invoke('dsh:doctor'),
   startDSH: () => ipcRenderer.invoke('dsh:start'),
   /// 重启 DSH Web：先停后启（安装新 bundle 后需重启生效）
-  restartDSH: async () => {
-    await ipcRenderer.invoke('dsh:stop');
-    return await ipcRenderer.invoke('dsh:start');
-  },
+  restartDSH: () => ipcRenderer.invoke('dsh:restart'),
   onDSHStartError: (callback) => {
     ipcRenderer.on('dsh:start-error', (_, data) => callback(data));
     return () => ipcRenderer.removeAllListeners('dsh:start-error');

@@ -16,8 +16,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -70,27 +70,29 @@ check('Type is module', pkg.type === 'module');
 
 // 3) JS Syntax
 console.log('\n--- 3. JS Syntax Check ---');
-const jsFiles = [
-  'electron/main.js', 'electron/preload.cjs', 'electron/ipc-handlers.js', 'electron/debug-logger.js',
-  'src/assets/js/app.js',
-  'src/assets/js/modules/state.js', 'src/assets/js/modules/utils.js',
-  'src/assets/js/modules/debug.js', 'src/assets/js/modules/theme.js',
-  'src/assets/js/modules/dsh-status.js', 'src/assets/js/modules/dsh-control.js',
-  'packages/core/src/index.js', 'packages/core/src/config.js', 'packages/core/src/installer.js',
-  'packages/core/src/version-manager.js', 'packages/core/src/dsh-utils.js',
-  'packages/core/src/env-check.js', 'packages/core/src/errors.js',
-  'packages/core/src/process-manager.js', 'packages/core/src/profile-manager.js',
-  'packages/core/src/data-manager.js', 'packages/core/src/dependency-integrity.js',
-  'packages/core/src/master-prompt-manager.js', 'packages/core/src/mcp-manager.js',
-  'packages/core/src/pnpm-check.js', 'packages/core/src/portable-node.js',
-  'packages/core/src/reply-language.js', 'packages/core/src/skill-manager.js',
-  'packages/core/src/yaml-utils.js',
-  'packages/marketplace/src/index.js', 'packages/marketplace/src/github-api.js',
-  'packages/marketplace/src/installer.js', 'packages/marketplace/src/manager.js',
-  'packages/marketplace/src/registry.js',
-  'website/assets/js/main.js',
-  'dsh-skills/index.js',
-];
+// 自动发现项目内全部 JS/MJS/CJS 文件（排除 node_modules/.git/dist/build 等）
+// 避免新增源码文件后审计遗漏，硬编码列表改为递归扫描
+const jsFiles = (() => {
+  const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'out']);
+  const found = [];
+  function walk(dir) {
+    let entries;
+    try { entries = readdirSync(dir); } catch { return; }
+    for (const entry of entries) {
+      if (EXCLUDE_DIRS.has(entry) || entry.startsWith('.')) continue;
+      const full = join(dir, entry);
+      let stat;
+      try { stat = statSync(full); } catch { continue; }
+      if (stat.isDirectory()) {
+        walk(full);
+      } else if (/\.(mjs|js|cjs)$/.test(entry)) {
+        found.push(relative(root, full).replace(/\\/g, '/'));
+      }
+    }
+  }
+  walk(req('.'));
+  return found.sort();
+})();
 // 不使用 shell（避免 Windows 下 CMD.EXE 对 UNC 工作目录报错）
 // shell 模式下 CMD 会因 cwd 为 UNC 路径打印警告并可能返回非零退出码
 const spawnOpts = { cwd: root, encoding: 'utf8', shell: false };
@@ -114,13 +116,13 @@ console.log('\n--- 4. IPC Three-Tier Consistency ---');
 const ipcContent = readFile('electron/ipc-handlers.js');
 const preloadContent = readFile('electron/preload.cjs');
 if (ipcContent.ok && preloadContent.ok) {
-  const ipcHandles = [...ipcContent.content.matchAll(/ipcMain\.handle\s*\(\s*'([^']+)'/g)]
-    .map(m => m[1]).sort();
-  const preloadInvokes = [...preloadContent.content.matchAll(/ipcRenderer\.invoke\s*\(\s*'([^']+)'/g)]
-    .map(m => m[1]).sort();
+  const ipcHandles = [...new Set([...ipcContent.content.matchAll(/ipcMain\.handle\s*\(\s*'([^']+)'/g)]
+    .map(m => m[1]))].sort();
+  const preloadInvokes = [...new Set([...preloadContent.content.matchAll(/ipcRenderer\.invoke\s*\(\s*'([^']+)'/g)]
+    .map(m => m[1]))].sort();
   
   check(`IPC handlers count`, ipcHandles.length === preloadInvokes.length,
-    `${ipcHandles.length} handlers vs ${preloadInvokes.length} invokes`);
+    `${ipcHandles.length} unique handlers vs ${preloadInvokes.length} unique invokes`);
   
   // Check all handlers are in preload
   const missing = ipcHandles.filter(h => !preloadInvokes.includes(h));

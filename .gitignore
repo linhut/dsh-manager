@@ -67,3 +67,6 @@ dist-test/
 scripts/build-*.cjs
 scripts/check-*.mjs
 scripts/models-settings-*.png
+
+# CodeGraph local index
+.codegraph/

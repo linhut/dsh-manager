@@ -236,6 +236,61 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await vm.checkForUpdate();
   });
 
+  // ====== DSH 重启（组合 stop + start） ======
+  ipcMain.handle('dsh:restart', async () => {
+    try {
+      // 先停止
+      const { stopProcessByPort, testDSHHealth } = await loadCore();
+      try {
+        const health = await testDSHHealth(lastActivePort);
+        if (health.reachable) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          try {
+            await fetch('http://127.0.0.1:' + lastActivePort + '/api/shutdown', { method: 'POST', signal: controller.signal });
+          } catch {}
+          clearTimeout(timeoutId);
+        }
+      } catch {}
+      await stopProcessByPort(lastActivePort);
+      // 清理所有 DSH 相关进程
+      try {
+        const { execa } = await import('execa');
+        if (process.platform === 'win32') {
+          const script = "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '@deepseek-ai[/\\\\]dsh(?=[/\\\\\\\\\\\\s]|$)' } | ForEach-Object { $_.ProcessId }";
+          const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { reject: false, timeout: 10_000, windowsHide: true });
+          const pids = stdout.split(/\r?\n/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
+          for (const pid of pids) {
+            try { await execa('taskkill', ['/PID', pid, '/F', '/T'], { reject: false, timeout: 10_000, windowsHide: true }); } catch {}
+          }
+        }
+      } catch {}
+
+      // 再启动
+      const sp = await spawnDSHWeb();
+      if (sp.error) {
+        return { success: false, error: sp.error };
+      }
+      const { child, actualPort, portResult, preferredPort } = sp;
+      lastActivePort = actualPort;
+
+      // 等待服务就绪
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const health = await testDSHHealth(actualPort);
+          if (health.reachable) {
+            return { success: true, port: actualPort, reachable: true, webUrl: 'http://127.0.0.1:' + actualPort };
+          }
+        } catch {}
+      }
+
+      return { success: true, port: actualPort, reachable: false, message: 'DSH 已重启，等待服务就绪中...' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  });
+
   // ====== 数据管理 ======
   ipcMain.handle('dsh:storage-info', async () => {
     const { getDSHStorageInfo } = await loadCore();

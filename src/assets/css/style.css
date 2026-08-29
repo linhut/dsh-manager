@@ -919,6 +919,27 @@ select.select option {
 .placeholder-hint code { color: var(--accent); font-family: var(--font-mono); }
 .placeholder-content .btn { margin-top: 20px; }
 
+/* ====== 配置生效提示条 ====== */
+.restart-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  background: var(--info-bg, rgba(59, 130, 246, 0.1));
+  border: 1px solid var(--info-border, rgba(59, 130, 246, 0.28));
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.restart-hint .restart-hint-icon { font-size: 14px; line-height: 1.4; flex-shrink: 0; }
+.restart-hint code { font-size: 11px; }
+.restart-hint .restart-hint-strong {
+  color: var(--accent, #3b82f6);
+  font-weight: 600;
+}
+
 /* ====== Code ====== */
 code {
   font-family: var(--font-mono);

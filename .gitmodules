@@ -1,0 +1,3 @@
+[submodule "dsh-skills"]
+    path = dsh-skills
+    url = https://github.com/linhut/dsh-skills.git

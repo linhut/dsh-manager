@@ -126,8 +126,17 @@ export class MCPServerManager {
     if (cfg.transport === 'streamable-http') { if (!cfg.url) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'URL 不能为空'); } else { if (!cfg.command) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'command 不能为空'); cfg.transport = 'stdio'; }
     const dir = join(DSH_PATHS.home, 'profiles', this.profile); if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     if (!existsSync(this.patchFile)) writeFileSync(this.patchFile, '# dsh profile patch layer\n[]\n', 'utf-8');
-    const ex = this.get(cfg.serverName); const raw = readFileSync(this.patchFile, 'utf-8'); let nc;
-    if (ex) { nc = raw.replace(ex.block, this._buildBlock(cfg)); } else { const pm = raw.match(/^# dsh profile patch layer\n\[\s*\]/); if (pm) nc = raw.replace(/\[\s*\]/, this._buildBlock(cfg)); else nc = raw.trimEnd() + '\n\n' + this._buildBlock(cfg) + '\n'; }
+    const raw = readFileSync(this.patchFile, 'utf-8').replace(/\r\n/g, '\n');
+    // 统一重建合法顶层数组：保留头部注释、剔除残留空数组（[]），
+    // 避免旧文件头注释不同时生成 "[] + - insert:" 非法 YAML 导致 patch 加载失败
+    const headerLines = [];
+    for (const line of raw.split('\n')) { if (/^\s*#/.test(line)) headerLines.push(line); else break; }
+    const blocks = this._parseBlocks().filter(b => !headerLines.includes(b.block));
+    const ordered = [];
+    for (const b of blocks) { if (b.configName !== cfg.serverName) ordered.push(b.block); }
+    ordered.push(this._buildBlock(cfg));
+    const body = ordered.join('\n\n');
+    const nc = (headerLines.length > 0 ? headerLines.join('\n') + '\n\n' : '') + body + '\n';
     return { success: true, serverName: cfg.serverName, backupPath: this._atomicWrite(nc) };
   }
   async remove(serverName) {

@@ -2492,6 +2492,70 @@ async function cleanData(key) {
   }
 }
 
+// ====== 配置备份 / 恢复 / 校验 ======
+async function renderConfigBackups() {
+  const el = document.getElementById('configBackupList');
+  if (!el) return;
+  let backups = [];
+  try { backups = await window.dshManager.listConfigBackups(); } catch (e) { backups = []; }
+
+  if (!backups || backups.length === 0) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:13px;">暂无备份，点击上方「💾 创建备份」保存当前 settings.yaml。</p>';
+    return;
+  }
+  el.innerHTML = backups.map(b => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px;">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%;">
+        <span style="font-family:var(--font-mono);font-size:12px;">${escapeHtml(b.name)}</span>
+        <span style="color:var(--text-dim);font-size:11px;margin-left:8px;">${formatBytes(b.size || 0)}</span>
+      </span>
+      <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <span style="color:var(--text-muted);font-size:11px;">${b.mtime ? new Date(b.mtime).toLocaleString() : ''}</span>
+        <button class="btn btn-sm btn-ghost" onclick="restoreConfigBackupNow('${escapeAttr(b.name)}')">↩️ 恢复</button>
+      </span>
+    </div>
+  `).join('') + '<p style="font-size:12px;color:var(--text-dim);margin-top:8px;">恢复会覆盖当前 settings.yaml（自动先备份当前版本）。</p>';
+}
+
+async function createConfigBackupNow() {
+  try {
+    const result = await window.dshManager.createConfigBackup('手动备份');
+    showToast('备份已创建: ' + (result?.name || ''), 'success');
+    await renderConfigBackups();
+  } catch (err) {
+    showToast('创建备份失败: ' + err.message, 'error');
+  }
+}
+
+async function restoreConfigBackupNow(name) {
+  if (!(await showConfirm('恢复配置备份', `确定用备份「${name}」覆盖当前配置吗？恢复前会自动备份当前版本。`, { confirmText: '恢复', confirmVariant: 'primary' }))) return;
+  try {
+    const result = await window.dshManager.restoreConfigBackup(name);
+    if (result && result.success === false) {
+      showToast('恢复失败: ' + (result.error || '未知错误'), 'error');
+      return;
+    }
+    showToast('配置已从备份恢复', 'success');
+    await renderConfigBackups();
+  } catch (err) {
+    showToast('恢复失败: ' + err.message, 'error');
+  }
+}
+
+async function validateConfigNow() {
+  try {
+    const result = await window.dshManager.validateConfig();
+    if (result && result.ok) {
+      showToast('✅ 配置校验通过', 'success');
+    } else {
+      const errors = (result && result.errors) || ['未知问题'];
+      showToast('⚠️ 配置存在问题: ' + errors.join('; '), 'warning', 8000);
+    }
+  } catch (err) {
+    showToast('校验失败: ' + err.message, 'error');
+  }
+}
+
 // ====== MCP 服务端管理 ======
 async function mcpRenderList() {
   const el = document.getElementById('mcpServerList');
@@ -2603,7 +2667,13 @@ async function mcpApplyJsonImport() {
     if (!result.ok) { showToast('转换失败: ' + (result.error || ''), 'error'); return; }
     if (!result.rows || !result.rows.length) { showToast('未检测到服务端', 'warning'); return; }
     await window.dshManager.mcpApplyImport(result.rows, { __profile: 'web', mode: 'merge' });
-    showToast('导入成功，已添加 ' + result.rows.length + ' 个服务端', 'success');
+    showToast('导入成功，已添加 ' + result.rows.length + ' 个服务端，重启 DSH 后生效', 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，MCP 配置已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
     mcpImportModalClose();
     mcpRenderList();
   } catch (e) {
@@ -2659,7 +2729,10 @@ function mcpDialog(existing) {
   const html = `
     <div class="modal-overlay active" id="mcpModal">
       <div class="modal" style="min-width:520px;">
-        <h3 class="modal-title">${existing ? '编辑 MCP 服务端' : '添加 MCP 服务端'}</h3>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 class="modal-title">${existing ? '编辑 MCP 服务端' : '添加 MCP 服务端'}</h3>
+          ${existing ? '' : '<button class="btn btn-sm" onclick="mcpOpenMarketDialog()" title="从内置市场中选取常用 MCP 配置">🛒 从市场选择</button>'}
+        </div>
         <div class="modal-body">
           <div style="display:flex;flex-direction:column;gap:12px;">
             <div>
@@ -2733,6 +2806,80 @@ function mcpDialogClose() {
   const modal = document.getElementById('mcpModal');
   if (modal) modal.remove();
 }
+// ====== MCP 市场选择 ======
+async function mcpOpenMarketDialog() {
+  let data = { results: [], stats: {} };
+  try { data = await window.dshManager.mcpSearchMarket('', 'all'); } catch (e) {
+    showToast('加载 MCP 市场失败: ' + e.message, 'error');
+    return;
+  }
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay active'; modal.id = 'mcpMarketModal';
+  modal.innerHTML = `
+    <div class="modal" style="min-width:640px;max-width:720px;">
+      <div class="modal-header"><h3>🛒 MCP 市场</h3><button class="modal-close" onclick="mcpMarketClose()">×</button></div>
+      <div class="modal-body">
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">内置市场共 ${data.stats.total || 0} 条（官方 ${data.stats.official || 0} / 社区 ${data.stats.community || 0}）。点击条目自动填入添加表单。</p>
+        <input class="input" id="mcpMarketSearch" placeholder="搜索 MCP 服务…" oninput="mcpMarketFilter()" style="margin-bottom:10px;">
+        <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+          <button class="btn btn-xs btn-primary" onclick="mcpMarketFilter('all')">全部</button>
+          <button class="btn btn-xs" onclick="mcpMarketFilter('official')">官方</button>
+          <button class="btn btn-xs" onclick="mcpMarketFilter('community')">社区</button>
+        </div>
+        <div id="mcpMarketList" style="max-height:340px;overflow-y:auto;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="mcpMarketClose()">取消</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  window.__mcpMarketAll = data.results || [];
+  mcpMarketFilter('all');
+}
+
+function mcpMarketClose() {
+  const el = document.getElementById('mcpMarketModal');
+  if (el) el.remove();
+}
+
+function mcpMarketFilter(cat) {
+  const all = window.__mcpMarketAll || [];
+  const q = (document.getElementById('mcpMarketSearch')?.value || '').trim().toLowerCase();
+  const list = document.getElementById('mcpMarketList');
+  if (!list) return;
+  let items = all;
+  if (cat && cat !== 'all') items = items.filter(i => i.category === cat);
+  if (q) items = items.filter(i => (i.name || '').toLowerCase().includes(q) || (i.id || '').toLowerCase().includes(q) || (i.description || '').toLowerCase().includes(q));
+  if (items.length === 0) { list.innerHTML = '<p style="color:var(--text-dim);font-size:13px;padding:12px;">无匹配条目</p>'; return; }
+  list.innerHTML = items.map(i => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer;" onclick="mcpFillFromMarket('${escapeAttr(i.id)}')" title="点击填入添加表单">
+      <div style="min-width:0;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(i.name)} <span class="badge ${i.category === 'official' ? 'badge-blue' : 'badge-green'}">${i.category === 'official' ? '官方' : '社区'}</span></div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(i.description || '')}</div>
+      </div>
+      <span style="font-size:11px;color:var(--accent);flex-shrink:0;margin-left:8px;">${i.transport === 'stdio' ? escapeHtml(i.command + ' ' + (i.args || []).slice(0, 2).join(' ')) : escapeHtml(i.url || '')}</span>
+    </div>
+  `).join('');
+}
+
+function mcpFillFromMarket(id) {
+  const item = (window.__mcpMarketAll || []).find(i => i.id === id);
+  if (!item) { showToast('未找到该市场条目', 'error'); return; }
+  mcpMarketClose();
+  const nameEl = document.getElementById('mcpName');
+  if (nameEl) nameEl.value = item.id;
+  const transport = item.transport || 'stdio';
+  const radio = document.querySelector('input[name="mcpTransport"][value="' + transport + '"]');
+  if (radio) { radio.checked = true; mcpToggleTransport(); }
+  if (transport === 'stdio') {
+    const cmd = document.getElementById('mcpCommand'); if (cmd) cmd.value = item.command || 'npx';
+    const args = document.getElementById('mcpArgs'); if (args) args.value = (item.args || []).join(', ');
+  } else {
+    const url = document.getElementById('mcpUrl'); if (url) url.value = item.url || '';
+  }
+  showToast('已从市场填入: ' + item.name + '，检查后点保存', 'success');
+}
 
 async function mcpSave() {
   try {
@@ -2764,7 +2911,13 @@ async function mcpSave() {
     }
 
     const result = await window.dshManager.mcpAdd(config);
-    showToast(`MCP 服务端 ${result.serverName} 已保存`, 'success');
+    showToast(`MCP 服务端 ${result.serverName} 已保存，重启 DSH 后生效`, 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，MCP 配置已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
     mcpDialogClose();
     mcpRenderList();
   } catch (err) {
@@ -2776,7 +2929,13 @@ async function mcpRemove(serverName) {
   if (!(await showConfirm('删除 MCP 服务端', `确定要删除 MCP 服务端 "${serverName}" 吗？`, { confirmText: '删除', confirmVariant: 'danger' }))) return;
   try {
     await window.dshManager.mcpRemove(serverName, 'web');
-    showToast(`MCP 服务端 ${serverName} 已删除`, 'success');
+    showToast(`MCP 服务端 ${serverName} 已删除，重启 DSH 后生效`, 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，MCP 配置已生效', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
     mcpRenderList();
   } catch (err) {
     showToast('删除失败: ' + err.message, 'error');
@@ -3188,14 +3347,19 @@ function renderSystemManagementTab() {
         <span class="card-title">🔌 MCP 服务端</span>
         <button class="btn btn-sm btn-primary" onclick="mcpAddDialog()">＋ 添加服务端</button>
       </div>
-      <div class="card-body" id="mcpServerList">
-        <p style="color:var(--text-dim);">正在加载...</p>
+      <div class="card-body">
+        <div class="restart-hint">
+          <span class="restart-hint-icon">💡</span>
+          <span>添加 / 修改 / 删除 MCP 服务端后，需<span class="restart-hint-strong">重启 DSH</span> 才会在会话中生效（新会话同样需要）。</span>
+        </div>
+        <div id="mcpServerList">
+          <p style="color:var(--text-dim);">正在加载...</p>
+        </div>
       </div>
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+      <div style="margin-top:12px;padding:0 16px 12px;">
         <p style="font-size:12px;color:var(--text-dim);line-height:1.7;">
           MCP (Model Context Protocol) 让 DSH Agent 可以连接外部工具和数据源。
-          配置保存在 <code>~/.dsh/profiles/web/cordis.patch.yml</code>，
-          保存后需重启 DSH 生效。
+          配置保存在 <code>~/.dsh/profiles/web/cordis.patch.yml</code>。
         </p>
       </div>
     </div>
@@ -3215,11 +3379,24 @@ function renderSystemManagementTab() {
         <p style="color:var(--text-dim);">正在加载...</p>
       </div>
     </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">📋 配置备份</span>
+        <span style="display:flex;gap:8px;">
+          <button class="btn btn-sm" onclick="validateConfigNow()">✅ 校验配置</button>
+          <button class="btn btn-sm btn-primary" onclick="createConfigBackupNow()">💾 创建备份</button>
+        </span>
+      </div>
+      <div class="card-body" id="configBackupList">
+        <p style="color:var(--text-dim);">正在加载...</p>
+      </div>
+    </div>
   `;
   setTimeout(() => {
     mcpRenderList();
     renderProfiles();
     renderDataManagement();
+    renderConfigBackups();
   }, 50);
   return html;
 }
