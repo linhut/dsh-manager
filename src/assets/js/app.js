@@ -1869,7 +1869,7 @@ function openSkillModal(existing) {
   state.skillEditingName = existing ? existing.name : null;
   const nameValue = existing ? existing.name : '';
   const descValue = existing ? (existing.meta.description || '') : '';
-  const whenValue = existing ? (existing.meta['when-to-use'] || '') : '';
+  const whenValue = existing ? (existing.meta.whenToUse || existing.meta['when-to-use'] || '') : '';
   const bodyValue = existing ? (existing.body || '') : '';
   let overlay = document.getElementById('skillModal');
   if (!overlay) {
@@ -1883,7 +1883,7 @@ function openSkillModal(existing) {
       + '  <label class="field-label">描述</label>'
       + '  <textarea id="skillDesc" placeholder="一句话描述技能用途" rows="2" class="input-text"></textarea>'
       + '  <label class="field-label">何时使用（可选）</label>'
-      + '  <input id="skillWhen" placeholder="when-to-use" class="input-text">'
+      + '  <input id="skillWhen" placeholder="whenToUse" class="input-text">'
       + '  <label class="field-label">技能正文（Markdown）</label>'
       + '  <textarea id="skillBody" placeholder="# 技能标题\\n\\n正文内容..." rows="8" class="input-text code-textarea"></textarea>'
       + '</div>'

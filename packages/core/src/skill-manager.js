@@ -27,7 +27,8 @@ const SOURCE_LABEL = { user: '用户技能', custom: '自定义目录', project:
 
 /** 解析 SKILL.md 或 <name>.md：frontmatter + 正文 */
 function parseSkillFile(text) {
-  const m = String(text).match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  const str = String(text).replace(/^\uFEFF/, '');
+  const m = str.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { meta: {}, body: String(text) };
   let meta = {};
   try { meta = parseYAML(m[1]) || {}; } catch { meta = {}; }
@@ -37,7 +38,7 @@ function parseSkillFile(text) {
 /** 渲染带 frontmatter 的 SKILL.md */
 function renderSkillFile(input) {
   const meta = { name: input.name, description: input.description };
-  if (input.whenToUse) meta['when-to-use'] = input.whenToUse;
+  if (input.whenToUse) meta['whenToUse'] = input.whenToUse;
   if (input.modelInvocable === false) meta['disable-model-invocation'] = true;
   if (input.userInvocable === false) meta['user-invocable'] = false;
   const lines = ['---'];
@@ -49,6 +50,86 @@ function renderSkillFile(input) {
   lines.push('');
   lines.push(String(input.body || '').replace(/^\n+/, '').replace(/\s+$/, ''));
   return lines.join('\n') + '\n';
+}
+
+/**
+ * 按最新 DSH 技能规则规范化 SKILL.md frontmatter。
+ *
+ * 新版 DSH（dsh-skill-filesystem >= 0.1.0-rc.8）对 frontmatter 的硬性要求：
+ * - name + description 必填，name 必须 kebab-case（缺失 → 整个技能被丢弃）
+ * - invocation 字段必须是 kebab-case：disable-model-invocation / user-invocable
+ * - 旧 camelCase 拼写（disableModelInvocation / modelInvocable / userInvocable）
+ *   会导致整个技能被忽略（rejectLegacyInvocationKey 抛错）
+ * - whenToUse 是可选字段（DSH 标准拼写为 camelCase）
+ *
+ * 本函数自动迁移旧字段并校验必填项，保证安装后的技能 100% 符合 DSH 最新规则。
+ * @param {string} text SKILL.md 原文
+ * @returns {{ text: string, name: string }} 规范化后的全文与技能名
+ * @throws {DSHError} frontmatter 无法修复时（缺 name / 缺 description / name 非 kebab-case）
+ */
+function normalizeSkillFrontmatter(text) {
+  const { meta, body } = parseSkillFile(text);
+  const hasFrontmatter = Object.keys(meta).length > 0;
+  if (!hasFrontmatter) {
+    throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '技能缺少 YAML frontmatter（必须以 --- 开头，包含 name 和 description）');
+  }
+  const name = typeof meta.name === 'string' ? meta.name.trim() : '';
+  if (!validSkillName(name)) {
+    throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '技能 frontmatter 缺少合法的 kebab-case name（当前: ' + (name || '(空)') + '）');
+  }
+  const description = typeof meta.description === 'string' ? meta.description.trim() : '';
+  if (!description) {
+    throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '技能 frontmatter 缺少 description（DSH 必填，否则技能不会被加载）');
+  }
+  // 布尔值宽松解析（与 DSH frontmatterBoolean 一致）
+  const toBool = (v, dflt) => {
+    if (typeof v === 'boolean') return v;
+    if (v === 1 || v === '1') return true;
+    if (v === 0 || v === '0') return false;
+    if (typeof v === 'string') {
+      const s = v.toLowerCase();
+      if (['true', 'yes', 'on'].includes(s)) return true;
+      if (['false', 'no', 'off'].includes(s)) return false;
+    }
+    return dflt;
+  };
+  const out = { name, description };
+  // whenToUse：camel 优先，兼容旧 kebab
+  if (typeof meta['whenToUse'] === 'string') out['whenToUse'] = meta['whenToUse'];
+  else if (typeof meta['when-to-use'] === 'string') out['whenToUse'] = meta['when-to-use'];
+  // 模型可调用：迁移旧 camelCase
+  if (Object.hasOwn(meta, 'disableModelInvocation')) {
+    if (toBool(meta.disableModelInvocation, false) === true) out['disable-model-invocation'] = true;
+  } else if (Object.hasOwn(meta, 'modelInvocable')) {
+    if (toBool(meta.modelInvocable, true) === false) out['disable-model-invocation'] = true;
+  } else if (meta['disable-model-invocation'] !== undefined) {
+    out['disable-model-invocation'] = toBool(meta['disable-model-invocation'], false);
+  }
+  // 用户可调用：迁移旧 camelCase
+  if (Object.hasOwn(meta, 'userInvocable')) {
+    if (toBool(meta.userInvocable, true) === false) out['user-invocable'] = false;
+    else out['user-invocable'] = true;
+  } else if (meta['user-invocable'] !== undefined) {
+    out['user-invocable'] = toBool(meta['user-invocable'], true);
+  }
+  // 保留其他自定义字段（metadata 等）
+  const reserved = new Set(['name', 'description', 'whenToUse', 'when-to-use', 'disableModelInvocation', 'modelInvocable', 'userInvocable', 'disable-model-invocation', 'user-invocable']);
+  for (const [k, v] of Object.entries(meta)) {
+    if (reserved.has(k)) continue;
+    out[k] = v;
+  }
+  // 渲染规范化后的 frontmatter + 正文
+  const lines = ['---'];
+  for (const [k, v] of Object.entries(out)) {
+    if (typeof v === 'string') lines.push(k + ': ' + JSON.stringify(v));
+    else if (v === true) lines.push(k + ': true');
+    else if (v === false) lines.push(k + ': false');
+    else lines.push(k + ': ' + JSON.stringify(v));
+  }
+  lines.push('---');
+  lines.push('');
+  lines.push(String(body || '').replace(/^\n+/, '').replace(/\s+$/, ''));
+  return { text: lines.join('\n') + '\n', name };
 }
 
 /** 判断目录名/文件名是否为合法 kebab-case 技能名 */
@@ -186,7 +267,7 @@ export class SkillManager {
             out.push({
               name: e.name,
               description: typeof meta.description === 'string' ? meta.description : '',
-              whenToUse: typeof meta['when-to-use'] === 'string' ? meta['when-to-use'] : undefined,
+              whenToUse: typeof meta['whenToUse'] === 'string' ? meta['whenToUse'] : (typeof meta['when-to-use'] === 'string' ? meta['when-to-use'] : undefined),
               modelInvocable: meta['disable-model-invocation'] !== true,
               userInvocable: meta['user-invocable'] !== false,
               source, root, path: skillFile, kind: 'bundle', body,
@@ -199,7 +280,7 @@ export class SkillManager {
             out.push({
               name,
               description: typeof meta.description === 'string' ? meta.description : '',
-              whenToUse: typeof meta['when-to-use'] === 'string' ? meta['when-to-use'] : undefined,
+              whenToUse: typeof meta['whenToUse'] === 'string' ? meta['whenToUse'] : (typeof meta['when-to-use'] === 'string' ? meta['when-to-use'] : undefined),
               modelInvocable: meta['disable-model-invocation'] !== true,
               userInvocable: meta['user-invocable'] !== false,
               source, root, path: p, kind: 'flat', body,
@@ -314,7 +395,7 @@ export class SkillManager {
     const text = renderSkillFile({
       name: name,
       description: patch.description !== undefined ? patch.description : (typeof meta.description === 'string' ? meta.description : ''),
-      whenToUse: patch.whenToUse !== undefined ? patch.whenToUse : (typeof meta['when-to-use'] === 'string' ? meta['when-to-use'] : ''),
+      whenToUse: patch.whenToUse !== undefined ? patch.whenToUse : (typeof meta['whenToUse'] === 'string' ? meta['whenToUse'] : (typeof meta['when-to-use'] === 'string' ? meta['when-to-use'] : '')),
       modelInvocable,
       userInvocable,
       body: patch.body !== undefined ? patch.body : body,
@@ -362,8 +443,9 @@ export class SkillManager {
       throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '仅支持技能目录（含 SKILL.md）或 .md 技能文件');
     }
     if (!validSkillName(name)) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '技能名不合法（kebab-case）: ' + name);
-    const { meta } = parseSkillFile(readFileSync(skillFile, 'utf8'));
-    if (typeof meta.name === 'string' && validSkillName(meta.name)) name = meta.name;
+    // 按最新 DSH 规则校验并规范化 frontmatter（缺 name/description、旧 camelCase 字段自动修复/报错）
+    const normalized = normalizeSkillFrontmatter(readFileSync(skillFile, 'utf8'));
+    name = normalized.name;
     const target = join(this.userSkillsDir, name);
     if (existsSync(target)) {
       if (!options.overwrite) throw new DSHError(DSHErrorCodes.ALREADY_EXISTS, '技能已存在: ' + name);
@@ -378,9 +460,11 @@ export class SkillManager {
         return !ignore.includes(base);
       };
       cpSync(src, target, { recursive: true, filter });
+      // 重写 SKILL.md 为规范化版本（迁移旧字段，确保 DSH 能加载）
+      writeFileSync(join(target, 'SKILL.md'), normalized.text, 'utf8');
     } else {
       mkdirSync(target, { recursive: true });
-      cpSync(skillFile, join(target, 'SKILL.md'));
+      writeFileSync(join(target, 'SKILL.md'), normalized.text, 'utf8');
     }
     return { success: true, name, path: join(target, 'SKILL.md'), source: 'user' };
   }
@@ -452,9 +536,9 @@ export class SkillManager {
     if (!skillKey) throw new DSHError(DSHErrorCodes.NOT_FOUND, '仓库中未找到 SKILL.md');
     const skillDir = skillKey.slice(0, -'/SKILL.md'.length);
     const dirName = skillDir.split('/').pop() || '';
-    const { meta } = parseSkillFile(files[skillKey].toString('utf8'));
-    const name = (typeof meta.name === 'string' && validSkillName(meta.name)) ? meta.name : dirName;
-    if (!validSkillName(name)) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '无法确定合法的技能名');
+    // 按最新 DSH 规则校验并规范化 frontmatter（缺 name/description、旧 camelCase 字段自动修复/报错）
+    const normalized = normalizeSkillFrontmatter(files[skillKey].toString('utf8'));
+    const name = normalized.name;
     const target = join(this.userSkillsDir, name);
     if (existsSync(target)) {
       if (!options.overwrite) throw new DSHError(DSHErrorCodes.ALREADY_EXISTS, '技能已存在: ' + name + '（可使用 overwrite 覆盖）');
@@ -470,7 +554,8 @@ export class SkillManager {
       const relToTarget = relative(target, dest);
       if (relToTarget.startsWith('..') || isAbsolute(relToTarget)) continue;
       mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, data);
+      // SKILL.md 写规范化版本，其余文件原样写入
+      writeFileSync(dest, rel === 'SKILL.md' ? normalized.text : data);
       installed.push(rel);
     }
     // 记录来源仓库（供后续同步更新使用）
@@ -490,9 +575,9 @@ export class SkillManager {
     if (!skillKey) throw new DSHError(DSHErrorCodes.NOT_FOUND, '压缩包中未找到 SKILL.md');
     const skillDir = skillKey.slice(0, -'/SKILL.md'.length);
     const dirName = skillDir.split('/').pop() || '';
-    const { meta } = parseSkillFile(files[skillKey].toString('utf8'));
-    const name = (typeof meta.name === 'string' && validSkillName(meta.name)) ? meta.name : dirName;
-    if (!validSkillName(name)) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '无法确定合法的技能名');
+    // 按最新 DSH 规则校验并规范化 frontmatter
+    const normalized = normalizeSkillFrontmatter(files[skillKey].toString('utf8'));
+    const name = normalized.name;
     const target = join(this.userSkillsDir, name);
     if (existsSync(target)) {
       if (!options.overwrite) throw new DSHError(DSHErrorCodes.ALREADY_EXISTS, '技能已存在: ' + name);
@@ -507,7 +592,8 @@ export class SkillManager {
       const relToTarget = relative(target, dest);
       if (relToTarget.startsWith('..') || isAbsolute(relToTarget)) continue;
       mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, data);
+      // SKILL.md 写规范化版本，其余文件原样写入
+      writeFileSync(dest, rel === 'SKILL.md' ? normalized.text : data);
     }
     return { success: true, name, path: join(target, 'SKILL.md'), source: 'user' };
   }
