@@ -216,7 +216,23 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       },
     });
     try {
-      return await installer.install(version, { tool });
+      const result = await installer.install(version, { tool });
+      // 记录安装/升级后的版本（与 switch-version 保持一致，保证版本管理页记录完整）
+      if (result && result.version) {
+        try {
+          const { DSHVersionManager } = await loadCore();
+          const vm = new DSHVersionManager();
+          let dshPath = null;
+          try {
+            const { getDSHPath } = await loadCore();
+            dshPath = await getDSHPath();
+          } catch {}
+          await vm.recordVersion(result.version, dshPath);
+        } catch (e) {
+          console.warn('[dsh-manager] 记录安装版本失败:', e?.message);
+        }
+      }
+      return result;
     } catch (error) {
       // 透传 execa 的 stderr 细节，避免渲染层只见 "Error invoking remote method" 无法排查
       const detail = error?.stderr ? `\n${String(error.stderr).trim().slice(0, 800)}` : '';

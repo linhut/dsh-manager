@@ -1115,11 +1115,11 @@ async function loadMarketplace(query) {
     },
     {
       fullName: 'linhut/dsh-stock-terminal',
-      stars: 3,
+      stars: 7,
       forks: 0,
       description: '股市行情皮肤+功能插件：DSH Web GUI 全局交易终端视觉 + 实时行情面板（A股/港股/美股/加密/外汇），自选跑马灯、首字母模糊搜索、持仓盈亏管理。',
       language: 'JavaScript',
-      topics: ['dsh-plugin', 'deepseek-harness', 'skin', 'stock', 'trading-terminal', 'web-ui', 'recommended'],
+      topics: ['dsh-plugin', 'deepseek-harness', 'skin', 'stock', 'trading-terminal', 'portfolio', 'watchlist', 'web-ui', 'recommended'],
       recommended: true,
     },
     {
@@ -1156,6 +1156,33 @@ async function loadMarketplace(query) {
       description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能，模型可通过 skill 工具按需加载。',
       language: 'JavaScript',
       topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'z953218350/dsh-history-tree',
+      stars: 16,
+      forks: 0,
+      description: 'Codex-style conversation turn timeline and hover history overview for DSH Web UI — 对话时间线 + 悬停历史概览插件。',
+      language: 'JavaScript',
+      topics: ['dsh-plugin', 'deepseek-harness', 'dsh', 'cordis-plugin', 'timeline', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'z953218350/dsh-archive-manager',
+      stars: 9,
+      forks: 1,
+      description: 'Codex-style archived session manager for DSH Web UI — 存档会话管理：在设置页查看、搜索、恢复与删除归档会话。',
+      language: 'JavaScript',
+      topics: ['dsh-plugin', 'deepseek-harness', 'dsh', 'cordis-plugin', 'archive', 'recommended'],
+      recommended: true,
+    },
+    {
+      fullName: 'z953218350/dsh-np-ppt',
+      stars: 3,
+      forks: 0,
+      description: '原生 DSH (DeepSeek Harness) 插件：PPT 演示文稿专家，内置 PPTD DSL 引擎、55173 所见即所得可视化编辑器、Python-PPTX 高保真离线编译内核与一键导出 PPTX。',
+      language: 'JavaScript',
+      topics: ['dsh-plugin', 'deepseek-harness', 'dsh', 'ppt', 'pptx', 'recommended'],
       recommended: true,
     },
   ];
@@ -2078,6 +2105,11 @@ async function loadSkillMarketplace(query) {
       grid.innerHTML += '<div style="grid-column:1/-1;text-align:center;padding:12px;color:var(--text-dim);font-size:12px;border-top:1px solid var(--border);margin-top:8px;">⚠️ 无法连接到 GitHub API，以上为精选技能推荐。请检查网络后 <a href="javascript:void(0)" onclick="showSkillMarketplace()" style="color:var(--primary-light);">刷新重试</a></div>';
       return;
     }
+
+    // 注入精选技能到结果顶部（gongwen-skill 等——即使 GitHub API 正常也置顶⭐推荐）
+    const featuredExisting = new Set(results.map(r => r.fullName || r.name));
+    const featuredInject = FALLBACK_SKILLS.filter(p => p.recommended && !featuredExisting.has(p.fullName));
+    if (featuredInject.length > 0) results = [...featuredInject, ...results];
 
     state.skillMarketResults = results;
     renderSkillMarketGrid();
