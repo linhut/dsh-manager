@@ -8,7 +8,7 @@
 import { execa } from 'execa';
 import { existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DSH_PATHS, getDSHVersion } from './dsh-utils.js';
+import { DSH_PATHS, getDSHVersion, buildCommandEnv } from './dsh-utils.js';
 import { getPortableNodeBin } from './env-check.js';
 import { DSHError, DSHErrorCodes } from './errors.js';
 
@@ -216,18 +216,8 @@ export { getDSHVersion };
  * @returns {Promise<{env: object, nodeBin: string|null}>}
  */
 export async function buildRuntimeEnv() {
-  const nodeBin = getPortableNodeBin();
-  if (!nodeBin) return { env: { ...process.env }, nodeBin: null };
-  const nodeDir = DSH_PATHS.envNodeDir;
-  // Windows: node.exe 在 node 目录；npm.cmd 同目录。POSIX: bin/ 子目录
-  const binDir = process.platform === 'win32' ? nodeDir : join(nodeDir, 'bin');
-  const sep = process.platform === 'win32' ? ';' : ':';
-  const oldPath = process.env.PATH || '';
-  const env = {
-    ...process.env,
-    PATH: `${binDir}${sep}${oldPath}`,
-  };
-  return { env, nodeBin };
+  // 复用 dsh-utils 的统一实现：便携版 Node bin 目录注入 PATH 前缀
+  return buildCommandEnv();
 }
 
 /**

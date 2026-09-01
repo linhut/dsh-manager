@@ -1,6 +1,6 @@
 {
   "name": "@dsh-manager/marketplace",
-  "version": "1.3.11",
+  "version": "1.3.12",
   "private": true,
   "description": "DSH 插件市场 - GitHub 插件发现与安装",
   "type": "module",

@@ -8,7 +8,7 @@
 import { execa } from 'execa';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { DSH_PATHS } from './dsh-utils.js';
+import { DSH_PATHS, buildCommandEnv } from './dsh-utils.js';
 
 /**
  * 内部：检测命令是否可用（checkNode/checkNpm 共用）
@@ -17,9 +17,13 @@ import { DSH_PATHS } from './dsh-utils.js';
  * @param {string} label - 显示名
  * @returns {Promise<{installed: boolean, version: string|null, error: string|null}>}
  */
-async function checkCommand(cmd, label) {
+async function checkCommand(cmd, label, options = {}) {
+  const { useRuntimeEnv = false } = options;
+  // 便携版 Node 场景：pnpm 可能装在 ~/.dsh/env/node（npm install -g pnpm），
+  // 系统 PATH 不含该目录，注入运行时环境才能检测到
+  const { env } = useRuntimeEnv ? buildCommandEnv() : { env: undefined };
   try {
-    const { stdout, stderr } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
+    const { stdout, stderr } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000, windowsHide: true, env });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }
@@ -106,7 +110,7 @@ export async function checkEnvironment() {
   const [node, npm, pnpm, git] = await Promise.all([
     checkNode(),
     checkNpm(),
-    checkCommand('pnpm', 'pnpm'),
+    checkCommand('pnpm', 'pnpm', { useRuntimeEnv: true }),
     checkCommand('git', 'git'),
   ]);
   return { node, npm, pnpm, git };

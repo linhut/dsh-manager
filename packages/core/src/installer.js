@@ -9,7 +9,7 @@ import { execa } from 'execa';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
-import { DSH_PATHS, DSH_PACKAGE_NAME, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions } from './dsh-utils.js';
+import { DSH_PATHS, DSH_PACKAGE_NAME, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions, buildCommandEnv } from './dsh-utils.js';
 import { requireNodeAndNpm } from './env-check.js';
 
 /**
@@ -40,6 +40,9 @@ export class DSHInstaller {
       ...options,
     };
     this.logs = [];
+    // 便携版 Node（最小化安装）bin 目录注入 PATH，供 npm/pnpm/corepack 子进程使用；
+    // 便携版未安装时等于进程环境，不影响系统 npm 调用
+    this._commandEnv = buildCommandEnv().env;
   }
 
   /**
@@ -141,6 +144,7 @@ export class DSHInstaller {
       try {
         await execa('corepack', ['enable'], { windowsHide: true,
           timeout: 60_000,
+          env: this._commandEnv,
           stdio: this.options.verbose ? 'inherit' : 'pipe',
         });
       } catch (error) {
@@ -225,6 +229,7 @@ export class DSHInstaller {
       try {
         await execa('npm', ['uninstall', '-g', DSH_PACKAGE_NAME], { windowsHide: true,
           timeout: this.options.npmUninstallTimeout || this.options.npmInstallTimeout,
+          env: this._commandEnv,
           stdio: this.options.verbose ? 'inherit' : 'pipe',
         });
         this._log('DSH 卸载成功');
@@ -250,7 +255,7 @@ export class DSHInstaller {
             }
             // 清理 npm 全局 bin 中的 dsh 命令（Windows: dsh / dsh.cmd / dsh.ps1）
             try {
-              const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+              const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env: this._commandEnv });
               if (globalRoot && globalRoot.trim()) {
                 const prefix = dirname(globalRoot.trim());
                 const bins = process.platform === 'win32'
@@ -373,9 +378,12 @@ export class DSHInstaller {
    */
   async _runStreaming(cmd, args, options = {}) {
     const { timeout, env } = options;
+    // 始终合并便携版 Node（最小化安装）bin 目录到子进程 PATH，
+    // 保证 npm/pnpm 在便携版场景下可被找到（系统 PATH 不含 ~/.dsh/env/node）
+    const commandEnv = { ...this._commandEnv, ...(env || {}) };
     const child = execa(cmd, args, {
       timeout,
-      env,
+      env: commandEnv,
       reject: false,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -546,7 +554,7 @@ export class DSHInstaller {
       // 不依赖 getDSHPath()（package.json 已被删时该函数返回 null，会漏掉残留目录）
       let dshPath = null;
       try {
-        const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+        const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env: this._commandEnv });
         if (globalRoot && globalRoot.trim()) {
           const candidate = join(globalRoot.trim(), '@deepseek-ai', 'dsh');
           if (existsSync(candidate)) dshPath = candidate;
@@ -580,7 +588,7 @@ export class DSHInstaller {
         rmSync(dshPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
         // 同步清理 npm 全局 bin 中的 dsh 命令（Windows: dsh / dsh.cmd / dsh.ps1）
         try {
-          const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+          const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env: this._commandEnv });
           if (globalRoot && globalRoot.trim()) {
             const prefix = dirname(globalRoot.trim());
             const bins = process.platform === 'win32'
@@ -619,6 +627,7 @@ export class DSHInstaller {
         reject: false,
         timeout: 10_000,
         windowsHide: true,
+        env: this._commandEnv,
       });
       const binDir = stdout ? stdout.trim() : '';
       if (binDir && existsSync(binDir)) {

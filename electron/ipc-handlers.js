@@ -1470,12 +1470,17 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       };
       pushProgress({ level: 'info', message: '开始安装 pnpm（npm install -g pnpm）...' });
 
+      // 便携版 Node（最小化安装）不在系统 PATH，注入运行时环境让 npm 可被找到
+      const { buildCommandEnv } = await loadCore();
+      const { env: runtimeEnv } = buildCommandEnv();
+
       // 流式安装 pnpm（跨平台通用）
       const child = execa('npm', ['install', '-g', 'pnpm'], {
         timeout: 180_000,
         reject: false,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        env: runtimeEnv,
       });
       child.stdout?.on('data', (chunk) => {
         const text = String(chunk).trim();
@@ -1577,6 +1582,13 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       });
       const result = await child;
 
+      // winget/brew/apt 安装后，本进程 PATH 仍是启动时快照（不含新装命令路径），
+      // 先从注册表刷新进程 PATH 再检测，避免"装好了却仍报命令不可用"
+      try {
+        const { refreshSystemPath } = await loadCore();
+        await refreshSystemPath();
+      } catch (e) { console.warn("[dsh-manager] 刷新 PATH 失败:", e?.message); }
+
       const { checkNode, checkNpm } = await loadCore();
       const [node, npm] = await Promise.all([checkNode(), checkNpm()]);
       if (node.installed) {
@@ -1584,7 +1596,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
       return {
         success: false,
-        message: '安装命令执行完成，但 Node.js 仍不可用（可能需要重启终端使 PATH 生效）',
+        message: '安装命令执行完成，但 Node.js 仍不可用（可能需重启 DSH Manager 使 PATH 生效，或使用便携版 Node 最小化安装）',
         detail: result.stderr || result.stdout || '',
       };
     } catch (error) {
@@ -1623,6 +1635,12 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       });
       const result = await child;
 
+      // winget/brew/apt 安装后刷新进程 PATH，再检测 git
+      try {
+        const { refreshSystemPath } = await loadCore();
+        await refreshSystemPath();
+      } catch (e) { console.warn("[dsh-manager] 刷新 PATH 失败:", e?.message); }
+
       const { checkGit } = await loadCore();
       const git = await checkGit();
       if (git.installed) {
@@ -1630,7 +1648,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
       return {
         success: false,
-        message: '安装命令执行完成，但 git 仍不可用（可能需要重启终端使 PATH 生效）',
+        message: '安装命令执行完成，但 git 仍不可用（可能需重启 DSH Manager 使 PATH 生效）',
         detail: result.stderr || result.stdout || '',
       };
     } catch (error) {

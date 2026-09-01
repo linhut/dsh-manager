@@ -6,6 +6,7 @@
  */
 
 import { execa } from 'execa';
+import { buildCommandEnv } from './dsh-utils.js';
 import { DSHError, DSHErrorCodes } from './errors.js';
 
 // pnpm-check 专用错误码（已注册到 DSHErrorCodes.PNPM_NOT_FOUND）
@@ -16,7 +17,8 @@ import { DSHError, DSHErrorCodes } from './errors.js';
  */
 export async function checkPnpm() {
   try {
-    const { stdout, stderr } = await execa('pnpm', ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout, stderr } = await execa('pnpm', ['--version'], { reject: false, timeout: 10_000, windowsHide: true, env });
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }

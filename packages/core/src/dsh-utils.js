@@ -70,6 +70,74 @@ export const DSH_PATHS = {
 };
 
 /**
+ * 构建子进程运行环境：把便携版 Node（最小化安装）的 bin 目录注入 PATH 前缀
+ *
+ * 便携版 Node 解压于 ~/.dsh/env/node，不在系统 PATH；环境检测
+ * （checkNode/checkNpm）有 portable 兜底能"看到"它，但 installer /
+ * pnpm / ipc 等实际执行命令用的是裸 `execa('npm')`——系统 PATH 中
+ * 找不到就会报 "command not found / 无法调用相关命令"。
+ * 此函数统一为命令执行注入便携版 bin 目录，供所有 execa 调用复用；
+ * 便携版未安装时原样返回进程环境，不污染系统 PATH。
+ * @returns {{env: object, nodeBin: string|null}} env - 子进程环境变量
+ */
+export function buildCommandEnv() {
+  const nodeDir = DSH_PATHS.envNodeDir;
+  const nodeBin = process.platform === 'win32'
+    ? join(nodeDir, 'node.exe')
+    : join(nodeDir, 'bin', 'node');
+  if (!existsSync(nodeBin)) return { env: { ...process.env }, nodeBin: null };
+  // Windows: node.exe / npm.cmd 在 node 目录；POSIX: bin/ 子目录
+  const binDir = process.platform === 'win32' ? nodeDir : join(nodeDir, 'bin');
+  const sep = process.platform === 'win32' ? ';' : ':';
+  return {
+    env: { ...process.env, PATH: binDir + sep + (process.env.PATH || '') },
+    nodeBin,
+  };
+}
+
+/**
+ * 刷新进程 PATH（Windows：从注册表重建；其他平台原样返回）
+ *
+ * Electron 主进程的 process.env.PATH 是启动时的快照；通过 winget 安装
+ * Node.js / git 后，注册表 PATH 已更新，但本进程仍是旧值，导致刚装好的
+ * node/npm/git 命令"不可用"，直到重启应用。此函数从注册表（系统 + 用户）
+ * 重建 PATH，保留当前进程中注册表未覆盖的额外条目（IDE 等动态注入），
+ * 让后续 execa 调用立即找到新装命令。
+ * @returns {Promise<string>} 刷新后的 PATH
+ */
+export async function refreshSystemPath() {
+  if (process.platform !== 'win32') return process.env.PATH || '';
+  try {
+    const sysKey = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
+    const userKey = 'HKCU\\Environment';
+    const readRegPath = async (key) => {
+      try {
+        const { stdout } = await execa('reg', ['query', key, '/v', 'PATH'], { reject: false, timeout: 10_000, windowsHide: true });
+        // reg query 输出形如: "    PATH    REG_EXPAND_SZ    C:\xxx;C:\yyy"
+        const m = stdout.match(/REG_(?:EXPAND_)?SZ\s+(.+)$/m);
+        return m ? m[1].trim() : '';
+      } catch {
+        return '';
+      }
+    };
+    const [sysPath, userPath] = await Promise.all([readRegPath(sysKey), readRegPath(userKey)]);
+    const regEntries = [...(sysPath || '').split(';'), ...(userPath || '').split(';')]
+      .map(s => s.trim()).filter(Boolean);
+    const reg = new Set(regEntries);
+    // 保留当前进程中注册表未覆盖的条目（IDE/工具链动态注入的路径）
+    const extra = (process.env.PATH || '').split(';')
+      .map(s => s.trim()).filter(Boolean)
+      .filter(p => !reg.has(p));
+    const merged = [...regEntries, ...extra].join(';');
+    process.env.PATH = merged;
+    return merged;
+  } catch (e) {
+    console.warn("[dsh-manager] 刷新 PATH 失败:", e?.message);
+    return process.env.PATH || '';
+  }
+}
+
+/**
  * 内部：解析 @deepseek-ai/dsh/package.json 的完整路径
  * 依次尝试：DSH_HOME 内 node_modules → npm root -g → require.resolve
  * （全局 npm 包不会出现在日常 require 的解析路径中，必须显式探测）
@@ -136,7 +204,8 @@ async function resolveDSHPackageJson() {
 
   // ④ 通过 npm root -g 获取 npm 全局路径（npm 在 PATH 且非自定义配置场景）
   try {
-    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env });
     if (globalRoot && globalRoot.trim()) {
       candidates.push(join(globalRoot.trim(), '@deepseek-ai', 'dsh', 'package.json'));
     }
@@ -144,7 +213,8 @@ async function resolveDSHPackageJson() {
 
   // ④ 通过 pnpm root -g 获取 pnpm 全局路径（npm 不可用时的备选）
   try {
-    const { stdout: pnpmRoot } = await execa('pnpm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout: pnpmRoot } = await execa('pnpm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env });
     if (pnpmRoot && pnpmRoot.trim()) {
       candidates.push(join(pnpmRoot.trim(), '@deepseek-ai', 'dsh', 'package.json'));
     }
@@ -152,9 +222,10 @@ async function resolveDSHPackageJson() {
 
   // ⑤ 回退：require.resolve（依赖 NODE_PATH 或 cwd 级 node_modules）
   try {
+    const { env } = buildCommandEnv();
     const { stdout } = await execa('node', [
       `-e`, `try { console.log(require.resolve("${DSH_PACKAGE_NAME}/package.json")); } catch(e) { console.log(""); }`
-    ], { reject: false, timeout: 10_000, windowsHide: true });
+    ], { reject: false, timeout: 10_000, windowsHide: true, env });
     if (stdout && stdout.trim().length > 0) candidates.push(stdout.trim());
   } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
@@ -281,12 +352,14 @@ export async function getDSHVersion() {
 export async function resolveDSHCommand() {
   // ① 优先 PATH 中的 dsh
   try {
-    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 5_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout } = await execa('dsh', ['--version'], { reject: false, timeout: 5_000, windowsHide: true, env });
     if (stdout && stdout.trim()) {
       // dsh 在 PATH 中，尝试获取完整路径（用于推导 package.json 位置）
       try {
         const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-        const { stdout: fullPath } = await execa(whichCmd, ['dsh'], { reject: false, timeout: 5_000, windowsHide: true });
+        const { env: whichEnv } = buildCommandEnv();
+        const { stdout: fullPath } = await execa(whichCmd, ['dsh'], { reject: false, timeout: 5_000, windowsHide: true, env: whichEnv });
         if (fullPath && fullPath.trim()) {
           const path = fullPath.trim().split('\n')[0].trim(); // where 可能返回多行
           if (path && (existsSync(path) || path.endsWith('.cmd') || path.endsWith('.exe'))) return path;
@@ -300,7 +373,8 @@ export async function resolveDSHCommand() {
   //     Windows: root -g → C:\Users\...\npm\node_modules → dirname → C:\Users\...\npm（bin 在此目录）
   //     POSIX:   root -g → /usr/local/lib/node_modules → dirname(dirname) → /usr/local（bin 在 /usr/local/bin）
   try {
-    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env });
     if (globalRoot && globalRoot.trim()) {
       const prefix = process.platform === 'win32'
         ? dirname(globalRoot.trim())
@@ -348,7 +422,8 @@ export async function getDSHInfo() {
   // 获取 npm 全局路径
   let npmGlobalPath = null;
   try {
-    const { stdout } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env });
     npmGlobalPath = stdout?.trim() || null;
   } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
@@ -420,7 +495,8 @@ export async function listDSHVersions(registry) {
   try {
     const args = ['view', DSH_PACKAGE_NAME, 'versions', '--json'];
     if (registry) args.push('--registry', registry);
-    const { stdout } = await execa('npm', args, { reject: false, timeout: 30_000, windowsHide: true });
+    const { env } = buildCommandEnv();
+    const { stdout } = await execa('npm', args, { reject: false, timeout: 30_000, windowsHide: true, env });
     if (stdout) {
       const versions = JSON.parse(stdout);
       // 只保留合法语义化版本号（兼容 0.x-rc.N 预发布与未来的 1.x 正式版）

@@ -659,7 +659,11 @@ async function installDSH(tool = 'auto') {
     fill.style.width = '100%';
     const errMsg = err.message || '未知错误';
     // 检测常见的权限错误
-    if (errMsg.includes('EACCES') || errMsg.includes('EPERM') || errMsg.includes('权限') || errMsg.includes('Access')) {
+    // 命令未找到（便携版 Node 不在系统 PATH / 依赖未生效）——最常见的"安装后无法调用命令"
+    if (/ENOENT|command not found|not recognized|spawn.*ENOENT|'[a-z]+' 不是内部或外部命令|无法找到|未找到命令/i.test(errMsg)) {
+      text.innerHTML = `❌ 安装失败：命令不可用<br><span style="font-size:12px;color:var(--text-dim);">未找到相关命令，请检查 PATH 配置；若刚安装便携版 Node 请使用系统 Node 或重启 DSH Manager 使 PATH 生效，也可改用「镜像源」安装。</span>`;
+      showToast('安装失败：未找到命令，请检查 PATH 或重启应用后重试', 'error');
+    } else if (errMsg.includes('EACCES') || errMsg.includes('EPERM') || errMsg.includes('权限') || errMsg.includes('Access')) {
       text.innerHTML = `❌ 安装失败：权限不足<br><span style="font-size:12px;color:var(--text-dim);">请右键点击 DSH Manager，选择「以管理员身份运行」后重试</span>`;
       showToast('安装失败：权限不足，请以管理员身份运行', 'error');
     } else if (errMsg.includes('timeout') || errMsg.includes('TIMEOUT') || errMsg.includes('网络')) {
