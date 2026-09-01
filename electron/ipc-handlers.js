@@ -15,6 +15,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
+ * 环境安装进度转发：同时推送到渲染进程 + 写入调试日志
+ *
+ * 前端环境页的安装日志框显示实时进度，但内容不进 ~/.dsh/manager/debug.log；
+ * 用户遇到"安装后命令不可用"时无法把安装过程复制给我们。此 helper 双写，
+ * 让 winget/便携版/pnpm/git 安装的每一步（含级别）都进调试日志，便于排查。
+ */
+function makeEnvPushProgress(win) {
+  return (data) => {
+    const message = data && data.message ? String(data.message) : '';
+    const level = (data && data.level) || 'info';
+    if (message) writeLog(level, '[env-install] ' + message);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('dsh:env-install-progress', data);
+    }
+  };
+}
+
+/**
  * 无窗口补丁源码（写入真实文件系统后通过 --require 注入 DSH 进程）
  * 强制所有 child_process.spawn/exec/execFile/fork 使用 windowsHide: true，
  * 根治 DSH Agent bash 调用弹窗问题。不修改 DSH 包文件，升级不丢失。
@@ -1463,11 +1481,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     try {
       const { execa } = await import('execa');
       const win = getMainWindow();
-      const pushProgress = (data) => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('dsh:env-install-progress', data);
-        }
-      };
+      const pushProgress = makeEnvPushProgress(win);
       pushProgress({ level: 'info', message: '开始安装 pnpm（npm install -g pnpm）...' });
 
       // 便携版 Node（最小化安装）不在系统 PATH，注入运行时环境让 npm 可被找到
@@ -1504,6 +1518,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         detail: result.stderr || result.stdout || '',
       };
     } catch (error) {
+      console.error('[dsh-manager] 安装 pnpm 失败: ' + (error?.stack || error?.message || error));
       return { success: false, error: error.message };
     }
   });
@@ -1513,19 +1528,29 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('app:install-nodejs-portable', async (_, opts = {}) => {
     try {
       const win = getMainWindow();
-      const pushProgress = (data) => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('dsh:env-install-progress', data);
-        }
-      };
+      const pushProgress = makeEnvPushProgress(win);
       pushProgress({ level: 'info', message: '开始安装便携版 Node.js（镜像下载）...' });
       const { installPortableNode } = await loadCore();
       const result = await installPortableNode({
         version: opts.version || undefined,
         onProgress: (m) => pushProgress({ level: 'info', message: m }),
       });
+      // 安装后验证检测链路（确认界面能识别便携版 Node / npm）
+      try {
+        const { checkNode, checkNpm, checkPortableNode } = await loadCore();
+        const [node, npm, portable] = await Promise.all([checkNode(), checkNpm(), checkPortableNode()]);
+        console.log('[dsh-manager] 便携版安装后检测: node=' + (node.installed ? 'OK ' + node.version + ' source=' + node.source : 'FAIL ' + (node.error || '未安装')) + ' npm=' + (npm.installed ? 'OK ' + npm.version + ' source=' + npm.source : 'FAIL ' + (npm.error || '未安装')) + ' portable=' + (portable.installed ? 'OK ' + portable.version : 'FAIL'));
+        try {
+          const { getSystemDiagnostics } = await loadCore();
+          const diag = await getSystemDiagnostics();
+          console.log('[dsh-manager] 便携版安装完成后系统诊断: ' + JSON.stringify(diag));
+        } catch (de) { console.warn('[dsh-manager] 诊断采集失败: ' + (de?.message || de)); }
+      } catch (e) {
+        console.warn('[dsh-manager] 便携版安装后检测异常: ' + (e?.message || e));
+      }
       return { success: true, ...result, message: `便携版 Node ${result.version} 安装成功` };
     } catch (error) {
+      console.error('[dsh-manager] 便携版 Node 安装失败: ' + (error?.stack || error?.message || error));
       return { success: false, error: error.message };
     }
   });
@@ -1556,11 +1581,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const { execa } = await import('execa');
       const platform = process.platform;
       const win = getMainWindow();
-      const pushProgress = (data) => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('dsh:env-install-progress', data);
-        }
-      };
+      const pushProgress = makeEnvPushProgress(win);
       pushProgress({ level: 'info', message: `开始安装 Node.js（平台: ${platform}）...` });
 
       const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true };
@@ -1581,16 +1602,27 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         if (text) pushProgress({ level: 'warn', message: text });
       });
       const result = await child;
+      console.log('[dsh-manager] Node 安装命令完成: exit=' + result.exitCode);
+      if (result.stderr) console.warn('[dsh-manager] Node 安装 stderr: ' + String(result.stderr).trim().slice(0, 1500));
 
       // winget/brew/apt 安装后，本进程 PATH 仍是启动时快照（不含新装命令路径），
       // 先从注册表刷新进程 PATH 再检测，避免"装好了却仍报命令不可用"
       try {
         const { refreshSystemPath } = await loadCore();
-        await refreshSystemPath();
+        const beforePath = process.env.PATH || '';
+        const afterPath = await refreshSystemPath();
+        console.log('[dsh-manager] PATH 刷新前: ' + beforePath.slice(0, 300));
+        console.log('[dsh-manager] PATH 刷新后: ' + afterPath.slice(0, 300));
       } catch (e) { console.warn("[dsh-manager] 刷新 PATH 失败:", e?.message); }
 
       const { checkNode, checkNpm } = await loadCore();
       const [node, npm] = await Promise.all([checkNode(), checkNpm()]);
+      console.log('[dsh-manager] 安装后检测: node=' + (node.installed ? 'OK ' + node.version : 'FAIL ' + (node.error || '未安装')) + ' npm=' + (npm.installed ? 'OK ' + npm.version : 'FAIL ' + (npm.error || '未安装')));
+      try {
+        const { getSystemDiagnostics } = await loadCore();
+        const diag = await getSystemDiagnostics();
+        console.log('[dsh-manager] 安装完成后系统诊断: ' + JSON.stringify(diag));
+      } catch (e) { console.warn('[dsh-manager] 诊断采集失败: ' + (e?.message || e)); }
       if (node.installed) {
         return { success: true, nodeVersion: node.version, npmVersion: npm.version, message: `Node.js ${node.version} 安装成功${npm.version ? `（npm ${npm.version}）` : ''}` };
       }
@@ -1600,6 +1632,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         detail: result.stderr || result.stdout || '',
       };
     } catch (error) {
+      console.error('[dsh-manager] 正常安装 Node 失败: ' + (error?.stack || error?.message || error));
       return { success: false, error: error.message };
     }
   });
@@ -1609,11 +1642,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const { execa } = await import('execa');
       const platform = process.platform;
       const win = getMainWindow();
-      const pushProgress = (data) => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('dsh:env-install-progress', data);
-        }
-      };
+      const pushProgress = makeEnvPushProgress(win);
       pushProgress({ level: 'info', message: `开始安装 git（平台: ${platform}）...` });
 
       const cmdOptions = { timeout: 300_000, reject: false, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true };
@@ -1652,6 +1681,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         detail: result.stderr || result.stdout || '',
       };
     } catch (error) {
+      console.error('[dsh-manager] 安装 git 失败: ' + (error?.stack || error?.message || error));
       return { success: false, error: error.message };
     }
   });

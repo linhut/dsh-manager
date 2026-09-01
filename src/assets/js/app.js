@@ -431,6 +431,9 @@ async function renderEnvStatus() {
       <p style="margin:8px 0 0;">💡 DSH 启动仅需 <strong>Node.js（含 npm）</strong>；pnpm 用于插件安装，git 仅 GitHub 插件需要，均可按需延后安装。低配机器推荐「便携版 Node」最小化安装。</p>
     </div>
     <div id="envInstallLog" style="display:none;margin-top:10px;background:var(--bg-primary);border-radius:var(--radius-sm);padding:10px;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);max-height:180px;overflow-y:auto;line-height:1.6;"></div>
+    <div style="margin-top:10px;padding-top:8px;border-top:1px dashed var(--border);font-size:11px;color:var(--text-dim);">
+      安装后命令仍不可用？点击 <button class="btn btn-xs btn-ghost" onclick="copyDebugLog()">📋 复制调试日志</button> 粘贴发给开发者排查（详细安装日志已写入 ~/.dsh/manager/debug.log，含架构/PATH/安装结果）。
+    </div>
   `;
 }
 

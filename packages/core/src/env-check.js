@@ -23,7 +23,8 @@ async function checkCommand(cmd, label, options = {}) {
   // 系统 PATH 不含该目录，注入运行时环境才能检测到
   const { env } = useRuntimeEnv ? buildCommandEnv() : { env: undefined };
   try {
-    const { stdout, stderr } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000, windowsHide: true, env });
+    const { stdout, stderr, exitCode } = await execa(cmd, ['--version'], { reject: false, timeout: 10_000, windowsHide: true, env });
+    if (!stdout && !stderr) console.warn('[dsh-manager] 命令检测无输出: ' + label + ' cmd=' + cmd + ' exit=' + exitCode + ' 注入运行时环境=' + useRuntimeEnv);
     if (stdout && stdout.trim()) {
       return { installed: true, version: stdout.trim(), error: null };
     }
@@ -37,6 +38,7 @@ async function checkCommand(cmd, label, options = {}) {
     }
     return { installed: false, version: null, error: label + ' 命令未找到' };
   } catch (error) {
+    console.warn('[dsh-manager] 命令检测失败: ' + label + ' cmd=' + cmd + ' error=' + (error?.message || error) + ' 注入运行时环境=' + useRuntimeEnv);
     return { installed: false, version: null, error: error.message };
   }
 }
@@ -76,6 +78,7 @@ export async function checkPortableNode() {
 export async function checkNode() {
   const sys = await checkCommand('node', 'node');
   if (sys.installed) return { ...sys, source: 'system' };
+  console.warn('[dsh-manager] 系统 PATH 未找到 node，尝试便携版兜底 sysError=' + (sys?.error || '无') + ' portableBin=' + (getPortableNodeBin() || 'null'));
   const portable = await checkPortableNode();
   if (portable.installed) return { installed: true, version: portable.version, error: null, source: 'portable' };
   return sys;

@@ -8,7 +8,7 @@
 import { execa } from 'execa';
 import { existsSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DSH_PATHS, getDSHVersion, buildCommandEnv } from './dsh-utils.js';
+import { DSH_PATHS, getDSHVersion, buildCommandEnv, detectRealArch } from './dsh-utils.js';
 import { getPortableNodeBin } from './env-check.js';
 import { DSHError, DSHErrorCodes } from './errors.js';
 
@@ -55,9 +55,10 @@ export async function getLatestLTSVersion() {
  * @param {string} version - 如 'v22.12.0'
  * @returns {string}
  */
-function archiveName(version) {
+async function archiveName(version) {
   const plat = process.platform;
-  const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+  const arch = await detectRealArch();
+  console.log('[dsh-manager] 便携版 Node 架构选择: processArch=' + process.arch + ' realArch=' + arch + ' platform=' + plat);
   if (plat === 'win32') return `node-${version}-win-${arch}.zip`;
   if (plat === 'darwin') return `node-${version}-darwin-${arch}.tar.gz`;
   return `node-${version}-linux-${arch}.tar.xz`;
@@ -84,8 +85,9 @@ export async function installPortableNode(opts = {}) {
     ver = await getLatestLTSVersion();
   }
   const cleanVer = ver.startsWith('v') ? ver : `v${ver}`;
-  const fileName = archiveName(cleanVer);
+  const fileName = await archiveName(cleanVer);
   const url = `${NODE_MIRROR}/${cleanVer}/${fileName}`;
+  console.log('[dsh-manager] 便携版 Node 下载: ' + url);
   const downloadPath = join(envDir, fileName);
 
   log(`开始下载 ${fileName}（镜像源）...`);
@@ -143,9 +145,11 @@ export async function installPortableNode(opts = {}) {
     if (existsSync(nodeDir)) rmSync(nodeDir, { recursive: true, force: true });
     mkdirSync(nodeDir, { recursive: true });
     log('正在解压...');
+    console.log('[dsh-manager] 便携版 Node 解压中: ' + downloadPath + ' -> ' + nodeDir);
     if (process.platform === 'win32') {
       // Windows 用系统 tar.exe（内置 bsdtar >= 10.1803），提取 zip 文件
       const tarPath = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+      console.log('[dsh-manager] 便携版 Node 解压命令: ' + tarPath + ' -xf ' + downloadPath + ' -> ' + nodeDir + ' --strip-components=1');
       await execa(tarPath, ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000, windowsHide: true });
     } else {
       await execa('tar', ['-xf', downloadPath, '-C', nodeDir, '--strip-components=1'], { timeout: 120_000, windowsHide: true });
@@ -169,11 +173,14 @@ export async function installPortableNode(opts = {}) {
     ? join(nodeDir, 'npm.cmd')
     : join(nodeDir, 'bin', 'npm');
   try {
-    const { stdout } = await execa(bin, ['--version'], { timeout: 10_000, windowsHide: true });
+    console.log('[dsh-manager] 便携版 Node 校验: ' + bin + ' --version');
+    const { stdout, exitCode } = await execa(bin, ['--version'], { timeout: 30_000, windowsHide: true, reject: false });
+    console.log('[dsh-manager] 便携版 Node 校验结果: exit=' + exitCode + ' stdout=' + JSON.stringify((stdout || '').trim()));
     if (!stdout || !stdout.trim()) throw new Error('node --version 无输出');
     log(`✅ 便携版 Node ${stdout.trim()} 安装成功`);
     return { success: true, version: stdout.trim(), bin, npmBin };
   } catch (error) {
+    console.error('[dsh-manager] 便携版 Node 校验失败: ' + (error?.stack || error?.message || error));
     rmSync(nodeDir, { recursive: true, force: true });
     throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, `便携版 Node 校验失败: ${error.message}`);
   }

@@ -141,3 +141,77 @@ describe('前端：安装失败错误分类改进', () => {
     assert.ok(src.includes("errMsg.includes('EACCES') || errMsg.includes('EPERM') || errMsg.includes('权限') || errMsg.includes('Access')"), '权限分支应保留');
   });
 });
+// ====== ARM 架构检测与调试日志增强（v1.3.13） ======
+describe('ARM 架构检测：detectRealArch / getSystemDiagnostics', () => {
+  it('dsh-utils 导出 detectRealArch（注册表+环境变量检测真实硬件）', () => {
+    const src = read('packages/core/src/dsh-utils.js');
+    assert.ok(src.includes('export async function detectRealArch()'), '应导出 detectRealArch');
+    assert.ok(src.includes('CentralProcessor'), '应读取注册表 CentralProcessor（ARM 判定）');
+    assert.ok(src.includes('PROCESSOR_ARCHITEW6432'), '应检查 PROCESSOR_ARCHITEW6432');
+    assert.ok(src.includes('PROCESSOR_ARCHITECTURE'), '应检查 PROCESSOR_ARCHITECTURE');
+  });
+
+  it('dsh-utils 导出 getSystemDiagnostics（完整诊断采集）', () => {
+    const src = read('packages/core/src/dsh-utils.js');
+    assert.ok(src.includes('export async function getSystemDiagnostics()'), '应导出 getSystemDiagnostics');
+    assert.ok(src.includes('realArch'), '诊断应含真实架构');
+    assert.ok(src.includes('pathEntries'), '诊断应含 PATH 条目');
+    assert.ok(src.includes('npmPrefix'), '诊断应含 npm prefix');
+  });
+
+  it('core/index.js 导出 detectRealArch/getSystemDiagnostics', () => {
+    const src = read('packages/core/src/index.js');
+    assert.ok(src.includes('detectRealArch, getSystemDiagnostics'), '应导出两个新函数');
+  });
+
+  it('portable-node 便携版按真实架构下载（ARM64 关键修复）', () => {
+    const src = read('packages/core/src/portable-node.js');
+    assert.ok(src.includes('detectRealArch'), '应导入 detectRealArch');
+    assert.ok(src.includes('await detectRealArch()'), 'archiveName 应调用真实架构检测');
+  });
+});
+
+describe('调试日志增强：安装详细情况进入 debug.log', () => {
+  it('makeEnvPushProgress 双写（前端 + debug.log）', () => {
+    const src = read('electron/ipc-handlers.js');
+    assert.ok(src.includes('function makeEnvPushProgress(win)'), '应定义共享进度转发');
+    assert.ok(src.includes("writeLog(level, '[env-install] ' + message)"), '进度应写 debug.log');
+    // 4 个安装 handler 全部使用
+    const count = src.split('makeEnvPushProgress(win)').length - 1;
+    assert.ok(count >= 5, 'helper 定义 + 4 个 handler 调用，实际 ' + count);
+  });
+
+  it('正常安装诊断日志（命令结果/PATH/检测/诊断）', () => {
+    const src = read('electron/ipc-handlers.js');
+    assert.ok(src.includes('Node 安装命令完成'), '应记录安装命令结果');
+    assert.ok(src.includes('PATH 刷新前'), '应记录 PATH 刷新前');
+    assert.ok(src.includes('PATH 刷新后'), '应记录 PATH 刷新后');
+    assert.ok(src.includes('安装后检测'), '应记录安装后检测');
+    assert.ok(src.includes('安装完成后系统诊断'), '应记录系统诊断');
+    assert.ok(src.includes('正常安装 Node 失败'), '应记录 catch 错误');
+  });
+
+  it('便携版安装诊断日志（架构/解压/校验/安装后）', () => {
+    const src = read('electron/ipc-handlers.js');
+    assert.ok(src.includes('便携版安装后检测'), '应记录安装后检测');
+    assert.ok(src.includes('便携版安装完成后系统诊断'), '应记录系统诊断');
+    assert.ok(src.includes('便携版 Node 安装失败'), '应记录 catch 错误');
+    const pn = read('packages/core/src/portable-node.js');
+    assert.ok(pn.includes('便携版 Node 架构选择'), '应记录架构选择');
+    assert.ok(pn.includes('便携版 Node 解压中'), '应记录解压');
+    assert.ok(pn.includes('便携版 Node 校验结果'), '应记录校验结果');
+  });
+
+  it('env-check 检测失败记录命令/错误详情', () => {
+    const src = read('packages/core/src/env-check.js');
+    assert.ok(src.includes('命令检测失败'), '应记录检测失败');
+    assert.ok(src.includes('便携版兜底'), '应记录便携版兜底尝试');
+  });
+
+  it('环境页提供复制调试日志按钮', () => {
+    const src = read('src/assets/js/app.js');
+    assert.ok(src.includes('复制调试日志'), '环境页应有复制日志按钮');
+    assert.ok(src.includes('debug.log'), '应提示日志路径');
+  });
+});
+

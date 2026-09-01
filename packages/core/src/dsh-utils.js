@@ -136,6 +136,77 @@ export async function refreshSystemPath() {
     return process.env.PATH || '';
   }
 }
+/**
+ * 检测真实硬件架构（Windows on ARM 关键）
+ *
+ * DSH Manager 的 Windows 安装包为 x64 构建，在 ARM64 设备上经模拟运行，
+ * 此时 process.arch === 'x64'。若据此选择便携版 Node 会误下 x64 版，
+ * 在纯 ARM 环境（Windows 10 ARM 无 x64 模拟）或受限模拟环境下无法运行。
+ * 此函数通过注册表 CentralProcessor\0 Identifier（含 "ARM" 即 ARM64）
+ * 与环境变量 PROCESSOR_ARCHITEW6432 / PROCESSOR_ARCHITECTURE 判定真实硬件。
+ * @returns {Promise<string>} 'arm64' | 'x64' | 'ia32' | 'ia64'
+ */
+export async function detectRealArch() {
+  // ① 非 Windows：process.arch 即真实架构（macOS/Linux 无跨架构模拟场景）
+  if (process.platform !== 'win32') return process.arch;
+  // ② 注册表 CentralProcessor\0 Identifier（最可靠：Windows on ARM 含 "ARM" 字样）
+  try {
+    const { stdout } = await execa('reg', ['query', 'HKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0', '/v', 'Identifier'], { reject: false, timeout: 10_000, windowsHide: true });
+    if (/ARM/i.test(stdout || '')) return 'arm64';
+  } catch (e) { console.warn("[dsh-manager] 读取处理器架构失败:", e?.message); }
+  // ③ 环境变量兜底
+  const envArch = (process.env.PROCESSOR_ARCHITEW6432 || process.env.PROCESSOR_ARCHITECTURE || '').toLowerCase();
+  if (envArch.includes('arm')) return 'arm64';
+  if (envArch.includes('ia64')) return 'ia64';
+  if (envArch.includes('x86')) return 'ia32';
+  return 'x64';
+}
+
+/**
+ * 采集系统诊断信息（供调试日志与错误上报）
+ *
+ * 内容：平台 / 进程架构 / 真实硬件架构 / 用户主目录 / PATH /
+ * npm 全局 prefix / 便携版 Node 状态 / Node/npm 检测结果与错误详情。
+ * 用于排查"依赖环境安装后命令不可用"类问题（如 ARM64 + x64 模拟场景）。
+ * @returns {Promise<object>} 诊断信息对象
+ */
+export async function getSystemDiagnostics() {
+  const info = {
+    platform: process.platform,
+    processArch: process.arch,
+    realArch: await detectRealArch(),
+    processVersion: process.version,
+    electronVersion: process.versions?.electron || '',
+    userHome: homedir(),
+    dshHome: DSH_PATHS.home,
+    envVars: {
+      DSH_HOME: process.env.DSH_HOME || '',
+      PROCESSOR_ARCHITECTURE: process.env.PROCESSOR_ARCHITECTURE || '',
+      PROCESSOR_ARCHITEW6432: process.env.PROCESSOR_ARCHITEW6432 || '',
+    },
+    pathEntries: (process.env.PATH || '').split(';').filter(Boolean),
+  };
+  // 动态导入避免循环依赖（env-check 依赖 dsh-utils）
+  const { checkNode, checkNpm, checkPortableNode } = await import('./env-check.js');
+  try {
+    const [node, npm, portable] = await Promise.allSettled([checkNode(), checkNpm(), checkPortableNode()]);
+    info.detection = {
+      node: node.status === 'fulfilled' ? node.value : { error: String(node.reason?.message || node.reason) },
+      npm: npm.status === 'fulfilled' ? npm.value : { error: String(npm.reason?.message || npm.reason) },
+      portable: portable.status === 'fulfilled' ? portable.value : { error: String(portable.reason?.message || portable.reason) },
+    };
+  } catch (e) {
+    info.detectionError = e?.message || String(e);
+  }
+  try {
+    const { stdout } = await execa('npm', ['config', 'get', 'prefix'], { reject: false, timeout: 10_000, windowsHide: true, env: buildCommandEnv().env });
+    info.npmPrefix = stdout?.trim() || null;
+  } catch (e) {
+    info.npmPrefixError = e?.message || String(e);
+  }
+  return info;
+}
+
 
 /**
  * 内部：解析 @deepseek-ai/dsh/package.json 的完整路径
