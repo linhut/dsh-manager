@@ -10,7 +10,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://127.0.0.1:3080 https://api.github.com https://raw.githubusercontent.com; frame-src *;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://api.github.com https://raw.githubusercontent.com; frame-src *;">
   <title>DSH Manager</title>
   <!-- 主题初始化：在页面渲染前应用主题，避免闪烁 -->
   <script>
@@ -76,6 +76,10 @@
         <button class="nav-item" data-page="plugins" onclick="switchPage('plugins')">
           <span class="nav-icon">🔌</span>
           <span class="nav-label">插件管理</span>
+        </button>
+        <button class="nav-item" data-page="imagegen" onclick="switchPage('imagegen')">
+          <span class="nav-icon">🎨</span>
+          <span class="nav-label">AI 生图</span>
         </button>
         <button class="nav-item" data-page="skills" onclick="switchPage('skills')">
           <span class="nav-icon">🧠</span>
@@ -196,6 +200,17 @@
           <p class="page-desc">DSH 配置管理</p>
         </div>
         <div id="settingsContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
+      <!-- ====== 页面: AI 生图 ====== -->
+      <div class="page" id="page-imagegen">
+        <div class="page-header">
+          <h1 class="page-title">🎨 AI 生图</h1>
+          <p class="page-desc">直接调用生图模型 API（OpenAI 兼容 /images/generations）生成图片并保存到本地</p>
+        </div>
+        <div id="imagegenContent">
           <!-- 由 JS 动态渲染 -->
         </div>
       </div>

@@ -8,6 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+export { GITHUB_PROXIES, githubProxyUrls } from './github-mirror.js';
 export { DSHInstaller } from './installer.js';
 export { DSHConfig } from './config.js';
 export { DSHUtils, getDSHInfo, getDSHDetectionDetail, DSH_PATHS, resolveDSHCommand, compareDSHVersions, buildCommandEnv, refreshSystemPath, detectRealArch, getSystemDiagnostics } from './dsh-utils.js';
@@ -23,7 +24,9 @@ export { DSHProfileManager } from './profile-manager.js';
 export { SkillManager } from './skill-manager.js';
 export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules, checkGlobalDSHIntegrity, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies } from './dependency-integrity.js';
 export { MasterPromptManager } from './master-prompt-manager.js';
+export { installCapabilityRouter, uninstallCapabilityRouter, isCapabilityRouterInstalled, resolveBundledPluginDir, detectNodeRuntime, CAPABILITY_ROUTER_PACKAGE, CAPABILITY_ROUTER_MIN_NODE_MAJOR } from './capability-router.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
+export { generateImage, findProviderConfig, resolveApiKey, getImageSaveDir } from './imagegen.js';
 
 /**
  * 获取 DSH Manager 版本信息（从 package.json 读取，避免硬编码漂移）

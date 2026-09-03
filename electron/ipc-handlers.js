@@ -6,7 +6,7 @@
  */
 
 import { shell, BrowserWindow, dialog, clipboard, app } from 'electron';
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLog } from './debug-logger.js';
@@ -133,13 +133,181 @@ async function loadMarketplace() {
   return marketplace;
 }
 
+// ====== DSH web token 捕获（0.1.2-alpha.4+ 需要 ?token= 鉴权） ======
+// DSH 启动时打印 "dsh web: http://127.0.0.1:<port>/?token=XXX"，
+// 解析并保存带 token 的完整 URL，供 webview 加载（裸 URL 访问会 401 白屏）。
+let lastWebTokenUrl = null;
+/** 从磁盘恢复的带 token web URL（Manager 重启后 DSH 仍运行时的回退） */
+let __restoredWebUrl = null;
+/** 持久化状态加载完成的 Promise（getDSHWebUrl 前 await，避免时序竞态） */
+let __webUrlStateReady = Promise.resolve();
+
+/**
+ * DSH web 状态持久化：token URL 存内存会在「Manager 重启但 DSH 仍运行」时丢失，
+ * 导致打开软件无法识别已运行的 DSH（裸 URL 401 白屏，只能网页访问）。
+ * 捕获到 token URL 即写入 ~/.dsh/manager/dsh-web-url.json，启动时恢复复用。
+ */
+const WEB_URL_STATE_RELPATH = ['manager', 'dsh-web-url.json'];
+
+async function webUrlStateFile() {
+  try {
+    const { DSH_PATHS } = await loadCore();
+    return join(DSH_PATHS.home, ...WEB_URL_STATE_RELPATH);
+  } catch {
+    return null;
+  }
+}
+
+function persistWebUrlState(port, url) {
+  // 不阻塞：写文件失败不影响 DSH 运行（仅影响重启后自动恢复）
+  webUrlStateFile().then((file) => {
+    if (!file) return;
+    try {
+      mkdirSync(dirname(file), { recursive: true });
+      const data = { port, url, ts: Date.now() };
+      writeFileSync(file, JSON.stringify(data), { encoding: 'utf-8', mode: 0o600 });
+    } catch (e) {
+      writeLog('warn', '持久化 DSH web URL 状态失败: ' + (e?.message || e));
+    }
+  });
+}
+
+async function loadPersistedWebUrlState() {
+  try {
+    const file = await webUrlStateFile();
+    if (!file || !existsSync(file)) return null;
+    const raw = readFileSync(file, 'utf-8').trim();
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (data && typeof data.url === 'string' && data.url.includes('token=') && data.port) {
+      return data;
+    }
+  } catch {}
+  return null;
+}
+
+/** 清理持久化 web URL 状态（DSH 停止时调用，避免残留过期 token）。 */
+function clearWebUrlState() {
+  lastWebTokenUrl = null;
+  __restoredWebUrl = null;
+  webUrlStateFile().then((file) => {
+    if (!file) return;
+    try { if (existsSync(file)) rmSync(file, { force: true }); } catch {}
+  });
+}
+
+/** 匹配 DSH 打印的带鉴权 URL 行 */
+const DSH_WEB_URL_RE = /dsh web:\s*(https?:\/\/\S+)/i;
+
+/**
+ * 监听 DSH 子进程 stdout/stderr，提取带 token 的 web URL。
+ * @param {import('execa').ResultPromise} child
+ * @param {number} port
+ */
+function captureDSHWebUrl(child, port) {
+  const handle = (chunk) => {
+    try {
+      const text = String(chunk || '');
+      const m = text.match(DSH_WEB_URL_RE);
+      if (m) {
+        const url = m[1].trim().replace(/[)\]]+$/, '');
+        // 只接受本机回环地址（带 token），防止误取 LAN URL
+        if (/^https?:\/\/127\.0\.0\.1(?:\:\d+)?\//.test(url) && url.includes('token=')) {
+          lastWebTokenUrl = url;
+          // 持久化到 ~/.dsh/manager/dsh-web-url.json：Manager 重启后 DSH 仍在运行时，
+          // 能恢复带 token 的 URL 并连接已运行实例（否则裸 URL 401，只能网页访问）
+          persistWebUrlState(port, url);
+          writeLog('info', '捕获 DSH web 鉴权 URL: ' + url.replace(/token=\S+/, 'token=***'));
+        }
+      }
+    } catch (e) {
+      writeLog('warn', '解析 DSH web URL 异常: ' + e.message);
+    }
+  };
+  // execa 的 ResultPromise 暴露 stdout/stderr 流
+  if (child?.stdout && typeof child.stdout.on === 'function') {
+    child.stdout.on('data', handle);
+  }
+  if (child?.stderr && typeof child.stderr.on === 'function') {
+    child.stderr.on('data', handle);
+  }
+}
+
+/**
+ * 组装当前应使用的 DSH web URL（带 token，若有）。
+ * @param {number} port
+ * @returns {string}
+ */
+function resolveWebUrl(port) {
+  if (lastWebTokenUrl) {
+    try {
+      const u = new URL(lastWebTokenUrl);
+      if (u.port === String(port) || (u.port === '' && port === 80)) return lastWebTokenUrl;
+    } catch {}
+  }
+  // 内存丢失（Manager 重启但 DSH 仍运行）：从持久化状态恢复带 token 的 URL
+  if (typeof __restoredWebUrl === 'string' && __restoredWebUrl) {
+    try {
+      const u = new URL(__restoredWebUrl);
+      if (u.port === String(port) || (u.port === '' && port === 80)) return __restoredWebUrl;
+    } catch {}
+  }
+  return 'http://127.0.0.1:' + port;
+}
+
 /**
  * 构建并启动 DSH web 子进程（供 dsh:start 与启动失败自愈重启复用）
  * @returns {Promise<{error?: string, child?: import('execa').ResultPromise, actualPort?: number, preferredPort?: number, portResult?: object}>}
  */
 async function spawnDSHWeb() {
   const { execa } = await import('execa');
-  const { DSHUtils, buildRuntimeEnv, getRuntimeConfig, findAvailablePort } = await loadCore();
+  const { DSHConfig, DSHUtils, buildRuntimeEnv, getRuntimeConfig, findAvailablePort } = await loadCore();
+  // 预检并迁移旧版扁平布局的凭据文件 → 新版版本化布局
+  // （新版 DSH 的 dsh-credentials-local 只接受顶层 version/refs/records，
+  //   旧扁平布局会导致 DSH 启动即崩溃，表现为「重启 DSH 没生效」）
+  try {
+    const credResult = await new DSHConfig().migrateCredentialsToVersioned();
+    if (credResult && credResult.migrated) {
+      writeLog('info', '已自动迁移凭据文件到版本化布局（备份: ' + credResult.backup + '，迁移 ' + credResult.keys + ' 个密钥）');
+    } else if (credResult && credResult.reason === 'already-versioned') {
+      writeLog('info', '凭据文件已是最新版版本化布局，无需迁移');
+    } else if (credResult && (credResult.reason === 'write-error' || credResult.reason === 'not-flat-layout' || credResult.reason === 'empty-value' || credResult.reason === 'version-mismatch')) {
+      // 凭据文件格式 DSH 不接受且无法自动迁移 → 阻止启动并给出明确原因
+      const detail = credResult.reason === 'write-error'
+        ? ('写入失败: ' + (credResult.error || '未知错误'))
+        : (credResult.reason === 'not-flat-layout' ? '包含不支持的行: ' + (credResult.line || '') : (credResult.reason === 'empty-value' ? '存在空值键: ' + (credResult.key || '') : 'version 键值不兼容'));
+      const msg = 'DSH 凭据文件无法自动迁移为版本化布局（' + detail + '）。请检查 ' + new DSHConfig().credPath + '，或将其中凭据迁移到 refs 下。';  
+      writeLog('error', msg);
+      return { error: msg };
+    }
+  } catch (credErr) {
+    writeLog('warn', '凭据文件预检异常（继续尝试启动）: ' + credErr.message);
+  }
+  // 启动前自动迁移/清洗 LLM 提供商配置（llm-openai-compatible 等 DSH 不读的段 → llm-pi-ai；
+  // apiKeyEnv:"" / 空 baseURL / provider 字段等脏数据就地归一化），
+  // 否则 DSH 会整段拒绝 llm-pi-ai → 表现为「配置了模型但 DSH 里看不到」
+  try {
+    const migResult = await new DSHConfig().migrateLLMProviders();
+    if (migResult && (migResult.moved > 0 || migResult.cleaned.length > 0 || migResult.normalized > 0)) {
+      writeLog('info', 'LLM 提供商配置已自动迁移/清洗（移动 ' + migResult.moved + '，清理 ' + migResult.cleaned.join('、') + '，归一化 ' + migResult.normalized + ' 条）');
+    }
+  } catch (migErr) {
+    writeLog('warn', 'LLM 提供商配置迁移异常（继续启动）: ' + migErr.message);
+  }
+  // 启动前确保内置能力路由插件已装入 profile（node_modules + cordis.patch.yml 注册）。
+  // 该插件读取 settings.capability-router 并在 agent/request 瀑布上按内容切换模型，
+  // 使 Manager 的「能力路由」配置真正在 DSH 中生效（幂等，重复启动不重复写）。
+  try {
+    const { installCapabilityRouter } = await loadCore();
+    const inst = await installCapabilityRouter('web');
+    if (inst && !inst.success) {
+      writeLog('warn', '能力路由插件安装未完成（不影响 DSH 启动）: ' + (inst.error || 'unknown'));
+    } else if (inst && inst.installed) {
+      writeLog('info', '能力路由插件就绪（' + (inst.method || 'ok') + '）');
+    }
+  } catch (instErr) {
+    writeLog('warn', '能力路由插件安装异常（继续启动）: ' + instErr.message);
+  }
   const dshPkgPath = await DSHUtils.getDSHPath();
   if (!dshPkgPath) return { error: 'DSH 未安装，请先安装 DSH' };
   const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
@@ -157,6 +325,32 @@ async function spawnDSHWeb() {
   const preferredPort = rt.port && rt.port > 0 ? rt.port : 3080;
   const portResult = await findAvailablePort(preferredPort);
   const actualPort = portResult.port;
+
+  // 首选端口被占用：先检测是否已有 DSH 实例在运行（健康检查），
+  // 有则直接复用（返回 reuse），不要双开第二个实例（双开会随机换端口，且 Manager 重开后
+  // 的 token URL 丢失会导致 webview 无法连接已运行实例，只能网页访问）。
+  if (portResult.used === true && actualPort !== preferredPort) {
+    try {
+      const { testDSHHealth } = await loadCore();
+      const health = await testDSHHealth(preferredPort);
+      if (health && health.reachable) {
+        const webUrl = resolveWebUrl(preferredPort);
+        writeLog('info', '检测到 DSH 已在端口 ' + preferredPort + ' 运行，直接复用（不启动新实例）');
+        // 尝试从磁盘恢复带 token 的 URL（Manager 重启后 lastWebTokenUrl 丢失）
+        if (!/token=/.test(webUrl)) {
+          const persisted = await loadPersistedWebUrlState();
+          if (persisted && persisted.port === preferredPort) {
+            __restoredWebUrl = persisted.url;
+            lastWebTokenUrl = persisted.url;
+          }
+        }
+        return { reuse: true, actualPort: preferredPort, preferredPort, portResult, webUrl: resolveWebUrl(preferredPort) };
+      }
+    } catch (reuseErr) {
+      writeLog('warn', '检测已运行 DSH 实例异常（继续按双开处理）: ' + (reuseErr?.message || reuseErr));
+    }
+  }
+
   const startArgs = ['web'];
   if (actualPort !== 3080) startArgs.push('--port', String(actualPort));
   const nodeEnv = { ...env, NO_COLOR: '1' };
@@ -178,6 +372,10 @@ async function spawnDSHWeb() {
   });
   // execa v10 不暴露 .unref()，需通过底层 nodeChildProcess 调用
   child.nodeChildProcess?.unref();
+  // —— DSH 0.1.2-alpha.4 起 web 需要 token 鉴权 ——
+  // 解析 DSH 启动时打印的 "dsh web: http://127.0.0.1:<port>/?token=XXX" 行，
+  // 把带 token 的完整 URL 保存下来，供 webview 使用（裸 URL 访问会 401 白屏）。
+  captureDSHWebUrl(child, actualPort);
   return { child, actualPort, preferredPort, portResult };
 }
 
@@ -187,6 +385,17 @@ async function spawnDSHWeb() {
 export function registerIpcHandlers(ipcMain, getMainWindow) {
   // 跟踪最后一次启动的实际端口（用于 stop 和诊断）
   let lastActivePort = 3080;
+
+  // Manager 重启后 DSH 仍运行时：从磁盘恢复带 token 的 web URL 与端口，
+  // 使 webview 能连接已运行实例（否则裸 URL 401 白屏，只能网页访问）。
+  // 存为模块级 Promise：dsh:get-web-url 等 handler 会 await，避免渲染进程先于恢复完成就取到裸 URL。
+  __webUrlStateReady = loadPersistedWebUrlState().then((st) => {
+    if (st) {
+      if (st.url && st.url.includes('token=')) __restoredWebUrl = st.url;
+      if (st.port) lastActivePort = st.port;
+      writeLog('info', '已从持久化状态恢复 DSH web URL（端口 ' + st.port + '，token 已脱敏）');
+    }
+  }).catch(() => {});
 
   // ====== 窗口控制 ======
   ipcMain.on('window-minimize', (event) => {
@@ -212,8 +421,36 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   // ====== DSH 管理 ======
   ipcMain.handle('dsh:get-info', async () => {
-    const { getDSHInfo } = await loadCore();
-    return await getDSHInfo();
+    const { getDSHInfo, testDSHHealth, getDSHProcessInfo } = await loadCore();
+    const info = await getDSHInfo();
+    // 运行时探测兜底：安装路径未识别（profile/自定义位置安装）时，
+    // 只要端口上有 DSH 服务特征（HTTP 200/401，0.1.2+ 无 token 访问根路径返回 401），
+    // 就识别为"已安装且正在运行"，避免"DSH 在跑但管理器显示未安装、控制台空白"
+    if (!info.installed) {
+      try {
+        const targetPort = lastActivePort && lastActivePort !== 3080 ? lastActivePort : 3080;
+        const [health, proc] = await Promise.all([
+          testDSHHealth(targetPort),
+          getDSHProcessInfo(targetPort),
+        ]);
+        const detected = health.reachable || proc.portInUse;
+        if (detected) {
+          writeLog('info', '检测到运行中的 DSH（端口 ' + targetPort + '，安装路径未识别，按运行时探测识别）');
+          return {
+            ...info,
+            installed: true,
+            runningDetected: true,
+            version: info.version || null,
+            path: info.path,
+            runtimeHealth: health,
+            runtimeProcess: proc,
+          };
+        }
+      } catch (e) {
+        writeLog('warn', 'DSH 运行时探测失败: ' + (e?.message || e));
+      }
+    }
+    return info;
   });
 
   ipcMain.handle('dsh:get-detection-detail', async () => {
@@ -314,7 +551,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         try {
           const health = await testDSHHealth(actualPort);
           if (health.reachable) {
-            return { success: true, port: actualPort, reachable: true, webUrl: 'http://127.0.0.1:' + actualPort };
+            return { success: true, port: actualPort, reachable: true, webUrl: resolveWebUrl(actualPort) };
           }
         } catch {}
       }
@@ -375,6 +612,20 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const sp = await spawnDSHWeb();
       if (sp.error) {
         return { success: false, error: sp.error };
+      }
+      // 端口占用且检测到已有 DSH 健康运行 → 直接复用，不启动新实例
+      if (sp.reuse) {
+        lastActivePort = sp.actualPort;
+        const webUrl = sp.webUrl || resolveWebUrl(sp.actualPort);
+        writeLog('info', 'dsh:start 复用已运行 DSH（端口 ' + sp.actualPort + '）');
+        return {
+          success: true,
+          reachable: true,
+          reused: true,
+          port: sp.actualPort,
+          portChanged: false,
+          webUrl,
+        };
       }
       const { child, actualPort, portResult, preferredPort } = sp;
       lastActivePort = actualPort; // 记录本次实际端口，供 stop/diagnose 使用
@@ -548,6 +799,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
                       exitCode: 0,
                       stderr: '',
                       port: sp2.actualPort,
+                      webUrl: resolveWebUrl(sp2.actualPort),
                       invalidPlugins: [],
                       autoRepaired: true,
                       repaired,
@@ -596,6 +848,14 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       if (finalExit !== null && finalExit !== undefined) {
         health = null;
       }
+      // DSH 0.1.2-alpha.4+ 需要 ?token= 鉴权：HTTP 可达后补等 token 被捕获
+      // （DSH 打印 "dsh web: ...?token=" 与 HTTP 就绪几乎同步，这里兜底 3 秒）
+      if ((health?.reachable) && !/token=/.test(resolveWebUrl(actualPort))) {
+        for (let i = 0; i < 6; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          if (/token=/.test(resolveWebUrl(actualPort))) break;
+        }
+      }
       return {
         success: true,
         message: 'DSH 启动命令已发送',
@@ -603,7 +863,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         portChanged: portResult.used,
         preferredPort: preferredPort,
         reachable: health?.reachable || false,
-        webUrl: 'http://127.0.0.1:' + actualPort,
+        webUrl: resolveWebUrl(actualPort),
       };
     } catch (error) {
       return { success: false, error: error.message };
@@ -633,6 +893,8 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
             windowsHide: true,
           });
           if (result.exitCode === 0) {
+            // 停止成功：清理持久化的 token URL（DSH 重启后 token 会变，残留会导致复用失效）
+            clearWebUrlState();
             return { success: true, message: result.stdout || '已停止' };
           }
         }
@@ -640,6 +902,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       // dsh stop 命令不可用时，降级为按端口结束进程（Windows taskkill / Unix kill）
       const { stopProcessByPort } = await loadCore();
       const fallback = await stopProcessByPort(lastActivePort);
+      if (fallback.success) clearWebUrlState();
       return { success: fallback.success, message: fallback.message, fallback: true, port: lastActivePort };
     } catch (error) {
       // CLI 异常也尝试端口降级
@@ -677,7 +940,16 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   });
 
   ipcMain.handle('dsh:get-actual-port', async () => {
+    await __webUrlStateReady; // 等持久化状态恢复完成，避免返回旧端口
     return { port: lastActivePort, defaultPort: 3080 };
+  });
+
+  // 返回当前应使用的 DSH web URL（带 token 鉴权，若有；DSH 0.1.2-alpha.4+ 需要）
+  ipcMain.handle('dsh:get-web-url', async () => {
+    await __webUrlStateReady; // 等持久化状态恢复完成，避免返回裸 URL 导致 401 白屏
+    const url = resolveWebUrl(lastActivePort);
+    writeLog('debug', 'dsh:get-web-url -> ' + url.replace(/token=\S+/, 'token=***'));
+    return { url, port: lastActivePort, hasToken: /token=/.test(url) };
   });
 
   // 一键修复无效插件/缺失依赖并重启 DSH（解决 gongwen-skill "invalid plugin"、shiki/js-yaml 缺失等启动失败）
@@ -825,7 +1097,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         moduleFix,
         profileRebuild,
         port: actualPort,
-        webUrl: 'http://127.0.0.1:' + actualPort,
+        webUrl: resolveWebUrl(actualPort),
         reachable: health?.reachable || false,
       };
     } catch (error) {
@@ -1105,6 +1377,9 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('config:llm-providers', async () => {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
+    // 打开 LLM 设置页即自动迁移历史错误命名空间（llm-openai-compatible 等 DSH 不读的段）
+    // 搬到 llm-pi-ai.providers，并清洗 apiKeyEnv/models，让 DSH 真正读取到配置
+    try { await config.migrateLLMProviders(); } catch (migErr) { console.warn('[dsh-manager] migrateLLMProviders:', migErr?.message); }
     return await config.listLLMProviders();
   });
 
@@ -1115,17 +1390,53 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return { success: true };
   });
 
+  // ====== AI 生图（直接调 OpenAI 兼容 /images/generations，保存到本地） ======
+  ipcMain.handle('imagegen:generate', async (_, opts) => {
+    const { generateImage } = await loadCore();
+    try {
+      const result = await generateImage(opts || {});
+      return { success: true, ...result };
+    } catch (e) {
+      return { success: false, error: (e && e.message) || String(e), code: (e && e.code) || 'UNKNOWN' };
+    }
+  });
+  ipcMain.handle('imagegen:image-dir', async () => {
+    const { getImageSaveDir } = await loadCore();
+    return { dir: getImageSaveDir() };
+  });
+  // 读取本地图片转 data URL（供 CSP data: 预览，避免开放 file: 协议）
+  ipcMain.handle('imagegen:read-image', async (_, filePath) => {
+    try {
+      const buf = readFileSync(filePath);
+      const ext = (filePath || '').split('.').pop().toLowerCase();
+      const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }[ext] || 'image/png';
+      return { success: true, dataUrl: 'data:' + mime + ';base64,' + buf.toString('base64') };
+    } catch (e) {
+      return { success: false, error: (e && e.message) || String(e) };
+    }
+  });
+  ipcMain.handle('imagegen:open-folder', async () => {
+    const { getImageSaveDir } = await loadCore();
+    const dir = getImageSaveDir();
+    try {
+      const err = await shell.openPath(dir);
+      return { success: !err, error: err || '' };
+    } catch (e) {
+      return { success: false, error: (e && e.message) || String(e) };
+    }
+  });
+
   ipcMain.handle('config:agent-presets', async () => {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
     return await config.listAgentPresets();
   });
 
-  ipcMain.handle('config:update-llm-provider', async (_, name, providerConfig) => {
+  ipcMain.handle('config:update-llm-provider', async (_, name, providerConfig, adapter) => {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
     // 使用 DSH 官方格式存储（settings.llm-<adapter>.providers.<name>）
-    const result = await config.saveLLMProvider(name, providerConfig);
+    const result = await config.saveLLMProvider(name, providerConfig, adapter);
     return { success: true, ...result };
   });
 
@@ -1135,6 +1446,75 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     // 使用 DSH 官方格式删除（兼容新旧两种格式）
     const result = await config.removeLLMProvider(name);
     return { success: true, ...result };
+  });
+
+  // ====== LLM 能力路由（按能力自动切换模型） ======
+  ipcMain.handle('llm-routing:get', async () => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.getLLMRouting();
+  });
+
+  ipcMain.handle('llm-routing:save', async (_, routing) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.saveLLMRouting(routing);
+  });
+
+  ipcMain.handle('llm-routing:models', async () => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.listCapabilityModels();
+  });
+
+  ipcMain.handle('llm-routing:apply-default', async (_, capability) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.applyDefaultModel(capability);
+  });
+
+  ipcMain.handle('llm-routing:resolve', async (_, capability) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.resolveCapability(capability);
+  });
+
+  // ====== 内置能力路由插件（真正让能力路由在 DSH 生效的插件） ======
+  ipcMain.handle('llm-routing:plugin-status', async (_, profile = 'web') => {
+    const { isCapabilityRouterInstalled, detectNodeRuntime } = await loadCore();
+    let node = null;
+    try { node = await detectNodeRuntime(); } catch {}
+    return { installed: isCapabilityRouterInstalled(profile), node };
+  });
+
+  // 读取能力路由插件的运行时事件日志（~/.dsh/manager/capability-router.log）。
+  // 插件每次「加载成功 / 挂载 agent / 实际切换模型」都会写一行，用户可在 UI 看到
+  // 「这次请求从哪个模型切到哪个模型」的真实记录——解决"路由是否生效不清楚"。
+  ipcMain.handle('llm-routing:read-log', async (_, opts = {}) => {
+    try {
+      const { DSH_PATHS } = await loadCore();
+      const file = join(DSH_PATHS.home, 'manager', 'capability-router.log');
+      if (!existsSync(file)) return { exists: false, lines: [], path: file, message: '尚无路由日志（插件未加载或尚未触发过路由）' };
+      const raw = readFileSync(file, 'utf-8');
+      const maxLines = Number(opts && opts.maxLines) || 80;
+      const all = raw.split(String.fromCharCode(10)).filter(function (l) { return l.trim().length > 0; });
+      const lines = all.slice(-maxLines);
+      return { exists: true, lines, path: file, total: all.length };
+    } catch (err) {
+      return { exists: false, lines: [], error: (err && err.message) || String(err) };
+    }
+  });
+
+  ipcMain.handle('llm-routing:plugin-install', async (_, profile = 'web') => {
+    const { installCapabilityRouter } = await loadCore();
+    const result = await installCapabilityRouter(profile);
+    return result;
+  });
+
+  ipcMain.handle('llm-routing:plugin-uninstall', async (_, profile = 'web') => {
+    const { uninstallCapabilityRouter } = await loadCore();
+    const result = await uninstallCapabilityRouter(profile);
+    return result;
   });
 
   // ====== LLM 模型获取 ======

@@ -213,6 +213,22 @@ app.whenReady().then(async () => {
   registerIpcHandlers(ipcMain, () => mainWindow);
   createMainWindow();
 
+  // 启动预检：凭据文件若仍是旧扁平布局，先迁移为 DSH 新版版本化布局，
+  // 避免后续启动 DSH 时因 unknown top-level key 崩溃（表现为「重启 DSH 没生效」）
+  try {
+    const core = await import('../packages/core/src/index.js');
+    const credResult = await new core.DSHConfig().migrateCredentialsToVersioned();
+    if (credResult && credResult.migrated) {
+      writeLog('info', '启动预检: 已自动迁移凭据文件到版本化布局（备份: ' + credResult.backup + '，迁移 ' + credResult.keys + ' 个密钥）');
+    } else if (credResult && credResult.reason === 'already-versioned') {
+      writeLog('info', '启动预检: 凭据文件已是最新版版本化布局，无需迁移');
+    } else if (credResult && credResult.reason === 'write-error') {
+      writeLog('error', '启动预检: 凭据迁移失败（' + (credResult.error || '未知错误') + '），DSH 可能无法启动');
+    }
+  } catch (preErr) {
+    writeLog('warn', '启动预检: 凭据检查异常（不影响应用启动）: ' + preErr.message);
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });

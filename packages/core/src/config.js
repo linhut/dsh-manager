@@ -11,6 +11,33 @@ import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
 import { parseYAML, toYAML } from './yaml-utils.js';
 
+/**
+ * Manager「提供商类型」→ DSH 真实 adapter 命名空间映射。
+ * DSH 0.1.2-alpha.4 只注册两个 LLM 段：
+ *   - llm-pi-ai  通用多 provider 字典 { providers: { <路由>: {apiKeyEnv, api, baseURL, models} } }
+ *   - llm-deepseek 官方 DeepSeek 平铺单段（非 providers 字典）
+ * 旧 Manager 用 provider 类型当 adapter 名（llm-openai-compatible 等）写出 DSH 永不读取的段。
+ * 统一归一化到 pi-ai：它支持 openai-completions / openai-responses / anthropic-messages。
+ */
+export const LLM_ADAPTER_MAP = {
+  'openai': 'pi-ai',
+  'openai-compatible': 'pi-ai',
+  'azure': 'pi-ai',
+  'ollama': 'pi-ai',
+  'google': 'pi-ai',
+  'anthropic': 'pi-ai',
+  'custom': 'pi-ai',
+  'claude': 'pi-ai',
+  'deepseek': 'pi-ai',
+  'pi-ai': 'pi-ai',
+};
+
+/** 提供商类型 → pi-ai 线路协议（默认 openai-completions）。 */
+export const LLM_API_MAP = {
+  'anthropic': 'anthropic-messages',
+  'claude': 'anthropic-messages',
+};
+
 export class DSHConfig {
   constructor() {
     this.configPath = DSH_PATHS.settings;
@@ -41,7 +68,7 @@ export class DSHConfig {
     if (existsSync(this.credPath)) {
       try {
         const credContent = readFileSync(this.credPath, 'utf-8');
-        credentials = this._parseYAML(credContent);
+        credentials = this._parseCredentials(credContent);
       } catch (error) {
         throw new DSHError(
           DSHErrorCodes.CONFIG_PARSE_ERROR,
@@ -80,7 +107,12 @@ export class DSHConfig {
         );
       }
     }
-    // type === 'credentials' 只校验对象结构，不校验具体字段
+    // type === 'credentials' 只校验对象结构，不校验具体字段；
+    // 一律写「版本化布局」（新版 DSH 要求顶层只有 version/refs/records，
+    // 旧扁平布局会导致 dsh-credentials-local 拒绝启动）
+    if (type === 'credentials') {
+      config = this._wrapCredentialsVersioned(config);
+    }
 
     const yaml = this._toYAML(config);
 
@@ -285,6 +317,147 @@ export class DSHConfig {
   _toYAML(obj, indent = 0) {
     return toYAML(obj, indent);
   }
+
+  /**
+   * 解析凭据文件内容，兼容两种布局：
+   *  - 旧扁平布局：`KEY: value`（顶层即凭据引用名）
+   *  - 新版版本化布局（DSH 官方）：`version: 1` + `refs:`（+ 可选 `records:`）
+   * 内部统一返回扁平对象（引用名 → 字符串值），对调用方透明。
+   * @param {string} content
+   * @returns {object}
+   * @private
+   */
+  _parseCredentials(content) {
+    const parsed = this._parseYAML(content);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed || {};
+    // 版本化布局：提取 refs（+ records 中的普通字符串值）
+    if ('version' in parsed) {
+      const flat = {};
+      const refs = parsed.refs && typeof parsed.refs === 'object' ? parsed.refs : {};
+      for (const [k, v] of Object.entries(refs)) {
+        if (typeof v === 'string' && v.length > 0) flat[k] = v;
+      }
+      const records = parsed.records && typeof parsed.records === 'object' ? parsed.records : {};
+      for (const [k, v] of Object.entries(records)) {
+        if (typeof v === 'string' && v.length > 0) flat[k] = v;
+      }
+      return flat;
+    }
+    // 旧扁平布局：原样返回
+    return parsed;
+  }
+
+  /**
+   * 把扁平凭据对象包装为 DSH 新版版本化布局（`version: 1` + `refs:`）。
+   * 新版 dsh-credentials-local 只接受顶层 `version`/`refs`/`records`，
+   * 旧扁平布局会导致 DSH 启动即拒绝（unknown top-level key）。
+   * @param {object} flat - 扁平凭据（引用名 → 字符串值）
+   * @returns {object} 版本化布局对象
+   * @private
+   */
+  _wrapCredentialsVersioned(flat) {
+    const refs = {};
+    for (const [k, v] of Object.entries(flat || {})) {
+      if (k.startsWith('_comment') || k === '_order') continue;
+      if (typeof v === 'string' && v.length > 0) refs[k] = v;
+    }
+    return { version: 1, refs };
+  }
+
+  /**
+   * 迁移旧扁平布局的凭据文件为 DSH 新版版本化布局（启动 DSH 前调用）。
+   * 旧文件先备份再重写，防止新版 DSH 因 unknown top-level key 拒绝启动。
+   * @returns {Promise<{migrated: boolean, reason?: string, backup?: string, keys?: number}>}
+   */
+  async migrateCredentialsToVersioned() {
+    if (!existsSync(this.credPath)) return { migrated: false, reason: 'no-file' };
+    const content = readFileSync(this.credPath, 'utf-8');
+    // ===== 结构判定：解析顶层键（行首无缩进的 KEY:）=====
+    const lines = content.split('\n');
+    const topKeys = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      if (/^[ \t]/.test(line)) continue; // 缩进行不是顶层
+      const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(line);
+      if (m) topKeys.push(m[1]);
+    }
+    const hasVersion = topKeys.includes('version');
+    const illegalTop = topKeys.filter(k => k !== 'version' && k !== 'refs' && k !== 'records');
+    // 已版本化：顶层仅 version/refs/records，且无残留扁平键
+    if (hasVersion && illegalTop.length === 0) return { migrated: false, reason: 'already-versioned' };
+    // 混搭布局：有 version 但顶层残留扁平键 → 将残留顶层键移入 refs（修复 DSH 启动崩溃）
+    if (hasVersion && illegalTop.length > 0) {
+      try {
+        const backupPath = this._backupPath(this.credPath);
+        copyFileSync(this.credPath, backupPath);
+        this._pruneBackups(dirname(this.credPath), this.credPath);
+        const out = ['version: 1', 'refs:'];
+        let block = null;
+        let orphan = [];
+        const refsItems = [];
+        const recordsItems = [];
+        const comments = [];
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed === '') continue;
+          if (trimmed.startsWith('#')) { comments.push(line); continue; }
+          const isIndented = /^[ \t]/.test(line);
+          if (!isIndented) {
+            const k = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(line);
+            if (k && k[1] === 'version') { block = 'version'; }
+            else if (k && k[1] === 'refs') { block = 'refs'; }
+            else if (k && k[1] === 'records') { block = 'records'; }
+            else { block = null; orphan.push(line); }
+          } else {
+            if (block === 'refs') refsItems.push(line);
+            else if (block === 'records') recordsItems.push(line);
+            else orphan.push(line);
+          }
+        }
+        for (const item of refsItems) out.push(item);
+        for (const o of orphan) { const t = o.trim(); if (t && !t.startsWith('#')) out.push('  ' + t); }
+        if (recordsItems.length > 0) { out.push('records:'); for (const i of recordsItems) out.push(i); }
+        if (comments.length) out.push('');
+        for (const c of comments) out.push(c);
+        writeFileSync(this.credPath, out.join('\n') + '\n', 'utf-8');
+        return { migrated: true, reason: 'mixed-layout', backup: backupPath, keys: illegalTop.length };
+      } catch (e) {
+        return { migrated: false, reason: 'write-error', error: e.message };
+      }
+    }
+    // ===== 纯扁平布局：整体迁移 =====
+    // 有 version 键但值不是 1 → 不自动处理，避免破坏其它版本布局
+    if (/^version:/m.test(content)) return { migrated: false, reason: 'version-mismatch' };
+    // 文本级兜底迁移（与 DSH 官方 renderFlatLayoutMigration 逐字节一致）：
+    // 不解析 YAML 值，只把每一行缩进 2 空格包进 refs:，值原样保留（含特殊字符/注释/空行）
+    // 先做安全检查：扁平布局的每行顶层应是「POSIX 名: 非空值」，否则不迁移（避免破坏非扁平内容）
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      if (trimmed.startsWith('-') || trimmed.startsWith('%') || trimmed.startsWith('---') || trimmed.startsWith('...')) {
+        return { migrated: false, reason: 'not-flat-layout', line: trimmed.slice(0, 40) };
+      }
+      const m = /^([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*)?$/.exec(trimmed);
+      if (!m) return { migrated: false, reason: 'not-flat-layout', line: trimmed.slice(0, 40) };
+      if (m[1] === 'version') return { migrated: false, reason: 'version-mismatch' };
+      if (!m[2]) return { migrated: false, reason: 'empty-value', key: m[1] };
+    }
+    // 执行迁移：备份原文件 → 逐行缩进 → 写入版本化布局
+    try {
+      const backupPath = this._backupPath(this.credPath);
+      copyFileSync(this.credPath, backupPath);
+      this._pruneBackups(dirname(this.credPath), this.credPath);
+      const body = lines.map(l => (l.length === 0 ? l : '  ' + l)).join('\n');
+      const migrated = 'version: 1\nrefs:\n' + body + (content.endsWith('\n') ? '' : '\n');
+      writeFileSync(this.credPath, migrated, 'utf-8');
+      const keys = lines.filter(l => /^\S[^:]*:\s*\S/.test(l.trim())).length;
+      return { migrated: true, backup: backupPath, keys };
+    } catch (e) {
+      return { migrated: false, reason: 'write-error', error: e.message };
+    }
+  }
+
   // ====== 配置校验与备份 ======
 
   /**
@@ -511,8 +684,13 @@ export class DSHConfig {
    */
   async saveLLMProvider(name, config, adapter) {
     if (!name || !config) throw new DSHError(DSHErrorCodes.INVALID_PARAMS, "名称和配置不能为空");
+    // 先迁移历史错误命名空间（llm-openai-compatible 等 DSH 不读的段）到 llm-pi-ai
+    try { await this.migrateLLMProviders(); } catch (migErr) { console.warn('[dsh-manager] migrateLLMProviders:', migErr?.message); }
     const { settings, credentials } = await this.read();
-    const adapterName = adapter || config.provider || "openai";
+    // DSH alpha4 只有 llm-pi-ai（通用多 provider）/ llm-deepseek（平铺单段）两个真 adapter；
+    // Manager 的「提供商类型」全部归一化为 pi-ai，避免写出 DSH 永不读取的命名空间
+    const providerType = String(adapter || config.provider || 'pi-ai').toLowerCase();
+    const adapterName = LLM_ADAPTER_MAP[providerType] || 'pi-ai';
     const llmKey = "llm-" + adapterName;
     if (!settings[llmKey]) settings[llmKey] = { providers: {} };
     if (!settings[llmKey].providers) settings[llmKey].providers = {};
@@ -539,17 +717,180 @@ export class DSHConfig {
       apiKeyEnv = config.apiKeyEnv || "";
     }
 
+    const baseURL = String(config.baseUrl || config.baseURL || "").trim();
+    // pi-ai 的 resolveProfiles 对空 baseURL 抛错 → 整个 llm-pi-ai 段被 DSH 拒绝；
+    // 这里直接拦下，避免写出 DSH 不读取的死配置
+    if (!baseURL) {
+      throw new DSHError(DSHErrorCodes.INVALID_PARAMS, '请填写 API Base URL（pi-ai 适配器要求非空，否则 DSH 会拒绝整段配置）');
+    }
+    const models = Array.isArray(config.models) && config.models.length > 0
+      ? config.models.map(m => {
+          const id = typeof m === 'string' ? m : (m && (m.id || m.model)) || '';
+          if (!id) return null;
+          // 只保留 pi-ai modelProfile 认识的字段（id/name），ownedBy 等未知字段可能被拒；
+          // input 字段用于声明模型模态（text/image）——缺少 image 声明时 DSH 会在发送前
+          // 拒绝图片（MODEL_DOES_NOT_SUPPORT_IMAGES），导致"图片无法上传/识别"。
+          const out = { id };
+          if (m && typeof m === 'object') {
+            if (m.name) out.name = String(m.name);
+            const input = m.input || m.modalities;
+            if (Array.isArray(input) && input.length > 0) {
+              const valid = input.map(x => String(x).trim()).filter(x => x === 'text' || x === 'image');
+              if (valid.length > 0) out.input = valid;
+            }
+          }
+          return out;
+        }).filter(Boolean)
+      : [{ id: String(config.model || 'gpt-4o').trim() }];
     const providerConfig = {
-      apiKeyEnv,
-      api: "openai-completions",
-      baseURL: config.baseUrl || "",
-      models: Array.isArray(config.models) && config.models.length > 0
-        ? config.models.map(m => typeof m === "string" ? { id: m } : { id: m.id || m })
-        : [{ id: config.model || "gpt-4o" }],
+      api: LLM_API_MAP[providerType] || "openai-completions",
+      baseURL,
+      models,
     };
+    // apiKeyEnv 为空时省略字段：pi-ai 的 credentialRef("") 会抛 TypeError，
+    // 使 assertServiceable 失败并拒绝整个 llm-pi-ai 段
+    if (apiKeyEnv) providerConfig.apiKeyEnv = apiKeyEnv;
     settings[llmKey].providers[name] = providerConfig;
     await this.write(settings);
-    return { success: true, name, adapter: adapterName, key: llmKey, apiKeyEnv };
+    return { success: true, name, adapter: adapterName, key: llmKey, apiKeyEnv, baseURL };
+  }
+
+  /**
+   * 迁移历史错误命名空间（llm-openai-compatible / llm-openai / llm-anthropic 等
+   * DSH alpha4 不存在的 adapter 段）到 llm-pi-ai.providers，并清理空段；
+   * 同时「就地清洗」已经位于 llm-pi-ai / llm-deepseek 下的条目
+   * （apiKeyEnv:"" 会让 DSH 的 credentialRef("") 抛错并整段拒绝、空 baseURL 会让
+   * resolveProfiles 抛错、provider/apiKey 未知字段会触发 rejectRemovedFields）。
+   * DSH alpha4 只读取 llm-pi-ai（providers 字典）与 llm-deepseek（平铺单段）。
+   * @returns {Promise<{moved: number, cleaned: string[], normalized: number}>}
+   */
+  /**
+   * 启发式判断模型名是否为视觉模型（支持图片输入）。
+   * DSH 发送前按模型 input 检查图片支持；视觉模型需声明 input 含 image，
+   * 否则上传图片报 MODEL_DOES_NOT_SUPPORT_IMAGES（"当前模型不支持图片"）。
+   */
+  static isVisionModelName(id) {
+    const n = String(id || '').toLowerCase();
+    if (!n) return false;
+    if (n.includes('vision') || n.includes('visual')) return true;
+    if (n.includes('-vl') || n.includes('.vl') || n.startsWith('vl')) return true;
+    if (/(^|[-\d])[45]v($|[-_])/.test(n)) return true; // glm-5v / glm-4v
+    if (n.includes('omni')) return true;
+    if (n.includes('-4o') || n === 'gpt-4o') return true;
+    if (n.includes('gemini')) return true;
+    if (n.includes('llava') || n.includes('minicpm') || n.includes('internvl')) return true;
+    return false;
+  }
+
+  async migrateLLMProviders() {
+    const { settings } = await this.read();
+    const INVALID_PREFIXES = ['llm-openai', 'llm-openai-compatible', 'llm-azure', 'llm-ollama', 'llm-google', 'llm-anthropic', 'llm-custom', 'llm-openai-responses', 'llm-claude'];
+    const target = 'llm-pi-ai';
+    let moved = 0;
+    const cleaned = [];
+    let normalized = 0;
+
+    // —— 清洗单个 pi-ai provider 条目 ——
+    // DSH alpha4 dsh-llm-pi-ai：apiKeyEnv 空串会在 credentialRef("") 抛 TypeError、
+    // baseURL 空串在 resolveProfiles 抛错 → assertServiceable 失败 → 整个 llm-pi-ai 段被拒。
+    // provider/apiKey 等未知字段同样会触发 rejectRemovedFields。models 非必填，存在才清洗。
+    const cleanPiEntry = (pconf) => {
+      if (!pconf || typeof pconf !== 'object') return null;
+      const clean = { ...pconf };
+      if (!clean.apiKeyEnv) delete clean.apiKeyEnv;   // credentialRef("") 抛错 → 整段拒绝
+      delete clean.provider;                            // pi-ai rejectRemovedFields 拒 provider 字段
+      delete clean.apiKey;                              // 明文密钥不进 settings（应存凭据文件）
+      const b = String(clean.baseURL || '').trim();
+      if (!b) return null;                              // 空 baseURL → 该条不可服务，直接丢弃
+      clean.baseURL = b;
+      clean.api = clean.api || 'openai-completions';
+      if (Array.isArray(clean.models)) {
+        clean.models = clean.models.map(m => {
+          const id = typeof m === 'string' ? m : (m && (m.id || m.model)) || '';
+          if (!id) return null;
+          const out = { id };
+          if (m && typeof m === 'object') {
+            if (m.name) out.name = String(m.name);
+            // 保留声明的 input（text/image），并给视觉模型自动补 input 含 image——
+            // 否则 DSH 发送前按模型 input 检查图片，报"当前模型不支持图片"。
+            const declared = Array.isArray(m.input) ? m.input.map(x => String(x).trim()).filter(x => x === 'text' || x === 'image') : [];
+            if (declared.length > 0) out.input = declared;
+            else if (DSHConfig.isVisionModelName(id)) out.input = ['text', 'image'];
+          }
+          return out;
+        }).filter(Boolean);
+        if (clean.models.length === 0) delete clean.models;
+      }
+      return clean;
+    };
+
+    // 第一遍：迁移历史错误命名空间（llm-openai-compatible 等 DSH 不读的段）
+    for (const key of Object.keys(settings || {})) {
+      const isInvalid = key === 'llm-openai' || INVALID_PREFIXES.some(p => key.startsWith(p));
+      if (!isInvalid) continue;
+      const section = settings[key];
+      if (!section || typeof section !== 'object') { delete settings[key]; cleaned.push(key); continue; }
+      const providers = section.providers;
+      if (!providers || typeof providers !== 'object' || Object.keys(providers).length === 0) {
+        delete settings[key]; cleaned.push(key); continue;
+      }
+      if (!settings[target]) settings[target] = { providers: {} };
+      if (!settings[target].providers) settings[target].providers = {};
+      for (const [pname, pconf] of Object.entries(providers)) {
+        const clean = cleanPiEntry(pconf);
+        if (!clean) continue;
+        if (!settings[target].providers[pname]) { settings[target].providers[pname] = clean; moved++; }
+      }
+      if (Object.keys(settings[target].providers).length > 0) {
+        delete settings[key]; cleaned.push(key);
+      } else if (settings[target] && Object.keys(settings[target].providers).length === 0) {
+        // 迁移后 llm-pi-ai 为空 → 一并删除
+        delete settings[target]; cleaned.push(target);
+      }
+    }
+
+    // —— 第二遍：就地清洗「已经位于 llm-pi-ai 下」的条目 ——
+    // 用户配置可能早已是正确命名空间，但带 apiKeyEnv:"" / provider 字段 / 空 baseURL 等脏数据，
+    // 第一遍迁移循环不会碰它，而 DSH 仍会整段拒绝 → 必须就地归一化。
+    const piSection = settings[target];
+    if (piSection && typeof piSection === 'object') {
+      if (!piSection.providers || typeof piSection.providers !== 'object') {
+        delete settings[target]; cleaned.push(target);
+      } else {
+        for (const [pname, pconf] of Object.entries(piSection.providers)) {
+          const clean = cleanPiEntry(pconf);
+          if (!clean) { delete piSection.providers[pname]; normalized++; continue; }
+          if (JSON.stringify(clean) !== JSON.stringify(pconf)) {
+            piSection.providers[pname] = clean;
+            normalized++;
+          }
+        }
+        if (Object.keys(piSection.providers).length === 0) {
+          delete settings[target]; cleaned.push(target);
+        }
+      }
+    }
+
+    // —— llm-deepseek 官方平铺单段：同样清理空 apiKeyEnv / 明文密钥 / models 形态 ——
+    const ds = settings['llm-deepseek'];
+    if (ds && typeof ds === 'object') {
+      if (!ds.apiKeyEnv) { delete ds.apiKeyEnv; normalized++; }
+      if (ds.apiKey) { delete ds.apiKey; normalized++; }
+      if (Array.isArray(ds.models)) {
+        const cleanedModels = ds.models.map(m => {
+          const id = typeof m === 'string' ? m : (m && (m.id || m.model)) || '';
+          if (!id) return null;
+          const out = { id };
+          if (m && typeof m === 'object' && m.name) out.name = String(m.name);
+          return out;
+        }).filter(Boolean);
+        ds.models = cleanedModels;
+        normalized++;
+      }
+    }
+
+    if (moved || cleaned.length || normalized) await this.write(settings);
+    return { moved, cleaned, normalized };
   }
 
   /**
@@ -595,4 +936,130 @@ export class DSHConfig {
     throw new DSHError(DSHErrorCodes.NOT_FOUND, "提供商 " + name + " 不存在");
   }
 
+  // ====== LLM 能力路由（按能力自动切换模型） ======
+
+  /**
+   * 读取能力路由配置（manager.llm-routing）
+   * 能力路由是 DSH Manager 自己的配置层，引用 DSH 已配置的 llm-<adapter>.providers，
+   * 不改动 providers 结构。能力：semantic(语义) / vision(识图) / image(生图) / code(代码) / embedding(嵌入)。
+   * @returns {Promise<object>} { enabled, defaultCapability, capabilities }
+   */
+  async getLLMRouting() {
+    const { settings } = await this.read();
+    // 优先读 DSH 能力路由插件可读的 settings 段 capability-router（热加载）。
+    // 旧版本把配置写在 manager.llm-routing（Manager 私有层，DSH 不读），作为迁移回退。
+    const cfg = (settings && settings['capability-router'] && typeof settings['capability-router'] === 'object')
+      ? settings['capability-router']
+      : ((settings.manager && settings.manager['llm-routing']) || {});
+    return {
+      enabled: cfg.enabled !== false,
+      defaultCapability: cfg.defaultCapability || 'semantic',
+      capabilities: (cfg.capabilities && typeof cfg.capabilities === 'object') ? cfg.capabilities : {},
+    };
+  }
+
+  /**
+   * 保存能力路由配置
+   * @param {object} routing - { enabled, defaultCapability, capabilities }
+   * @returns {Promise<object>}
+   */
+  async saveLLMRouting(routing) {
+    if (!routing || typeof routing !== 'object') throw new DSHError(DSHErrorCodes.INVALID_PARAMS, '能力路由配置不能为空');
+    const { settings } = await this.read();
+    if (!settings.manager) settings.manager = {};
+    const clean = {
+      enabled: routing.enabled !== false,
+      defaultCapability: routing.defaultCapability || 'semantic',
+      capabilities: {},
+    };
+    const caps = (routing.capabilities && typeof routing.capabilities === 'object') ? routing.capabilities : {};
+    for (const [cap, spec] of Object.entries(caps)) {
+      if (spec && typeof spec === 'object' && spec.provider && spec.model) {
+        clean.capabilities[cap] = { provider: String(spec.provider), model: String(spec.model) };
+      }
+    }
+    // 双写：DSH 能力路由插件读 settings.capability-router（热加载生效）；
+    // manager.llm-routing 保留作为旧版 Manager UI 的兼容回退
+    settings['capability-router'] = clean;
+    settings.manager['llm-routing'] = clean;
+    await this.write(settings);
+    return { success: true, ...clean };
+  }
+
+  /**
+   * 收集所有已配置 provider 的可用模型（供能力路由 UI 下拉）
+   * 只读 DSH 官方格式 llm-<adapter>.providers.<name>.models
+   * @returns {Promise<Array<{provider: string, model: string, apiKeyEnv: string, baseURL: string, adapter: string}>>}
+   */
+  async listCapabilityModels() {
+    const { settings } = await this.read();
+    const out = [];
+    for (const [adapter, adapterCfg] of Object.entries(settings || {})) {
+      if (!/^llm-/.test(adapter) || !adapterCfg || typeof adapterCfg !== 'object') continue;
+      const adapterName = adapter.replace(/^llm-/, '');
+      for (const [name, conf] of Object.entries(adapterCfg.providers || {})) {
+        if (!conf || typeof conf !== 'object') continue;
+        const models = Array.isArray(conf.models) ? conf.models : [];
+        if (models.length === 0 && conf.model) models.push({ id: conf.model });
+        for (const m of models) {
+          const id = (typeof m === 'string' ? m : m.id) || '';
+          if (!id) continue;
+          out.push({
+            provider: adapterName,
+            providerKey: name,
+            model: id,
+            apiKeyEnv: conf.apiKeyEnv || '',
+            baseURL: conf.baseURL || '',
+            adapter,
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 把某能力路由应用为 DSH 默认模型（写入 DSH 原生读取的 agent-default-model）
+   * DSH 的 dsh-agent-default-model 服务读取 settings 的 agent-default-model 分节，
+   * 新建 Agent / 会话时使用该 provider+model，因此此改动真实生效。
+   * @param {string} capability - 能力名（semantic/vision/image/code/embedding）
+   * @returns {Promise<object>} { success, provider, model }
+   */
+  async applyDefaultModel(capability) {
+    const routing = await this.getLLMRouting();
+    const spec = routing.capabilities[capability];
+    if (!spec || !spec.provider || !spec.model) {
+      throw new DSHError(DSHErrorCodes.NOT_FOUND, '能力 "' + capability + '" 未配置模型');
+    }
+    // 校验 provider(路由id)/model 真实存在
+    const all = await this.listCapabilityModels();
+    const found = all.some(x => x.providerKey === spec.provider && x.model === spec.model);
+    if (!found) {
+      throw new DSHError(DSHErrorCodes.INVALID_PARAMS, 'provider="' + spec.provider + '" 的模型 "' + spec.model + '" 不存在，请先在 LLM 提供商中配置');
+    }
+    const { settings } = await this.read();
+    settings['agent-default-model'] = { provider: spec.provider, model: spec.model };
+    await this.write(settings);
+    return { success: true, provider: spec.provider, model: spec.model, capability };
+  }
+
+  /**
+   * 校验并解析一个能力应使用的 provider/model
+   * 供外部（DSH 插件 / API / 测试）调用：给定能力名，返回真实的 provider/model/apiKeyEnv/baseURL。
+   * @param {string} capability - 能力名
+   * @returns {Promise<object>} { capability, provider, model, apiKeyEnv, baseURL } 或抛错
+   */
+  async resolveCapability(capability) {
+    const routing = await this.getLLMRouting();
+    const spec = routing.capabilities[capability] || routing.capabilities[routing.defaultCapability];
+    if (!spec || !spec.provider || !spec.model) {
+      throw new DSHError(DSHErrorCodes.NOT_FOUND, '能力 "' + capability + '" 未配置模型，请先在设置中配置能力路由');
+    }
+    const all = await this.listCapabilityModels();
+    const match = all.find(x => x.providerKey === spec.provider && x.model === spec.model);
+    if (!match) {
+      throw new DSHError(DSHErrorCodes.INVALID_PARAMS, 'provider="' + spec.provider + '" 的模型 "' + spec.model + '" 不存在');
+    }
+    return { capability, provider: spec.provider, model: spec.model, apiKeyEnv: match.apiKeyEnv, baseURL: match.baseURL };
+  }
 }

@@ -129,6 +129,24 @@ function showToast(message, type = 'info', duration = 4000, options = {}) {
   while (container.children.length > 5) {
     dismissToast(container.firstChild);
   }
+
+  return el; // 供调用方持久化/更新/主动关闭
+}
+
+/**
+ * 更新已有 Toast 的文本与类型（用于「进行中 → 完成」状态流转，不新建弹窗）
+ * @param {HTMLElement} el - showToast 返回的元素
+ * @param {string} message - 新文本
+ * @param {'info'|'success'|'warning'|'error'} type - 新类型
+ * @returns {HTMLElement|null}
+ */
+function updateToast(el, message, type = 'info') {
+  if (!el || !el.parentNode) return null;
+  el.className = 'toast-item ' + (TOAST_TYPES[type] || TOAST_TYPES.info);
+  const icons = { info: 'ℹ️', success: '✅', warning: '⚠️', error: '❌' };
+  const content = el.querySelector('span');
+  if (content) content.textContent = (icons[type] || icons.info) + ' ' + message;
+  return el;
 }
 
 function dismissToast(el) {

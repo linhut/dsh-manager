@@ -93,13 +93,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   } catch {}
 
-  // 查询主进程记录的上次实际启动端口（自动切换过端口时同步到 UI）
+  // 查询主进程记录的带 token 的 DSH web URL（DSH 0.1.2-alpha.4+ 需要鉴权，裸 URL 会 401）
+  // 以及上次实际启动端口（自动切换过端口时同步到 UI）
   try {
-    const actual = await window.dshManager.getDSHActualPort();
-    if (actual && actual.port && actual.port !== 3080) {
-      state.dshUrl = 'http://127.0.0.1:' + actual.port;
+    if (typeof window.dshManager.getDSHWebUrl === 'function') {
+      const wu = await window.dshManager.getDSHWebUrl();
+      if (wu && wu.url) {
+        state.dshUrl = wu.url;
+      }
     }
   } catch {}
+  if (!/token=/.test(state.dshUrl)) {
+    try {
+      const actual = await window.dshManager.getDSHActualPort();
+      if (actual && actual.port && actual.port !== 3080) {
+        state.dshUrl = 'http://127.0.0.1:' + actual.port;
+      }
+    } catch {}
+  }
 
   // 注册页面到 PageManager（修复导航：此前从未调用 register，导航实际无效）
   if (window.pageManager) {
@@ -109,6 +120,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     pageManager.register('skills', { render: () => renderSkillsPage() });
     pageManager.register('versions', { render: () => renderVersionsPage() });
     pageManager.register('settings', { render: () => renderSettingsPage() });
+    pageManager.register('imagegen', { render: () => renderImageGenPage() });
     pageManager.register('prompts', { render: () => renderPromptsPage() });
     pageManager.register('about', { render: () => renderAboutPage() });
   }
@@ -1067,7 +1079,7 @@ function renderMarketplaceGrid() {
   // 分类过滤
   if (state.marketCategory !== 'all') {
     filtered = filtered.filter(p => {
-      if (state.marketCategory === 'recommended') return p.recommended;
+      if (state.marketCategory === 'recommended') return p.recommended === true;
       if (state.marketCategory === 'ui') return (p.topics || []).some(t => /web-ui|skin|theme|ui/i.test(t));
       if (state.marketCategory === 'tool') return (p.topics || []).some(t => /tool|util|helper|cli|ssh/i.test(t));
       if (state.marketCategory === 'writing') return (p.topics || []).some(t => /writ|gongwen|doc|article|report/i.test(t));
@@ -3464,7 +3476,7 @@ function openSettingsTab(tab) {
       });
       break;
     case 'llm':
-      renderLLMProvidersTab().then(html => { tabEl.innerHTML = html; });
+      renderLLMProvidersTab().then(html => { tabEl.innerHTML = html; loadLLMRoutingUI(); });
       break;
     case 'yaml':
       renderYAMLEditorTab().then(html => { tabEl.innerHTML = html; });
@@ -3638,7 +3650,8 @@ async function renderLLMProvidersTab() {
         const model = Array.isArray(conf.models) && conf.models[0]
           ? (conf.models[0].id || conf.models[0])
           : '';
-        providerEntries.push([name, { provider: adapter, model, apiKeyEnv: conf.apiKeyEnv || '', baseURL: conf.baseURL || '', _official: true }]);
+        const adapterName = adapter.replace(/^llm-/, '');
+        providerEntries.push([name, { provider: adapterName, model, apiKeyEnv: conf.apiKeyEnv || '', baseURL: conf.baseURL || '', _official: true, adapter: adapterName }]);
       }
     }
   }
@@ -3678,7 +3691,7 @@ async function renderLLMProvidersTab() {
                   <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return m.id; }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
                   <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
-                    <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${escapeAttr(name)}')">✏️ 编辑</button>
+                    <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${escapeAttr(name)}'${conf.adapter ? `, '${escapeAttr(conf.adapter)}'` : ''})">✏️ 编辑</button>
                     <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${escapeAttr(name)}')">🗑️ 删除</button>
                   </td>
                 </tr>
@@ -3686,6 +3699,30 @@ async function renderLLMProvidersTab() {
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">🧭 LLM 能力路由（按任务自动切换模型）</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span id="llmRouterPluginStatus" style="font-size:11px;color:var(--text-dim);">能力路由插件：检测中…</span>
+          <button id="llmRouterInstallBtn" class="btn btn-sm btn-secondary" style="display:none;" onclick="installCapabilityRouterUI()">⬇️ 安装能力路由插件</button>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="llmRoutingEnabled" style="margin:0;" onchange="saveLLMRoutingConfig()"> 启用</label>
+          <button class="btn btn-sm btn-primary" onclick="saveLLMRoutingConfig(true)">💾 保存配置</button>
+          <button class="btn btn-sm btn-secondary" onclick="loadLLMRoutingUI()">🔄 刷新</button>
+          <button class="btn btn-sm btn-secondary" onclick="toggleCapabilityRouterLog()">📡 路由日志</button>
+        </div>
+      </div>
+      <div class="card-body" id="llmRoutingBody" style="font-size:13px;">
+        <div id="llmRoutingEmpty" style="color:var(--text-dim);padding:8px 0;">加载中…</div>
+      </div>
+      <div id="llmRouterLogPanel" class="card-body" style="display:none;font-size:12px;border-top:1px solid var(--border,#e2e8f0);padding-top:10px;margin-top:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <strong>📡 能力路由运行时日志</strong>
+          <button class="btn btn-sm btn-secondary" onclick="refreshCapabilityRouterLog()">🔄 刷新日志</button>
+        </div>
+        <div id="llmRouterLogContent" style="background:rgba(0,0,0,.04);border-radius:6px;padding:8px;max-height:260px;overflow:auto;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;color:var(--text-dim);">加载中…</div>
+        <div style="margin-top:6px;color:var(--text-dim);">💡 插件加载成功会记录 <strong>[loaded]</strong>；每个 agent 挂载记录 <strong>[attached]</strong>；每次实际切换模型记录 <strong>[route]</strong>（从哪个模型切到哪个模型）。发一条含代码/图片的消息后再刷新本面板即可看到切换记录。</div>
       </div>
     </div>
     <div class="card">
@@ -3704,6 +3741,384 @@ async function renderLLMProvidersTab() {
     </div>
   `;
 }
+
+// ====== LLM 能力路由（按任务自动切换模型） ======
+const LLM_CAPABILITIES = [
+  { key: 'semantic', name: '语义理解', desc: '日常对话 / 文本分析' },
+  { key: 'vision', name: '识图', desc: '图像 / 截图理解（多模态）' },
+  { key: 'image', name: '生图', desc: '图像生成', notice: '⚠️ DSH 当前版本不支持图片输出（适配器仅文本），此能力暂不可用，保留配置待 DSH 后续版本支持' },
+  { key: 'code', name: '代码', desc: '编程 / 代码生成' },
+  { key: 'embedding', name: '嵌入', desc: '向量嵌入（RAG 等）' },
+];
+
+let __llmRoutingModels = [];
+
+async function loadLLMRoutingUI() {
+  const body = document.getElementById('llmRoutingBody');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--text-dim);padding:8px 0;">加载中…</div>';
+  // 拉取内置能力路由插件安装状态（该插件让能力路由在 DSH 中真实生效）
+  try {
+    const st = await window.dshManager.getCapabilityRouterStatus('web');
+    const el = document.getElementById('llmRouterPluginStatus');
+    const btn = document.getElementById('llmRouterInstallBtn');
+    if (el) {
+      if (st && st.installed) {
+        el.textContent = '✅ 能力路由插件已安装（随 DSH 启动自动生效）';
+        el.style.color = 'var(--success)';
+      } else {
+        el.textContent = '⚠️ 能力路由插件未安装（配置保存后 DSH 不会自动切换模型）';
+        el.style.color = 'var(--warning)';
+      }
+      // DSH 解析 profile 插件需要 Node >= 22（内部模块加载器门槛）
+      if (st && st.node && st.node.major && st.node.major < 22) {
+        el.textContent = '⚠️ ' + el.textContent + '（当前 Node ' + (st.node.version || '?') + ' 低于 22，DSH 无法加载 profile 插件，请在「环境检测」页安装便携版 Node）';
+        el.style.color = 'var(--danger)';
+      }
+      if (st && st.node && st.node.source === 'portable') {
+        el.title = '能力路由运行时: 便携版 Node ' + st.node.version;
+      } else if (st && st.node && st.node.version) {
+        el.title = '能力路由运行时: 系统 Node ' + st.node.version;
+      }
+    }
+    if (btn) btn.style.display = st && st.installed ? 'none' : 'inline-block';
+  } catch (e2) {
+    const el = document.getElementById('llmRouterPluginStatus');
+    if (el) el.textContent = '能力路由插件：状态检测失败';
+  }
+  try {
+    const routing = await window.dshManager.getLLMRouting();
+    __llmRoutingModels = await window.dshManager.listCapabilityModels();
+    const en = document.getElementById('llmRoutingEnabled');
+    if (en) en.checked = routing.enabled;
+    renderLLMRoutingTable(routing, __llmRoutingModels);
+  } catch (e) {
+    body.innerHTML = '<div style="color:var(--danger);padding:8px 0;">加载失败：' + escapeHtml(e && e.message || e) + '</div>';
+  }
+}
+
+async function installCapabilityRouterUI() {
+  const btn = document.getElementById('llmRouterInstallBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 安装中…'; }
+  try {
+    const r = await window.dshManager.installCapabilityRouter('web');
+    if (r && r.success) {
+      showToast('✅ 能力路由插件已安装，重启 DSH 后生效', 'success');
+      await loadLLMRoutingUI();
+    } else {
+      showToast('❌ 安装失败：' + ((r && r.error) || '未知错误'), 'error');
+    }
+  } catch (e) {
+    showToast('❌ 安装失败：' + (e && e.message || e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⬇️ 安装能力路由插件'; }
+  }
+}
+
+function renderLLMRoutingTable(routing, models) {
+  const body = document.getElementById('llmRoutingBody');
+  if (!body) return;
+  const caps = (routing.capabilities && typeof routing.capabilities === 'object') ? routing.capabilities : {};
+  const providerKeys = [];
+  for (const m of models) if (!providerKeys.includes(m.providerKey)) providerKeys.push(m.providerKey);
+  const rows = LLM_CAPABILITIES.map(function (cap) {
+    const cur = caps[cap.key] || {};
+    const selProvider = cur.provider || '';
+    const selModel = cur.model || '';
+    const providerOpts = ['<option value="">未配置</option>'].concat(providerKeys.map(function (pk) {
+      const mm = models.find(function (x) { return x.providerKey === pk; });
+      const label = pk + (mm && mm.provider ? ' (' + mm.provider + ')' : '');
+      return '<option value="' + escapeAttr(pk) + '"' + (pk === selProvider ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    })).join('');
+    const modelOpts = ['<option value="">选择模型</option>'].concat(models.filter(function (x) { return x.providerKey === selProvider; }).map(function (x) {
+      return '<option value="' + escapeAttr(x.model) + '"' + (x.model === selModel ? ' selected' : '') + '>' + escapeHtml(x.model) + '</option>';
+    })).join('');
+    const isDefault = routing.defaultCapability === cap.key;
+    const notice = cap.notice ? '<div style="font-size:11px;color:var(--warning);margin-top:3px;">' + cap.notice + '</div>' : '';
+    return '<tr data-caprow="' + cap.key + '"' + (cap.notice ? ' style="opacity:.92"' : '') + '>' +
+      '<td><strong>' + cap.name + '</strong><div style="font-size:11px;color:var(--text-dim);">' + cap.desc + '</div>' + notice + '</td>' +
+      '<td><select data-role="provider" onchange="updateCapabilityModelSelect(this)">' + providerOpts + '</select></td>' +
+      '<td><select data-role="model">' + modelOpts + '</select></td>' +
+      '<td>' +
+        '<button class="btn btn-sm btn-ghost" onclick="applyCapabilityDefault(\'' + cap.key + '\')">⭐ 设为默认</button>' +
+        (isDefault ? ' <span class="badge badge-green">当前默认</span>' : '') +
+      '</td>' +
+      '<td><button class="btn btn-sm btn-ghost" onclick="testCapabilityRoute(\'' + cap.key + '\')">🔍 解析</button></td>' +
+    '</tr>';
+  }).join('');
+  const noProvider = models.length === 0 ? '<div style="color:var(--warning);padding:6px 0;">⚠️ 暂无已配置的 LLM 提供商/模型，请先在「LLM 提供商」中添加。</div>' : '';
+  body.innerHTML =
+    '<table class="table"><thead><tr><th>能力</th><th>Provider（路由）</th><th>模型</th><th>默认</th><th>解析</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>' +
+    '<div style="margin-top:8px;font-size:12px;color:var(--text-dim);">' +
+      '💡 说明：能力路由通过内置插件 @dsh-manager/dsh-capability-router 在 DSH 中真实生效——' +
+      '开启后，每次请求会按消息内容自动切换模型：含图片 → 识图模型，含代码 → 代码模型，其余 → 语义/默认模型；' +
+      '未配置的能力自动沿用会话当前模型，绝不影响未配置项。' +
+      '「⭐ 设为默认」额外把该能力模型写入 DSH 的 agent-default-model（仅对 DSH 新建会话生效；已有会话请在 DSH 新建会话后验证）；' +
+      '「🔍 解析」显示该能力当前解析到的 provider/model 及密钥环境变量；' +
+      '「📡 路由日志」显示插件运行时真实记录——[loaded] 插件已加载、[attached] 会话已挂载路由、[route] 本次请求从哪个模型切到哪个模型（发一条含代码/图片的消息后刷新即可看到）。' +
+      '保存后需要重启 DSH（或等待 DSH 热加载）才能应用新映射。' +
+    '</div>' + noProvider;
+}
+
+function updateCapabilityModelSelect(sel) {
+  const tr = sel.closest('tr');
+  if (!tr) return;
+  const provider = sel.value;
+  const modelSel = tr.querySelector('select[data-role="model"]');
+  if (!modelSel) return;
+  const opts = ['<option value="">选择模型</option>'].concat(__llmRoutingModels.filter(function (x) { return x.providerKey === provider; }).map(function (x) {
+    return '<option value="' + escapeAttr(x.model) + '">' + escapeHtml(x.model) + '</option>';
+  })).join('');
+  modelSel.innerHTML = opts;
+}
+
+function collectLLMRoutingTable() {
+  const capabilities = {};
+  document.querySelectorAll('#llmRoutingBody tr[data-caprow]').forEach(function (tr) {
+    const cap = tr.getAttribute('data-caprow');
+    const p = tr.querySelector('select[data-role="provider"]');
+    const m = tr.querySelector('select[data-role="model"]');
+    if (p && m && p.value && m.value) capabilities[cap] = { provider: p.value, model: m.value };
+  });
+  return capabilities;
+}
+
+async function saveLLMRoutingConfig(notify) {
+  const en = document.getElementById('llmRoutingEnabled');
+  const capabilities = collectLLMRoutingTable();
+  try {
+    const cur = await window.dshManager.getLLMRouting();
+    const saved = await window.dshManager.saveLLMRouting({
+      enabled: en ? en.checked : true,
+      defaultCapability: cur.defaultCapability || 'semantic',
+      capabilities: capabilities,
+    });
+    if (notify) showToast('✅ 能力路由配置已保存（' + Object.keys(saved.capabilities).length + ' 项能力）');
+    renderLLMRoutingTable(saved, __llmRoutingModels);
+    return saved;
+  } catch (e) {
+    if (notify) showToast('❌ 保存失败：' + (e && e.message || e));
+    console.error('saveLLMRoutingConfig failed:', e);
+    throw e;
+  }
+}
+
+async function applyCapabilityDefault(cap) {
+  // 生图能力：DSH 当前版本不支持图片输出，禁止设为默认，避免所有请求走向不可用路径
+  const capDef = LLM_CAPABILITIES.find(function (x) { return x.key === cap; });
+  if (capDef && capDef.notice) {
+    showToast('⚠️ 「' + capDef.name + '」' + capDef.notice, 'warning');
+    return;
+  }
+  try {
+    await saveLLMRoutingConfig();
+    const result = await window.dshManager.applyDefaultModel(cap);
+    showToast('✅ 已将「' + cap + '」应用为 DSH 默认模型：' + result.provider + ' / ' + result.model + '（仅对新建立的会话生效；已有会话请在 DSH 新建会话后验证）', 'success', 9000);
+    await loadLLMRoutingUI();
+  } catch (e) {
+    showToast('❌ ' + (e && e.message || e));
+  }
+}
+
+async function testCapabilityRoute(cap) {
+  try {
+    const r = await window.dshManager.resolveCapability(cap);
+    showToast('🧭 「' + cap + '」→ provider=' + r.provider + ' model=' + r.model + '\nAPI Key: ' + r.apiKeyEnv + '\nBase URL: ' + r.baseURL);
+  } catch (e) {
+    showToast('❌ ' + (e && e.message || e));
+  }
+}
+
+// 打开/关闭「📡 路由日志」面板；首次打开即刷新
+function toggleCapabilityRouterLog() {
+  const panel = document.getElementById('llmRouterLogPanel');
+  if (!panel) return;
+  const show = panel.style.display === 'none';
+  panel.style.display = show ? 'block' : 'none';
+  if (show) refreshCapabilityRouterLog();
+}
+
+// 读取能力路由插件的运行时事件日志（~/.dsh/manager/capability-router.log）
+async function refreshCapabilityRouterLog() {
+  const contentEl = document.getElementById('llmRouterLogContent');
+  if (!contentEl) return;
+  contentEl.textContent = '加载中…';
+  try {
+    const res = await window.dshManager.readCapabilityRouterLog();
+    if (!res || !res.exists) {
+      contentEl.textContent = '📭 ' + (res && res.message || '尚无路由日志（插件未加载或尚未触发过路由）');
+      return;
+    }
+    if (!res.lines || res.lines.length === 0) {
+      contentEl.textContent = '📭 日志文件存在但暂无记录（DSH 重启后插件加载时应写入 [loaded] 行）';
+      return;
+    }
+    contentEl.textContent = res.lines.join(String.fromCharCode(10));
+  } catch (err) {
+    contentEl.textContent = '❌ 读取路由日志失败: ' + ((err && err.message) || String(err));
+  }
+}
+
+// ====== 能力路由结束 ======
+
+// ====== AI 生图（直接调 OpenAI 兼容 /images/generations，保存到本地） ======
+let __imagegenModels = [];
+let __imagegenLastResult = null;
+
+async function renderImageGenPage() {
+  const root = document.getElementById('imagegenContent');
+  if (!root) return;
+  root.innerHTML = '<div style="color:var(--text-dim);padding:12px 0;">加载中…</div>';
+  try {
+    const res = await window.dshManager.listCapabilityModels();
+    __imagegenModels = Array.isArray(res) ? res : [];
+  } catch (e) {
+    __imagegenModels = [];
+    console.warn('listCapabilityModels failed:', e);
+  }
+  let dirInfo = '';
+  try {
+    const d = await window.dshManager.imagegenGetDir();
+    if (d && d.dir) dirInfo = d.dir;
+  } catch (e) { /* ignore */ }
+
+  const providerKeys = [...new Set(__imagegenModels.map(function (m) { return m.providerKey; }))].sort();
+  const providerOpts = ['<option value="">选择 Provider</option>'].concat(providerKeys.map(function (pk) {
+    const mm = __imagegenModels.find(function (x) { return x.providerKey === pk; });
+    const label = (mm && mm.baseURL ? pk + ' (' + mm.baseURL + ')' : pk);
+    return '<option value="' + escapeAttr(pk) + '">' + escapeHtml(label) + '</option>';
+  })).join('');
+
+  root.innerHTML = `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">🎨 AI 生图</span>
+        <span class="badge badge-blue">本地保存</span>
+      </div>
+      <div class="card-body">
+        <div style="color:var(--text-dim);font-size:12px;margin-bottom:12px;">
+          直接调用选中的生图模型（OpenAI 兼容 /images/generations）生成图片并保存到本地。
+          请选择真正支持生图的模型（如 dall-e-3 / gpt-image / glm-image / flux 等）。
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+          <div>
+            <label class="form-label">Provider</label>
+            <select id="igProvider" class="input" onchange="igOnProviderChange()">${providerOpts}</select>
+          </div>
+          <div>
+            <label class="form-label">生图模型</label>
+            <select id="igModel" class="input"><option value="">先选 Provider</option></select>
+          </div>
+        </div>
+        <div style="margin-bottom:12px;">
+          <label class="form-label">提示词</label>
+          <textarea id="igPrompt" class="input" rows="4" placeholder="描述你想生成的图片，例如：一只戴着宇航员头盔的橘猫，赛博朋克风格"></textarea>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+          <label class="form-label" style="margin:0;">尺寸</label>
+          <select id="igSize" class="input" style="width:auto;">
+            <option value="1024x1024">1024×1024</option>
+            <option value="1792x1024">1792×1024</option>
+            <option value="1024x1792">1024×1792</option>
+          </select>
+          <button class="btn btn-primary" onclick="igGenerate()">✨ 生成图片</button>
+          <button class="btn btn-secondary" onclick="igOpenFolder()">📂 打开图片文件夹</button>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:var(--text-dim);">
+          保存目录：${escapeHtml(dirInfo) || '（获取中…）'}
+        </div>
+      </div>
+    </div>
+    <div id="igResult">
+      <div class="card"><div class="card-body"><div class="empty-state"><div class="empty-state-icon">🖼️</div><div class="empty-state-title">尚未生成图片</div><div class="empty-state-desc">选择 Provider 与生图模型，输入提示词后点击「✨ 生成图片」</div></div></div></div>
+    </div>
+  `;
+}
+
+function igOnProviderChange() {
+  const pk = document.getElementById('igProvider').value;
+  const modelSel = document.getElementById('igModel');
+  if (!modelSel) return;
+  const list = __imagegenModels.filter(function (m) { return m.providerKey === pk; });
+  const seen = {};
+  const uniq = [];
+  for (const m of list) { if (!seen[m.model]) { seen[m.model] = 1; uniq.push(m.model); } }
+  modelSel.innerHTML = ['<option value="">选择模型</option>'].concat(uniq.map(function (mdl) {
+    return '<option value="' + escapeAttr(mdl) + '">' + escapeHtml(mdl) + '</option>';
+  })).join('');
+}
+
+async function igGenerate() {
+  const providerKey = document.getElementById('igProvider').value;
+  const model = document.getElementById('igModel').value;
+  const prompt = document.getElementById('igPrompt').value.trim();
+  const size = document.getElementById('igSize').value;
+  if (!providerKey) { showToast('⚠️ 请先选择 Provider'); return; }
+  if (!model) { showToast('⚠️ 请先选择生图模型'); return; }
+  if (!prompt) { showToast('⚠️ 请输入提示词'); return; }
+  const btn = document.querySelector('#igGenerateBtn') || null;
+  const resultBox = document.getElementById('igResult');
+  if (resultBox) {
+    resultBox.innerHTML = '<div class="card"><div class="card-body"><div style="color:var(--text-dim);padding:12px;">⏳ 正在生成（生图模型较慢，可能需要 1~4 分钟）…</div></div></div>';
+  }
+  try {
+    const res = await window.dshManager.imagegenGenerate({ providerKey, model, prompt, size });
+    if (!res || !res.success) {
+      const errMsg = (res && res.error) || '生成失败';
+      if (resultBox) {
+        resultBox.innerHTML = '<div class="card"><div class="card-body"><div style="color:var(--danger,var(--error,#d33));padding:12px;">❌ ' + escapeHtml(errMsg) + '</div></div></div>';
+      }
+      showToast('❌ ' + errMsg);
+      return;
+    }
+    // 读图片转 data URL 预览（CSP 不允许 file:）
+    let dataUrl = '';
+    try {
+      const img = await window.dshManager.imagegenReadImage(res.path);
+      if (img && img.success) dataUrl = img.dataUrl;
+    } catch (e) { /* ignore */ }
+    __imagegenLastResult = res;
+    if (resultBox) {
+      resultBox.innerHTML = `
+        <div class="card">
+          <div class="card-body">
+            <div style="color:var(--success,#0a0);margin-bottom:8px;">✅ 生成成功</div>
+            <div style="margin-bottom:12px;">
+              ${dataUrl ? '<img src="' + dataUrl + '" alt="生成图片" style="max-width:100%;max-height:480px;border:1px solid var(--border,#ddd);border-radius:6px;"/>' : '（无法预览，请打开文件夹查看）'}
+            </div>
+            <div style="font-size:12px;color:var(--text-dim);">
+              模型：${escapeHtml(res.model)}<br/>
+              保存位置：${escapeHtml(res.path)}<br/>
+              （尺寸 ${res.size || '1024x1024'}）
+            </div>
+            <div style="margin-top:10px;">
+              <button class="btn btn-sm btn-secondary" onclick="igOpenFolder()">📂 打开文件夹</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    showToast('✅ 图片已保存到 ' + res.path);
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (resultBox) {
+      resultBox.innerHTML = '<div class="card"><div class="card-body"><div style="color:var(--danger,var(--error,#d33));padding:12px;">❌ ' + escapeHtml(msg) + '</div></div></div>';
+    }
+    showToast('❌ ' + msg);
+  }
+}
+
+async function igOpenFolder() {
+  try {
+    const res = await window.dshManager.imagegenOpenFolder();
+    if (!res || !res.success) showToast('⚠️ 无法打开图片文件夹');
+  } catch (e) {
+    showToast('⚠️ 无法打开图片文件夹: ' + (e && e.message || e));
+  }
+}
+
+// ====== AI 生图结束 ======
 
 async function renderYAMLEditorTab() {
   let config = { settings: {}, credentials: {} };
@@ -3767,13 +4182,23 @@ async function setReplyLanguage(lang) {
   }
 }
 
-async function showLLMProviderForm(editName) {
-  let name = '', provider = 'openai', model = '', apiKey = '', baseUrl = '', confModels = null;
+async function showLLMProviderForm(editName, editAdapter) {
+  let name = '', provider = 'openai', model = '', apiKey = '', baseUrl = '', confModels = null, apiKeyEnv = '', adapter = editAdapter || '';
   if (editName) {
     try {
       const config = await window.dshManager.getAllConfig();
-      const conf = config.settings?.llm?.[editName];
-      if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; confModels = Array.isArray(conf.models) ? conf.models : null; }
+      let conf = config.settings?.llm?.[editName];
+      if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; confModels = Array.isArray(conf.models) ? conf.models : null; adapter = ''; }
+      else if (editAdapter) {
+        // 官方格式 settings.llm-<adapter>.providers.<name>
+        conf = config.settings?.['llm-' + editAdapter]?.providers?.[editName];
+        if (conf) {
+          name = editName; provider = editAdapter; baseUrl = conf.baseURL || ''; apiKeyEnv = conf.apiKeyEnv || ''; adapter = editAdapter;
+          confModels = Array.isArray(conf.models) ? conf.models : [];
+          const firstModel = confModels[0];
+          model = firstModel ? (typeof firstModel === 'string' ? firstModel : firstModel.id || '') : '';
+        }
+      }
     } catch {}
   }
   const modal = document.createElement('div');
@@ -3782,18 +4207,22 @@ async function showLLMProviderForm(editName) {
     <div class="modal" style="min-width:480px;max-width:560px;">
       <h3 class="modal-title">${editName ? '✏️ 编辑 LLM 提供商' : '➕ 添加 LLM 提供商'}</h3>
       <div class="modal-body">
+        <input type="hidden" id="llm-edit-adapter" value="${adapter}">
+        <input type="hidden" id="llm-apikeyenv" value="${apiKeyEnv}">
         <div class="form-group"><label class="form-label">名称 *</label><input class="input" id="llm-name" value="${name}" placeholder="例如: default, my-gpt4" ${editName ? 'readonly' : ''}></div>
         <div class="form-group">
           <label class="form-label">提供商类型 *</label>
           <select class="input" id="llm-provider" onchange="updateLLMProviderModelHints(this.value)">
+            <option value="pi-ai" ${provider === 'pi-ai' ? 'selected' : ''}>OpenAI 兼容 / 自定义网关（pi-ai，DSH 通用适配器）</option>
             <option value="openai" ${provider === 'openai' ? 'selected' : ''}>OpenAI</option>
             <option value="deepseek" ${provider === 'deepseek' ? 'selected' : ''}>DeepSeek</option>
             <option value="anthropic" ${provider === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
             <option value="google" ${provider === 'google' ? 'selected' : ''}>Google Gemini</option>
             <option value="azure" ${provider === 'azure' ? 'selected' : ''}>Azure OpenAI</option>
             <option value="ollama" ${provider === 'ollama' ? 'selected' : ''}>Ollama (本地)</option>
-            <option value="openai-compatible" ${provider === 'openai-compatible' ? 'selected' : ''}>OpenAI 兼容接口</option>
+            <option value="openai-compatible" ${provider === 'openai-compatible' ? 'selected' : ''}>OpenAI 兼容接口（旧）</option>
           </select>
+          <p class="form-hint" style="color:var(--text-dim);margin-top:4px;">提示：DSH 0.1.2 只注册 pi-ai 通用适配器，所有类型保存时都会归一化为 pi-ai 命名空间，确保 DSH 能读取。</p>
         </div>
         <div class="form-group"><label class="form-label">模型名称 *</label>
           <div style="display:flex;gap:8px;">
@@ -3815,8 +4244,9 @@ async function showLLMProviderForm(editName) {
         <div class="form-group">
           <label class="form-label">API Key</label>
           <div style="display:flex;gap:8px;"><input class="input" id="llm-apikey" type="password" value="${apiKey}" placeholder="sk-..." style="flex:1;"><button class="btn btn-sm btn-ghost" onclick="toggleApiKeyVisibility()" title="显示/隐藏">👁</button></div>
+          ${apiKeyEnv ? '<p class="form-hint" style="color:var(--text-secondary);">当前使用环境变量 <code>env:' + apiKeyEnv + '</code>，留空保持引用；填入新 Key 将更新凭据</p>' : ''}
         </div>
-        <div class="form-group"><label class="form-label">API Base URL（可选）</label><input class="input" id="llm-baseurl" value="${baseUrl}" placeholder="例如: https://api.openai.com/v1"></div>
+        <div class="form-group"><label class="form-label">API Base URL *</label><p class="form-hint" style="color:var(--warning);margin-top:4px;">必填：DSH pi-ai 适配器要求 baseURL 非空，否则会拒绝整段模型配置</p><input class="input" id="llm-baseurl" value="${baseUrl}" placeholder="例如: https://api.openai.com/v1"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
@@ -3840,21 +4270,29 @@ async function saveLLMProvider() {
   const model = document.getElementById('llm-model')?.value?.trim();
   const apiKey = document.getElementById('llm-apikey')?.value?.trim();
   const baseUrl = document.getElementById('llm-baseurl')?.value?.trim();
+  const adapter = document.getElementById('llm-edit-adapter')?.value?.trim() || '';
+  const apiKeyEnv = document.getElementById('llm-apikeyenv')?.value?.trim() || '';
   if (!name) { showToast('请输入提供商名称', 'error'); return; }
   if (!model) { showToast('请输入模型名称', 'error'); return; }
   const providerConfig = { provider, model };
   if (apiKey) providerConfig.apiKey = apiKey;
+  else if (apiKeyEnv) providerConfig.apiKeyEnv = apiKeyEnv;
   if (baseUrl) providerConfig.baseUrl = baseUrl;
   // 保存勾选的完整模型列表（对齐 DSH 官方 models 数组格式）
   const checkedModels = updateModelCheckCount();
   if (checkedModels && checkedModels.length > 0) {
-    providerConfig.models = checkedModels.map(cb => ({
-      id: cb.value,
-      ownedBy: cb.dataset.ownedby || '',
-    }));
+    const visionSet = new Set();
+    document.querySelectorAll('.llm-model-vision-cb:checked').forEach(function (cb) { visionSet.add(cb.value); });
+    providerConfig.models = checkedModels.map(cb => {
+      const out = { id: cb.value, ownedBy: cb.dataset.ownedby || '' };
+      // DSH 发送前按模型 input 检查图片支持：视觉模型声明 input:[text,image]
+      // 否则图片会被 MODEL_DOES_NOT_SUPPORT_IMAGES 拒绝（"当前模型不支持图片"）
+      if (visionSet.has(cb.value) || isVisionModelName(cb.value)) out.input = ['text', 'image'];
+      return out;
+    });
   }
   try {
-    await window.dshManager.updateLLMProvider(name, providerConfig);
+    await window.dshManager.updateLLMProvider(name, providerConfig, adapter || undefined);
     showToast('✅ LLM 提供商 "' + name + '" 已保存（' + (providerConfig.models ? providerConfig.models.length + ' 个模型' : '1 个模型') + '）', 'success');
     document.querySelector('.modal-overlay.active')?.remove();
     openSettingsTab('llm');
@@ -3891,6 +4329,25 @@ async function fetchLLMModels() {
 }
 
 /**
+ * 判断模型名是否为视觉模型（支持图片输入）。
+ * 启发式：名称含 vision/visual/-vl/4v/5v/omni/-4o/gemini/llava/minicpm/internvl 等。
+ * 注意避免误判：deepseek-v4-flash 里的 "v4" 是版本号不是视觉（不匹配 -vl/4v/5v 模式）。
+ */
+function isVisionModelName(id) {
+  const n = String(id || '').toLowerCase();
+  if (!n) return false;
+  if (n.includes('vision') || n.includes('visual')) return true;
+  if (n.includes('-vl') || n.includes('.vl') || n.startsWith('vl')) return true;
+  if (/(^|[-\d])[45]v($|[-_])/.test(n)) return true; // glm-5v / glm-4v / qwen2.5-vl 等
+  if (n.includes('omni')) return true;
+  if (n.includes('-4o') || n === 'gpt-4o') return true;
+  if (n.includes('gemini')) return true;
+  if (n.includes('llava') || n.includes('minicpm') || n.includes('internvl')) return true;
+  if (n.includes('qwen2-vl') || n.includes('qwen-vl') || n.includes('glm-4v') || n.includes('glm-5v')) return true;
+  return false;
+}
+
+/**
  * 渲染模型复选框列表（多选 + 全选/全取消）
  * @param {Array<{id: string, ownedBy?: string}>} models - 模型列表
  * @param {boolean} precheckAll - 是否默认全部勾选（编辑态恢复时传 true）
@@ -3912,11 +4369,13 @@ function renderModelCheckList(models, precheckAll) {
     const owned = m.ownedBy || '';
     const checked = precheckAll || prevChecked.has(id) ? 'checked' : '';
     const label = owned ? escapeHtml(id) + ' <span style="color:var(--text-dim);font-size:11px;">(' + escapeHtml(owned) + ')</span>' : escapeHtml(id);
+    const visionChecked = isVisionModelName(id) ? 'checked' : '';
     return '<label style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;transition:background 0.12s;" onmouseover="this.style.background=\'var(--bg-hover)\'" onmouseout="this.style.background=\'transparent\'">' +
       '<input type="checkbox" class="llm-model-cb" value="' + escapeAttr(id) + '" data-ownedby="' + escapeAttr(owned) + '" ' + checked + ' onchange="updateModelCheckCount()" style="flex-shrink:0;">' +
       '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
+      '<span title="支持图片输入（识图）。DSH 发送前按模型 input 检查图片支持，视觉模型需声明 input 含 image" style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="llm-model-vision-cb" value="' + escapeAttr(id) + '" ' + visionChecked + '>🖼️识图</span>' +
       '</label>';
-  }).join('');
+    }).join('');
   results.style.display = 'block';
   updateModelCheckCount();
 }

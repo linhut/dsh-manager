@@ -8,6 +8,23 @@
 - 本地已安装 [GitHub CLI (gh)](https://cli.github.com/) 并已登录（`gh auth login`）
 - GitHub Actions 已启用（仓库 Settings → Actions）
 
+**发布环境预检（每次发布前执行）：**
+
+```bash
+# ① 远端就绪（origin=GitHub 主仓；atomgit/gitcode 为镜像）
+git remote -v
+
+# ② GitHub CLI 已登录（需要 repo + workflow 权限）
+gh auth status
+
+# ③ 当前分支与版本
+git branch --show-current        # 应为主分支
+node -p "require('./package.json').version"   # 与即将打 tag 的版本一致
+
+# ④ 提交前清理检查（自动扫描禁止入库文件）
+npm run release:check
+```
+
 ## 📝 命名规范
 
 | 项目 | 规范 | 示例 |
@@ -33,6 +50,41 @@
 git add package.json
 git commit -m "chore: bump version to x.y.z"
 ```
+
+### 2.1 提交前清理检查（非必要文件绝不入库）
+
+> ⚠️ **原则：只提交必要的代码与配置变更，非必要的代码/文件/临时产物一律不得进入仓库同步。**
+
+每次提交前必须执行：
+
+```bash
+# ① 查看全部未跟踪/已修改文件
+git status --short
+
+# ② 删除一切调试/分析临时文件（TMP 前缀等）
+rm -f _tmp* *.tmp-* scripts/tmp-*
+
+# ②.5 自动化发布检查（推荐）：扫描禁止入库文件类型
+npm run release:check   # 退出码 0=可提交；1=发现禁止文件（会列出）
+
+# ③ 确认暂存内容只包含必要的源码、配置、文档、测试
+git add -A
+git status --short   # 逐项核对：没有 dist/、node_modules/、临时文件、凭据、日志
+```
+
+**禁止入库的文件类型：**
+
+| 类别 | 示例 |
+|------|------|
+| 调试/分析临时文件 | `_tmp*.py/.mjs/.ts/.json/.sh/.html`、`scripts/tmp-*`、`scripts/*-repro.cjs` |
+| 调试期诊断/修复脚本 | `scripts/diagnose-dsh.cjs`、`scripts/fix-*.cjs`、`scripts/test-provider.cjs`、`scripts/test-capability-router.mjs` |
+| 构建产物 | `dist/`、`build/png-temp/`、`*.exe`、`*.dmg`、`*.AppImage` |
+| 本地部署文件 | `website/`、`DEPLOY.md` |
+| 依赖与缓存 | `node_modules/`、`.cache/`、`*.log` |
+| 凭据与密钥 | `.env*`、`*.pem`、`*.key`、任何包含 API Key 的文件 |
+| 用户/本机专属配置 | `.dsh/`、IDE 配置、个人路径脚本 |
+
+核对无误后才允许 `git push`。
 
 ### 3. 创建并推送 Git Tag（触发 Actions 构建）
 
@@ -96,6 +148,7 @@ git push atomgit vx.y.z
 2. **Tag 必须指向最新 commit**：若指向旧 commit，用 `git tag -f vx.y.z HEAD` 更新后再推送
 3. **出现重复 Draft 时**：用 `gh release edit <tag> --draft=false -t "DSH Manager vX.Y.Z"` 发布草稿，不要删除
 4. **本地 dist/ 目录仅用于开发测试**，正式产物由 Actions 在远程构建并管理
+5. **提交前清理临时文件**（见 §2.1）：`_tmp*`、`scripts/tmp-*` 等调试文件严禁随代码提交，`.gitignore` 已收录 `_tmp*` / `*.tmp-*` / `*.bak-*` 模式
 
 ## 🔄 触发方式
 

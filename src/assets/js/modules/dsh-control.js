@@ -1,6 +1,14 @@
 /** DSH Manager - DSH Control Module */
 'use strict';
 
+// 当前 DSH 启动/停止/修复操作对应的「进行中」Toast（常驻直到操作完成，避免用户误以为失败）
+let dshOpToast = null;
+
+/** 关闭并清理「进行中」Toast */
+function dismissDSHOpToast() {
+  if (dshOpToast) { dismissToast(dshOpToast); dshOpToast = null; }
+}
+
 // ====== 启动时静默检查 DSH 更新 ======
 async function checkDSHUpdateStartup() {
   // 检查「稍后提醒」标记：3 天内不再提示
@@ -11,7 +19,11 @@ async function checkDSHUpdateStartup() {
   try {
     const update = await window.dshManager.checkDSHUpdate();
     if (update && update.hasUpdate) {
-      showToast(`发现 DSH 新版本 ${update.latest}（当前 ${update.current}），可到"安装/升级"页升级`, 'warning');
+      // 统一入口：提示点击跳转到版本管理模块（避免"更新提示"与"版本管理"多头处理）
+      showToast(`发现 DSH 新版本 ${update.latest}（当前 ${update.current}）`, 'warning', 8000, {
+        actionLabel: '前往版本管理',
+        action: () => { switchPage('versions'); renderVersionsPage(); },
+      });
       showUpdateBanner(update.latest, update.current);
     }
   } catch {}
@@ -24,10 +36,22 @@ function showUpdateBanner(latest, current) {
   banner.id = 'updateBanner';
   banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;padding:10px 16px;background:var(--primary);color:white;text-align:center;font-size:13px;display:flex;align-items:center;justify-content:center;gap:12px;';
   banner.innerHTML = '🆕 发现 DSH <strong>' + escapeHtml(latest) + '</strong> 新版本（当前：' + escapeHtml(current) + '）' +
-    '<button class="btn btn-sm" style="background:white;color:var(--primary);" onclick="dismissBannerAndUpgrade()">立即升级</button>' +
+    '<button class="btn btn-sm" style="background:white;color:var(--primary);" onclick="goVersionManage()">前往版本管理</button>' +
     '<button class="btn btn-sm btn-ghost" style="color:white;border-color:rgba(255,255,255,0.3);" onclick="dismissUpdateBanner()">稍后提醒</button>';
   document.body.prepend(banner);
   document.body.style.paddingTop = '44px';
+}
+
+/**
+ * 前往版本管理模块：统一在「版本管理」页处理升级/切换，避免"更新提示"与"版本管理"多头处理。
+ * 关闭顶部 banner 并跳转，由版本管理页的「🔄 检查更新」统一触发升级。
+ */
+function goVersionManage() {
+  const banner = document.getElementById('updateBanner');
+  if (banner) banner.remove();
+  document.body.style.paddingTop = '';
+  switchPage('versions');
+  renderVersionsPage();
 }
 
 // ====== DSH Web 界面加载 ======
@@ -59,7 +83,24 @@ async function tryConnectDSH(retriesLeft = 5, userInitiated = false) {
 
   try {
     const resp = await fetchWithTimeout(state.dshUrl, 3000);
-    if (resp.ok) {
+    // DSH 0.1.2-alpha.4+ 无 token 访问根路径返回 401（需鉴权），仍视为服务可达
+    if (resp.ok || resp.status === 401) {
+      // 可达但返回 401 且当前 URL 无 token：DSH 非管理器托管（裸 URL 会 401 白屏），
+      // 提示用户用「重启 DSH」让管理器重新托管以获取鉴权链接，而不是硬加载裸 URL
+      if (resp.status === 401 && !/token=/.test(state.dshUrl)) {
+        state.dshRunning = true;
+        dashInfoCollapsed = true;
+        const dashInfoEl = document.getElementById('dashInfo');
+        if (dashInfoEl) dashInfoEl.style.display = 'none';
+        renderDSHNeedsRestartPlaceholder();
+        renderDashToolbar();
+        renderDashInfo();
+        if (dshOpToast && userInitiated) {
+          dismissDSHOpToast();
+          showToast('检测到 DSH 运行中但缺少鉴权令牌，请点击「🔄 重启 DSH」由管理器重新托管', 'warning', 8000);
+        }
+        return;
+      }
       placeholder.style.display = 'none';
       webview.style.display = 'flex';
       state.dshRunning = true;
@@ -79,6 +120,11 @@ async function tryConnectDSH(retriesLeft = 5, userInitiated = false) {
       }
       renderDashToolbar();
       renderDashInfo();
+      // 用户主动启动且还有「进行中」Toast → 关闭并给出成功结果
+      if (dshOpToast && userInitiated) {
+        dismissDSHOpToast();
+        showToast('✅ DSH 已启动，正在加载界面', 'success');
+      }
       return;
     }
   } catch {}
@@ -90,6 +136,11 @@ async function tryConnectDSH(retriesLeft = 5, userInitiated = false) {
     renderDSHNotRunningPlaceholder();
     renderDashToolbar();
     renderDashInfo();
+    // 用户主动启动超时 → 关闭「进行中」Toast 并给出明确失败结果
+    if (dshOpToast && userInitiated) {
+      dismissDSHOpToast();
+      showToast('⏱️ DSH 服务连接超时：进程可能已启动但端口未就绪，请用「🩺 诊断」或查看日志', 'error', 8000);
+    }
   }
 }
 
@@ -113,12 +164,34 @@ function renderDSHNotRunningPlaceholder() {
   ].join('');
 }
 
+/** 渲染"DSH 运行中但缺 token"占位（非管理器托管的 DSH，需重启获取鉴权链接） */
+function renderDSHNeedsRestartPlaceholder() {
+  const placeholder = document.getElementById('dshPlaceholder');
+  const webview = document.getElementById('dshWebview');
+  if (!placeholder || !webview) return;
+  placeholder.style.display = 'flex';
+  webview.style.display = 'none';
+  placeholder.innerHTML = [
+    '<div class="placeholder-content">',
+    '<div class="spinner spinner-lg"></div>',
+    '<h2>DSH 已在运行，等待获取鉴权链接</h2>',
+    '<p>检测到 DSH 服务已运行，但它不是由管理器启动的，管理器拿不到访问令牌（DSH 0.1.2+ 需要 token 鉴权，裸 URL 会 401 白屏）。</p>',
+    '<p class="placeholder-hint">点击「重启 DSH」由管理器重新托管启动，即可自动获取鉴权链接并正常显示界面。</p>',
+    '<div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">',
+    '<button class="btn btn-primary btn-lg" onclick="restartDSH()">🔄 重启 DSH</button>',
+    '<button class="btn btn-secondary btn-lg" onclick="stopDSH()">🛑 停止 DSH</button>',
+    '</div></div>',
+  ].join('');
+}
+
 async function tryLoadDSHWeb(retries = 5, userInitiated = false) {
   renderDashToolbar();
   renderDashInfo();
   const placeholder = document.getElementById('dshPlaceholder');
   const webview = document.getElementById('dshWebview');
-  if (!state.dshInstalled) {
+  // 未安装且未运行才短路；运行时探测识别到 DSH（安装路径未识别）也尝试连接，
+  // 401 无 token 时走「重启 DSH 接管」占位，避免"DSH 在跑但控制台空白"
+  if (!state.dshInstalled && !state.dshRunning) {
     if (placeholder) placeholder.style.display = 'flex';
     if (webview) webview.style.display = 'none';
     return;
@@ -129,7 +202,9 @@ async function tryLoadDSHWeb(retries = 5, userInitiated = false) {
 
 // ====== 尝试启动 DSH ======
 async function tryStartDSH() {
-  showToast('正在尝试启动 DSH...', 'info');
+  // 「进行中」Toast 常驻，直到操作完成（成功/失败）再替换，避免用户误以为没成功
+  dismissDSHOpToast();
+  dshOpToast = showToast('正在启动 DSH...（请稍候，完成后自动提示）', 'info', 0);
   try {
     // 订阅主进程推送的启动失败/自愈信息（dsh web 崩溃时展示真实 stderr；自愈成功时刷新页面）
     let startErrorHandled = false;
@@ -147,8 +222,10 @@ async function tryStartDSH() {
         if (data.failed && data.failed.length > 0) {
           parts.push('仍有问题 ' + data.failed.join('、'));
         }
+        dismissDSHOpToast();
         showToast('✅ DSH 启动故障已' + (parts.length ? parts.join('，') : '自动修复') + '，正在加载界面...', 'success');
-        if (data.port) state.dshUrl = 'http://127.0.0.1:' + data.port;
+        if (data.webUrl) state.dshUrl = data.webUrl;
+        else if (data.port) state.dshUrl = 'http://127.0.0.1:' + data.port;
         tryLoadDSHWeb(15, true);
         return;
       }
@@ -166,6 +243,7 @@ async function tryStartDSH() {
         // ① 缺失模块（如 shiki/js-yaml）：确定性依赖问题，无需用户确认，直接自动修复
         if (missingModules.length > 0) {
           const names = missingModules.map(function(p) { return p.id; }).join('、');
+          dismissDSHOpToast();
           showToast('检测到缺失依赖（' + names + '），正在自动补齐并重启 DSH...', 'info');
           // 把诊断出的模块 ID 传给主进程，缺失的传递依赖将定向复制补齐
           fixAndRestartDSH(invalidPlugins.map(function(p) { return p.id; }));
@@ -175,12 +253,14 @@ async function tryStartDSH() {
         // ② 无效插件：移除属于破坏性操作，需用户确认
         if (badPlugins.length > 0) {
           const names = badPlugins.map(function(p) { return p.id; }).join('、');
+          dismissDSHOpToast();
           const msg = '检测到 ' + badPlugins.length + ' 个无效插件（' + names + '）导致 DSH 无法启动。\n是否一键移除并重新启动？';
           showConfirm('移除无效插件', msg, { confirmText: '移除并重启', cancelText: '取消', confirmVariant: 'danger' })
             .then(function(ok) { if (ok) fixAndRestartDSH(badPlugins.map(function(p) { return p.id; })); });
           return;
         }
       }
+      dismissDSHOpToast();
       showToast('❌ DSH 启动失败: ' + detail, 'error');
     });
 
@@ -188,38 +268,56 @@ async function tryStartDSH() {
     const result = await window.dshManager.startDSH();
     
     if (!result.success) {
+      dismissDSHOpToast();
       showToast('启动失败: ' + (result.error || '未知错误'), 'error');
       return;
     }
     
-    // 使用主进程返回的实际端口（可能因默认端口被占用而自动切换）
-    if (result.port) {
+    // 使用主进程返回的 DSH web URL（带 token 鉴权；DSH 0.1.2-alpha.4+ 裸 URL 会 401）
+    if (result.webUrl) {
+      state.dshUrl = result.webUrl;
+    } else if (result.port) {
       state.dshUrl = 'http://127.0.0.1:' + result.port;
     }
+    // 检测到 DSH 已在运行（Manager 重启后复用），直接连接，不用提示"已启动"
+    if (result.reused) {
+      if (result.reachable) {
+        dismissDSHOpToast();
+        showToast('✅ 检测到 DSH 已在运行，已连接（' + state.dshUrl + '）', 'success');
+        tryLoadDSHWeb(15, true);
+        return;
+      }
+    }
     if (result.portChanged) {
-      showToast('端口 ' + result.preferredPort + ' 已被占用，已自动切换到 ' + result.port, 'warning');
-    } else {
-      showToast('DSH 启动命令已发送，正在等待服务就绪...', 'info');
+      dismissDSHOpToast();
+      showToast('端口 ' + result.preferredPort + ' 已被占用，已自动切换到 ' + result.port + '，正在等待服务就绪', 'warning');
+      dshOpToast = showToast('正在等待 DSH 服务就绪...', 'info', 0);
     }
     
     // 如果主进程已确认就绪，直接加载
     if (result.reachable) {
-      showToast('DSH 已启动！(' + state.dshUrl + ')', 'success');
+      dismissDSHOpToast();
+      showToast('✅ DSH 已启动！(' + state.dshUrl + ')', 'success');
       tryLoadDSHWeb(15, true);
       return;
     }
     
-    // 使用共享重试连接逻辑（用户主动启动 → 显示"正在启动"动画）
-    showToast('正在等待 DSH 服务就绪...', 'info');
+    // 未就绪：复用「进行中」Toast 更新文案（不新建、不提前消失），
+    // 由 tryConnectDSH 在成功/超时后关闭
+    if (dshOpToast) updateToast(dshOpToast, '正在等待 DSH 服务就绪...（最多约 30 秒）', 'info');
+    else dshOpToast = showToast('正在等待 DSH 服务就绪...（最多约 30 秒）', 'info', 0);
     tryLoadDSHWeb(15, true);
   } catch (err) {
+    dismissDSHOpToast();
     showToast('启动失败: ' + err.message, 'error');
   }
 }
 
 // ====== 一键修复无效插件/缺失依赖并重启 DSH ======
 async function fixAndRestartDSH(moduleIds) {
-  showToast('正在修复无效插件/缺失依赖并重启 DSH...', 'info');
+  // 「进行中」Toast 常驻，直到修复/重启完成再替换
+  dismissDSHOpToast();
+  dshOpToast = showToast('正在修复无效插件/缺失依赖并重启 DSH...', 'info', 0);
   try {
     const result = await window.dshManager.fixAndRestartDSH(moduleIds);
     if (result.success) {
@@ -236,20 +334,23 @@ async function fixAndRestartDSH(moduleIds) {
       if (result.globalFix && result.globalFix.fixed && result.globalFix.fixed.length > 0) {
         summary.push('修复全局依赖 ' + result.globalFix.fixed.length + ' 个');
       }
-      showToast(summary.length > 0 ? summary.join('，') + '，DSH 重新启动' : 'DSH 已重新启动', 'success');
       if (result.reachable) {
+        dismissDSHOpToast();
+        showToast(summary.length > 0 ? summary.join('，') + '，DSH 已启动' : '✅ DSH 已重新启动', 'success');
         state.dshUrl = result.webUrl || state.dshUrl;
-        showToast('DSH 已启动', 'success');
         tryLoadDSHWeb(15, true);
       } else {
-        if (result.port) state.dshUrl = 'http://127.0.0.1:' + result.port;
-        showToast('正在等待 DSH 服务就绪...', 'info');
+        if (result.webUrl) state.dshUrl = result.webUrl;
+        else if (result.port) state.dshUrl = 'http://127.0.0.1:' + result.port;
+        if (dshOpToast) updateToast(dshOpToast, '正在等待 DSH 服务就绪...', 'info');
         tryLoadDSHWeb(15, true);
       }
     } else {
+      dismissDSHOpToast();
       showToast('修复失败: ' + (result.error || '未知错误'), 'error');
     }
   } catch (err) {
+    dismissDSHOpToast();
     showToast('修复失败: ' + err.message, 'error');
   }
 }
@@ -293,7 +394,7 @@ function renderDashToolbar() {
       <div style="display:flex;gap:6px;margin-left:auto;flex-wrap:wrap;">
         <button class="btn btn-sm btn-secondary" onclick="window.dshManager.openExternal('${escapeAttr(state.dshUrl)}')" title="在系统浏览器中打开 DSH Web">🌐 浏览器打开</button>
         ${state.dshRunning
-          ? '<button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>'
+          ? '<button class="btn btn-sm btn-secondary" onclick="restartDSH()" title="停止并重新托管启动 DSH（重新获取鉴权链接）">🔄 重启</button><button class="btn btn-sm btn-danger" onclick="stopDSH()">🛑 停止 DSH</button>'
           : (state.dshInstalled ? '<button class="btn btn-sm btn-primary" onclick="tryStartDSH()">🚀 启动 DSH</button>' : '')}
         <button class="btn btn-sm btn-ghost" onclick="runDSHDiagnosis()" title="诊断 DSH 端口/进程/HTTP 可达性">🩺 诊断</button>
         <button class="btn btn-sm btn-secondary" onclick="checkAppUpdateUI()" title="检查 DSH Manager 新版本">🔄 检查更新</button>
@@ -306,16 +407,20 @@ function renderDashToolbar() {
 
 // ====== 停止 DSH ======
 async function stopDSH() {
-  showToast('正在停止 DSH...', 'info');
+  // 「进行中」Toast 常驻，直到停止完成再替换
+  dismissDSHOpToast();
+  dshOpToast = showToast('正在停止 DSH...（请稍候，完成后自动提示）', 'info', 0);
   try {
     const result = await window.dshManager.stopDSH();
     if (result.success) {
-      showToast('DSH 已停止', 'success');
+      dismissDSHOpToast();
+      showToast('✅ DSH 已停止', 'success');
       state.dshRunning = false;
       renderDashToolbar();
       // 已确认停止：立即刷新 webview 显示"未运行"占位（0 重试，不等待）
       tryLoadDSHWeb(0);
     } else {
+      dismissDSHOpToast();
       showToast('停止失败: ' + (result.error || '未知错误'), 'error');
       state.dshRunning = false;
       renderDashToolbar();
@@ -323,10 +428,44 @@ async function stopDSH() {
       tryLoadDSHWeb();
     }
   } catch (err) {
+    dismissDSHOpToast();
     showToast('停止失败: ' + err.message, 'error');
     state.dshRunning = false;
     renderDashToolbar();
     tryLoadDSHWeb();
+  }
+}
+
+// ====== 重启 DSH ======
+// 停止 → 重新由管理器托管启动 → 重新捕获带 token 的 web URL
+// （DSH 0.1.2+ 需要 token 鉴权；DSH 非管理器启动时 Manager 拿不到 token，重启即可解决）
+async function restartDSH() {
+  dismissDSHOpToast();
+  dshOpToast = showToast('正在重启 DSH...（请稍候，完成后自动提示）', 'info', 0);
+  try {
+    const result = await window.dshManager.restartDSH();
+    if (!result || result.success === false) {
+      dismissDSHOpToast();
+      showToast('重启失败: ' + ((result && result.error) || '未知错误'), 'error');
+      state.dshRunning = false;
+      renderDashToolbar();
+      renderDSHNotRunningPlaceholder();
+      return;
+    }
+    // 使用主进程返回的带 token web URL
+    if (result.webUrl) state.dshUrl = result.webUrl;
+    else if (result.port) state.dshUrl = 'http://127.0.0.1:' + result.port;
+    if (result.reachable) {
+      dismissDSHOpToast();
+      showToast('✅ DSH 重启完成，正在加载界面', 'success');
+      tryLoadDSHWeb(15, true);
+    } else {
+      if (dshOpToast) updateToast(dshOpToast, '正在等待 DSH 服务就绪...', 'info');
+      tryLoadDSHWeb(15, true);
+    }
+  } catch (err) {
+    dismissDSHOpToast();
+    showToast('重启失败: ' + err.message, 'error');
   }
 }
 

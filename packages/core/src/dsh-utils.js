@@ -6,7 +6,7 @@
  */
 
 import { execa } from 'execa';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
@@ -237,6 +237,19 @@ async function resolveDSHPackageJson() {
 
   // ① 优先检查 DSH_HOME 下的 node_modules（本地部署场景）
   candidates.push(join(DSH_PATHS.home, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+
+  // ①.5 多环境适配：遍历 ~/.dsh/profiles/*/node_modules（DSH 本体可能随 profile 安装，
+  //    而非 npm 全局——插件即装在 profile node_modules 下）。参考 document-ai-assistant
+  //    的多路径候选探测模式，逐个 profile 目录尝试，保证不同安装方式都能识别。
+  try {
+    const profilesDir = DSH_PATHS.profiles;
+    if (existsSync(profilesDir)) {
+      for (const entry of readdirSync(profilesDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        candidates.push(join(profilesDir, entry.name, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'));
+      }
+    }
+  } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
 
   // ② Windows 标准 npm 全局目录（%APPDATA%\npm\node_modules，不依赖 npm 在 PATH）
   //    Electron GUI 应用的 PATH 可能不含用户 shell 的 npm/pnpm 目录，此兜底保证检测不依赖命令可用性

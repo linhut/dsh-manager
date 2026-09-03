@@ -1,0 +1,18 @@
+{
+  "name": "@dsh-manager/dsh-capability-router",
+  "version": "1.0.0",
+  "description": "按消息内容（图片→识图、代码→代码、其他→语义）自动切换 LLM provider/model 的能力路由插件",
+  "main": "lib/index.js",
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@dsh-manager/dsh-capability-router"
+      ]
+    }
+  },
+  "license": "MIT"
+}

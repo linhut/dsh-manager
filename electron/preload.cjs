@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   diagnoseDSH: (port) => ipcRenderer.invoke('dsh:diagnose', port),
   checkDSHPort: (port) => ipcRenderer.invoke('dsh:check-port', port),
   getDSHActualPort: () => ipcRenderer.invoke('dsh:get-actual-port'),
+  getDSHWebUrl: () => ipcRenderer.invoke('dsh:get-web-url'),
   fixAndRestartDSH: (moduleIds) => ipcRenderer.invoke('dsh:fix-and-restart', moduleIds),
   searchGitHubSkills: (query, page) => ipcRenderer.invoke('skills:search-github', query, page),
 
@@ -81,9 +82,26 @@ contextBridge.exposeInMainWorld('dshManager', {
   setReplyLanguage: (lang) => ipcRenderer.invoke('dsh:set-reply-language', lang),
   getReplyLanguage: () => ipcRenderer.invoke('dsh:get-reply-language'),
   getAgentPresets: () => ipcRenderer.invoke('config:agent-presets'),
-  updateLLMProvider: (name, providerConfig) => ipcRenderer.invoke('config:update-llm-provider', name, providerConfig),
+  updateLLMProvider: (name, providerConfig, adapter) => ipcRenderer.invoke('config:update-llm-provider', name, providerConfig, adapter),
   deleteLLMProvider: (name) => ipcRenderer.invoke('config:delete-llm-provider', name),
   fetchLLMModels: (provider, baseUrl, apiKey) => ipcRenderer.invoke('llm:fetch-models', provider, baseUrl, apiKey),
+
+  // ====== LLM 能力路由（按能力自动切换模型） ======
+  getLLMRouting: () => ipcRenderer.invoke('llm-routing:get'),
+  saveLLMRouting: (routing) => ipcRenderer.invoke('llm-routing:save', routing),
+  listCapabilityModels: () => ipcRenderer.invoke('llm-routing:models'),
+  applyDefaultModel: (capability) => ipcRenderer.invoke('llm-routing:apply-default', capability),
+  resolveCapability: (capability) => ipcRenderer.invoke('llm-routing:resolve', capability),
+  getCapabilityRouterStatus: (profile) => ipcRenderer.invoke('llm-routing:plugin-status', profile),
+  installCapabilityRouter: (profile) => ipcRenderer.invoke('llm-routing:plugin-install', profile),
+  uninstallCapabilityRouter: (profile) => ipcRenderer.invoke('llm-routing:plugin-uninstall', profile),
+  readCapabilityRouterLog: () => ipcRenderer.invoke('llm-routing:read-log'),
+
+  // ====== AI 生图（直接调 OpenAI 兼容 /images/generations，保存到本地） ======
+  imagegenGenerate: (opts) => ipcRenderer.invoke('imagegen:generate', opts),
+  imagegenGetDir: () => ipcRenderer.invoke('imagegen:image-dir'),
+  imagegenOpenFolder: () => ipcRenderer.invoke('imagegen:open-folder'),
+  imagegenReadImage: (filePath) => ipcRenderer.invoke('imagegen:read-image', filePath),
 
   // ====== 配置备份/还原 ======
   createConfigBackup: (reason) => ipcRenderer.invoke('config:create-backup', reason),

@@ -166,7 +166,10 @@ export async function testDSHHealth(port = DSH_WEB_PORT, timeoutMs = 5000) {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(url, { signal: controller.signal });
-    return { reachable: resp.ok, status: resp.status, error: null, url };
+    // DSH 0.1.2-alpha.4 起 web 需要 token 鉴权：无 token 访问根路径返回 401。
+    // 401 说明服务已在运行（只是要求鉴权），仍应视为"可达"。
+    const reachable = resp.ok || resp.status === 401;
+    return { reachable, status: resp.status, error: null, url };
   } catch (error) {
     return {
       reachable: false,

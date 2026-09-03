@@ -12,6 +12,7 @@ import { inflateRawSync } from 'node:zlib';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
 import { parseYAML } from './yaml-utils.js';
+import { githubProxyUrls } from './github-mirror.js';
 
 /** kebab-case 技能名 */
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -490,40 +491,50 @@ export class SkillManager {
    */
   async importFromGitHub(url, options = {}) {
     const { owner, repo, branch: parsedBranch, subPath } = this.parseGitHubUrl(url);
-    // 尝试从 GitHub API 获取仓库的默认分支
+    // 尝试从 GitHub API 获取仓库的默认分支（直连 + 国内镜像自动回退）
     let defaultBranch = parsedBranch;
-    try {
-      const ac = new AbortController();
-      const t = setTimeout(() => ac.abort(), 5000);
+    const apiCandidates = githubProxyUrls('https://api.github.com/repos/' + owner + '/' + repo);
+    const branchResults = await Promise.all(apiCandidates.map(async (apiUrl) => {
       try {
-        const resp = await fetch('https://api.github.com/repos/' + owner + '/' + repo, {
-          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.3.5' },
-          signal: ac.signal,
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.default_branch) defaultBranch = data.default_branch;
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 5000);
+        try {
+          const resp = await fetch(apiUrl, {
+            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.3.5' },
+            signal: ac.signal,
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            return data.default_branch || null;
+          }
+          return null;
+        } finally {
+          clearTimeout(t);
         }
-      } finally {
-        clearTimeout(t);
-      }
-    } catch {}
+      } catch { return null; }
+    }));
+    if (branchResults.find(Boolean)) defaultBranch = branchResults.find(Boolean);
     // 构建候选列表：首选 API 返回的默认分支，其次解析出的分支，再尝试常见分支
     const candidates = [defaultBranch, parsedBranch, 'main', 'master'].filter((v, i, a) => a.indexOf(v) === i);
     let buf = null;
+    // 每个分支候选：直连 + 国内镜像并行竞速（codeload zip 经镜像加速，解决国内超时）
     for (const ref of candidates) {
-      try {
-        const abortController = new AbortController();
-        const timeoutTimer = setTimeout(() => abortController.abort(), DOWNLOAD_TIMEOUT_MS);
+      const downloadUrls = githubProxyUrls('https://codeload.github.com/' + owner + '/' + repo + '/zip/refs/heads/' + encodeURIComponent(ref));
+      const dlResults = await Promise.all(downloadUrls.map(async (url) => {
         try {
-          const resp = await fetch('https://codeload.github.com/' + owner + '/' + repo + '/zip/refs/heads/' + encodeURIComponent(ref), {
-            signal: abortController.signal,
-          });
-          if (resp.ok) { buf = Buffer.from(await resp.arrayBuffer()); break; }
-        } finally {
-          clearTimeout(timeoutTimer);
-        }
-      } catch { /* 尝试下一个分支 */ }
+          const abortController = new AbortController();
+          const timeoutTimer = setTimeout(() => abortController.abort(), DOWNLOAD_TIMEOUT_MS);
+          try {
+            const resp = await fetch(url, { signal: abortController.signal });
+            if (resp.ok) return Buffer.from(await resp.arrayBuffer());
+            return null;
+          } finally {
+            clearTimeout(timeoutTimer);
+          }
+        } catch { return null; }
+      }));
+      buf = dlResults.find(Boolean);
+      if (buf) break; // 该分支成功 → 停止
     }
     if (!buf) throw new DSHError(DSHErrorCodes.NETWORK_ERROR, '下载失败：仓库 ' + owner + '/' + repo + ' 分支 ' + branch + ' 不可访问');
     let files;

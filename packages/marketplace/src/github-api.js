@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { DSHError, DSHErrorCodes, getVersion } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, getVersion, githubProxyUrls, GITHUB_PROXIES } from '../../core/src/index.js';
 
 const GITHUB_API = 'https://api.github.com';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
@@ -16,39 +16,10 @@ const MAX_RETRIES = 2;
 /** 重试间隔（毫秒） */
 const RETRY_DELAY = 2_000;
 
-/**
- * GitHub 后备中转代理（国内网络访问 GitHub 不畅时自动切换）
- * 
- * 用法：代理前缀 + 原始 URL
- * 例如 https://gh-proxy.com/https://github.com/owner/repo.git
- * 
- * 注意：
- * - gh-proxy.com: 真正的代理服务，支持 API/raw/git clone/release 下载
- * - github.akams.cn: 是「GitHub Proxy」项目的前端网站，不是代理端点
- *   保留它作为手动下载选项，但自动切换时不使用
- */
-const GITHUB_PROXIES = [
-  'https://gh-proxy.com/',
-  // 如需添加更多代理，确保测试过 API/raw/git clone 都可用
-];
-
-/**
- * 将 GitHub 相关 URL 转换为代理地址
- * 
- * 返回 [原始URL, 代理1, 代理2, ...] 的数组，用于并行竞速。
- * 代理 URL 格式：https://gh-proxy.com/https://github.com/...
- * 
- * @param {string} url - 原始 URL
- * @returns {string[]} 原始 URL + 各代理 URL（去重）
- */
-export function githubProxyUrls(url) {
-  const result = [url];
-  for (const proxy of GITHUB_PROXIES) {
-    const proxied = `${proxy}${url}`;
-    if (!result.includes(proxied)) result.push(proxied);
-  }
-  return result;
-}
+// GitHub 后备代理列表与转换逻辑统一在 core 共享模块维护（避免多处重复）：
+//   packages/core/src/github-mirror.js
+// 本地不再定义，仅透传导出，installer.js 等调用方无需改动。
+export { githubProxyUrls, GITHUB_PROXIES };
 
 /**
  * 获取 GitHub Proxy 网站的访问链接（用于手动下载加速）

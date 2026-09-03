@@ -34,13 +34,19 @@ async function checkDSHStatus() {
     state.dshInstalled = info.installed;
     state.dshVersion = info.version;
     state.dshInfo = info;
+    // 运行时探测兜底：安装路径未识别但端口检测到 DSH 服务特征（200/401）→ 视为已安装且运行中，
+    // 避免"DSH 明明在跑却显示未安装、控制台空白"，同时让「重启 DSH 接管」链路可用
+    if (info.runningDetected) state.dshRunning = true;
 
     const dot = statusEl.querySelector('.status-dot');
     const text = statusEl.querySelector('.status-text');
 
     if (info.installed) {
       dot.className = 'status-dot status-ok';
-      text.textContent = 'DSH ' + info.version;
+      // 运行时探测识别（安装路径未识别、版本未知）→ 显示"运行中"，避免空版本号
+      text.textContent = info.runningDetected && !info.version
+        ? 'DSH 运行中（安装路径未识别）'
+        : 'DSH ' + info.version;
       // 移除旧诊断按钮（如果有）
       const oldDiag = document.getElementById('dshDiagnostic');
       if (oldDiag) oldDiag.remove();

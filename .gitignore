@@ -38,6 +38,10 @@ website/
 DEPLOY.md
 tmp/
 scripts/tmp-*
+
+# 调试/分析临时文件（绝不提交到仓库）
+_tmp*
+*.tmp-*
 NDH6SA~M
 
 # Local debugging/audit files (not synced to repo)
@@ -53,6 +57,17 @@ electron/preload.js
 
 # Temp debug scripts
 scripts/_*.mjs
+
+# 调试期临时脚本（发布纪律：非必要不入库）
+scripts/*-repro.cjs
+scripts/diagnose-dsh.cjs
+scripts/fix-credentials.cjs
+scripts/fix-default-model.cjs
+scripts/test-provider.cjs
+scripts/test-capability-router.mjs
+
+# 能力路由仿真/开发验证脚本（不入库；真实源码在 packages/plugins/）
+scripts/sim/
 
 # Backup files
 *.bak

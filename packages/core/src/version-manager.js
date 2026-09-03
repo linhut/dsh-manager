@@ -11,6 +11,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS, getDSHVersion, isDSHInstalled, compareDSHVersions } from './dsh-utils.js';
+import { githubProxyUrls } from './github-mirror.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /** DSH Manager 自身版本（读取仓库根 package.json，避免硬编码漂移） */
@@ -111,26 +112,29 @@ export class DSHVersionManager {
       // npm 不可用，继续尝试 GitHub API
     }
 
-    // ② npm 失败时从 GitHub API 获取 DSH 最新 release
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 15_000);
-      const response = await fetch(
-        'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest',
-        { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/' + MANAGER_VERSION } }
-      );
-      clearTimeout(timeoutId);
-
-      if (response.ok) {
+    // ② npm 失败时从 GitHub API 获取 DSH 最新 release（直连 + 国内镜像自动回退）
+    const githubUrl = 'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest';
+    const candidates = githubProxyUrls(githubUrl); // [原始, 镜像1, 镜像2, 镜像3]
+    const results = await Promise.all(candidates.map(async (url) => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15_000);
+        const response = await fetch(
+          url,
+          { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/' + MANAGER_VERSION } }
+        );
+        clearTimeout(timeoutId);
+        if (!response.ok) return null;
         const data = await response.json();
         const tag = (data.tag_name || '').replace(/^v/, '');
-        if (tag) {
-          return { version: tag, publishedAt: data.published_at, source: 'github' };
-        }
+        if (!tag) return null;
+        return { version: tag, publishedAt: data.published_at, source: 'github' };
+      } catch {
+        return null;
       }
-    } catch {
-      // GitHub API 也不可用
-    }
+    }));
+    const githubLatest = results.find(Boolean);
+    if (githubLatest) return githubLatest;
 
     return null;
   }
