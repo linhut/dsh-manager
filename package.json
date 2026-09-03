@@ -1,6 +1,6 @@
 {
   "name": "dsh-manager",
-  "version": "1.3.14",
+  "version": "1.3.15",
   "description": "🐳 DeepSeek Harness 安装与管理工具 — 一键安装、插件市场、版本管理",
   "author": {
     "name": "linhut",
@@ -31,14 +31,11 @@
     "win": {
       "target": [
         {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
+          "target": "nsis"
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "DSH-Manager-${version}.${ext}"
+      "artifactName": "DSH-Manager-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -63,16 +60,12 @@
     },
     "linux": {
       "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
+        "AppImage",
+        "deb"
       ],
       "icon": "build/icon.png",
       "category": "Development",
-      "artifactName": "DSH-Manager-${version}.${ext}"
+      "artifactName": "DSH-Manager-${version}-${arch}.${ext}"
     },
     "extraResources": [
       {
@@ -103,6 +96,10 @@
     "build:win": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--win']);process.exit(c)\"",
     "build:mac": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--mac']);process.exit(c)\"",
     "build:linux": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--linux']);process.exit(c)\"",
+    "build:win:x64": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--win','--x64']);process.exit(c)\"",
+    "build:win:arm64": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--win','--arm64']);process.exit(c)\"",
+    "build:linux:x64": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--linux','--x64']);process.exit(c)\"",
+    "build:linux:arm64": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--linux','--arm64']);process.exit(c)\"",
     "build:all": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));var c=0;c=h.runNode('scripts/generate-icons.js')||c;c=c||h.runNode('node_modules/electron-builder/cli.js',['--win','--mac','--linux']);process.exit(c)\"",
     "generate-icons": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));process.exit(h.runNode('scripts/generate-icons.js'))\"",
     "postinstall": "echo 'Skipping electron-builder install-app-deps'",

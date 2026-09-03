@@ -51,21 +51,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows x64（Intel/AMD x86_64）
           - os: windows-latest
-            platform: windows
-            build-cmd: npm run build:win
-            artifact-name: DSH-Manager-Windows
+            platform: windows-x64
+            arch: x64
+            build-cmd: npm run build:win:x64
+            artifact-name: DSH-Manager-Windows-x64
             artifact-path: dist/*.exe
+          # Windows ARM64（信创 Windows ARM 平台）
+          - os: windows-latest
+            platform: windows-arm64
+            arch: arm64
+            build-cmd: npm run build:win:arm64
+            artifact-name: DSH-Manager-Windows-arm64
+            artifact-path: dist/*.exe
+          # macOS（x64 + arm64 由单个 job 构建）
           - os: macos-latest
             platform: macos
+            arch: x64-arm64
             build-cmd: npm run build:mac
             artifact-name: DSH-Manager-macOS
             artifact-path: dist/*.dmg
+          # Linux x64（兆芯/海光/Intel/AMD → UOS/麒麟/OpenEuler x86_64）
           - os: ubuntu-latest
-            platform: linux
-            build-cmd: npm run build:linux
-            artifact-name: DSH-Manager-Linux
-            artifact-path: dist/*.AppImage
+            platform: linux-x64
+            arch: x64
+            build-cmd: npm run build:linux:x64
+            artifact-name: DSH-Manager-Linux-x64
+            artifact-path: |
+              dist/*.AppImage
+              dist/*.deb
+          # Linux ARM64（飞腾/鲲鹏 → 银河麒麟/UOS/OpenEuler ARM64，信创）
+          - os: ubuntu-22.04-arm
+            platform: linux-arm64
+            arch: arm64
+            build-cmd: npm run build:linux:arm64
+            artifact-name: DSH-Manager-Linux-arm64
+            artifact-path: |
+              dist/*.AppImage
+              dist/*.deb
 
     runs-on: ${{ matrix.os }}
 
@@ -125,21 +149,36 @@ jobs:
             下载适用于你平台的安装包：
 
             ### Windows
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}.exe` - Windows NSIS 安装程序
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.exe` - Windows NSIS 安装程序（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.exe` - Windows NSIS 安装程序（ARM64，信创 Windows ARM 平台）
 
             ### macOS
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.dmg` - macOS 磁盘映像（Intel）
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
-            ### Linux
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}.AppImage` - Linux AppImage
+            ### Linux（常规）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.AppImage` - Linux AppImage（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.deb` - Debian/Ubuntu 安装包（x64）
+
+            ### Linux（信创 / 国产化）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.AppImage` - Linux AppImage（ARM64，飞腾/鲲鹏）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.deb` - Debian 系安装包（ARM64，银河麒麟/UOS/OpenEuler ARM）
+
+            > 龙芯/申威等无 Electron 支持的架构：请使用浏览器访问 DSH 网页（纯 Web 模式）。
+            > 信创环境安装指引见 [docs/信创部署指南.md](https://github.com/linhut/dsh-manager/blob/main/docs/信创部署指南.md)
 
             ---
             ### 安装说明
 
             **Windows**: 双击运行 `.exe` 安装程序，按照向导完成安装
             **macOS**: 打开 `.dmg`，将 DSH Manager 拖到 Applications 文件夹
-            **Linux**: 给 `.AppImage` 添加执行权限后运行
+            **Linux**: 给 `.AppImage` 添加执行权限后运行；`.deb` 用 `sudo dpkg -i` 或双击安装
+
+            ### 信创平台安装（麒麟/UOS/OpenEuler）
+
+            - **x86_64（兆芯/海光/Intel/AMD）**：安装 `-x64.deb` 或运行 `-x64.AppImage`
+            - **ARM64（飞腾/鲲鹏）**：安装 `-arm64.deb` 或运行 `-arm64.AppImage`
+            - **龙芯/申威**：Electron 不可用，用浏览器访问 DSH 网页（详见信创部署指南）
 
             > 详细发布流程见 [RELEASE.md](https://github.com/linhut/dsh-manager/blob/main/RELEASE.md)
           files: |

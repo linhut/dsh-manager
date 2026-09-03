@@ -32,7 +32,7 @@ npm run release:check
 | 版本号 | SemVer `major.minor.patch` | `1.3.4` |
 | Git Tag | 前缀 `v` + 版本号 | `v1.3.4` |
 | Release 名称 | `DSH Manager v{major}.{minor}.{patch}` | `DSH Manager v1.3.4` |
-| 安装包名 | `DSH-Manager-{version}.{ext}` | `DSH-Manager-1.3.4.exe` |
+| 安装包名 | `DSH-Manager-{version}-{arch}.{ext}` | `DSH-Manager-1.3.4-x64.exe` |
 
 ## 🚀 发布步骤
 
@@ -103,8 +103,8 @@ git push origin vx.y.z
 | 阶段 | 步骤 | 说明 |
 |------|------|------|
 | 0-check-version | 校验 tag 与 package.json 版本一致 | 不一致直接失败 |
-| 1-build (matrix) | Windows / macOS / Linux 三平台并行构建 | `npm run build:win / build:mac / build:linux` |
-| 2-upload-artifact | 上传构建产物到 Actions Artifacts | `.exe` / `.dmg` / `.AppImage` |
+| 1-build (matrix) | Windows x64/arm64、macOS x64/arm64、Linux x64/arm64 五任务并行构建（含信创产物） | `npm run build:win:x64 / build:win:arm64 / build:mac / build:linux:x64 / build:linux:arm64` |
+| 2-upload-artifact | 上传构建产物到 Actions Artifacts | `.exe` / `.dmg` / `.AppImage` / `.deb` |
 | 3-create-release | 创建 GitHub Release 并附加所有安装包 | 自动生成 Release Notes |
 
 查看构建进度：
@@ -122,7 +122,7 @@ gh release view vx.y.z --repo linhut/dsh-manager --json tagName,assets,url,publi
 
 确认清单：
 - [ ] Release 名称格式为 `DSH Manager vX.Y.Z`
-- [ ] 三平台构建产物完整且命名规范（Windows `.exe` / macOS `.dmg` x2 / Linux `.AppImage`）
+- [ ] 五平台产物完整且命名规范（Windows x64/arm64 `.exe` / macOS `.dmg` x2 / Linux x64/arm64 `.AppImage` + `.deb`）
 - [ ] Release 标记为 Latest
 - [ ] Release Notes 包含正确下载链接
 
@@ -161,10 +161,14 @@ git push atomgit vx.y.z
 
 | 平台 | 文件名格式 | 示例 |
 |------|-----------|------|
-| Windows | `DSH-Manager-{version}.exe` | `DSH-Manager-1.3.4.exe` |
+| Windows x64 | `DSH-Manager-{version}-x64.exe` | `DSH-Manager-1.3.4-x64.exe` |
+| Windows ARM64（信创 ARM） | `DSH-Manager-{version}-arm64.exe` | `DSH-Manager-1.3.4-arm64.exe` |
 | macOS Intel | `DSH-Manager-{version}-x64.dmg` | `DSH-Manager-1.3.4-x64.dmg` |
 | macOS Apple Silicon | `DSH-Manager-{version}-arm64.dmg` | `DSH-Manager-1.3.4-arm64.dmg` |
-| Linux | `DSH-Manager-{version}.AppImage` | `DSH-Manager-1.3.4.AppImage` |
+| Linux x64 | `DSH-Manager-{version}-x64.AppImage` / `.deb` | `DSH-Manager-1.3.4-x64.AppImage` |
+| Linux ARM64（飞腾/鲲鹏） | `DSH-Manager-{version}-arm64.AppImage` / `.deb` | `DSH-Manager-1.3.4-arm64.AppImage` |
+
+> 信创环境安装指引见 [docs/信创部署指南.md](docs/信创部署指南.md)；龙芯/申威无 Electron 包，用浏览器访问 DSH 网页（纯 Web 模式）。
 
 ## 📝 版本号检查清单（6 处一致）
 
