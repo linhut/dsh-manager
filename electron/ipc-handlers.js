@@ -1202,15 +1202,33 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       message: DSH_PATHS.home,
     });
 
-    // GitHub API
+    // GitHub API（直连失败时用 DoH 解析真实 IP 兜底，绕过 DNS 污染）
     try {
-      const resp = await fetch('https://api.github.com', {
-        headers: { 'User-Agent': 'dsh-manager' },
-      });
+      let resp = null;
+      try {
+        resp = await fetch('https://api.github.com', {
+          headers: { 'User-Agent': 'dsh-manager' },
+        });
+      } catch {}
+      if (!resp || !resp.ok) {
+        // DoH 兜底：系统 DNS 被污染时，用 DoH 解析真实 IP 直连
+        try {
+          const coreMod = await loadCore();
+          const { resolveViaDoh, fetchViaDoh } = coreMod;
+          const ips = await resolveViaDoh('api.github.com');
+          if (ips && ips.length) {
+            resp = await fetchViaDoh('https://api.github.com', {
+              ip: ips[0],
+              timeoutMs: 15_000,
+              headers: { 'User-Agent': 'dsh-manager' },
+            });
+          }
+        } catch {}
+      }
       results.push({
         name: 'GitHub API',
-        status: resp.ok ? 'ok' : 'warning',
-        message: resp.ok ? '可访问' : `状态码: ${resp.status}`,
+        status: resp && resp.ok ? 'ok' : 'warning',
+        message: resp && resp.ok ? '可访问' : (resp ? `状态码: ${resp.status}` : '无法访问，插件市场可能受限'),
       });
     } catch {
       results.push({
@@ -1771,11 +1789,21 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       for (const searchQ of queries) {
         try {
           const url = 'https://api.github.com/search/repositories?q=' + encodeURIComponent(searchQ) + '&per_page=30&page=' + page;
-          const resp = await fetch(url, {
-            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager' },
-            signal: AbortSignal.timeout(15000),
-          });
-          if (!resp.ok) continue;
+          const searchHeaders = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager' };
+          // 直连优先；失败/非 2xx 时 DoH 兜底（绕过 DNS 污染，浏览器/Chromium fetch 无法自定义 DNS）
+          let resp = null;
+          try {
+            resp = await fetch(url, { headers: searchHeaders, signal: AbortSignal.timeout(15000) });
+          } catch {}
+          if (!resp || !resp.ok) {
+            try {
+              const coreMod = await loadCore();
+              if (coreMod.tryFetchViaDoh) {
+                resp = await coreMod.tryFetchViaDoh(url, { timeoutMs: 15000, headers: searchHeaders });
+              }
+            } catch {}
+          }
+          if (!resp || !resp.ok) continue;
           const data = await resp.json();
           for (const repo of (data.items || [])) {
             const fullName = repo.full_name || '';
@@ -2116,16 +2144,47 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     // 代理候选
     const PROXIES = ['https://gh-proxy.com/']; // gh-proxy.com 是唯一验证可用的代理
 
+    // 加载 DoH 能力（失败时降级跳过 DoH 候选，不阻断更新检查）
+    let resolveViaDoh = null;
+    let fetchViaDoh = null;
+    try {
+      const coreMod = await loadCore();
+      resolveViaDoh = coreMod.resolveViaDoh;
+      fetchViaDoh = coreMod.fetchViaDoh;
+    } catch (e) {
+      writeLog('warn', '[更新检查] core 加载失败，跳过 DoH 直连: ' + (e?.message || e));
+    }
+
     let lastError = null;
-    for (const url of [GITHUB_URL, ...PROXIES.map(p => p + GITHUB_URL)]) {
+    // 候选：[GitHub 直连, DoH 直连(加载成功时), gh-proxy 代理]
+    // DoH 直连用应用内置解析真实 IP（绕过 DNS 污染），失败自动回落代理链
+    const updateCandidates = [
+      { url: GITHUB_URL },
+      ...(resolveViaDoh && fetchViaDoh ? [{ url: GITHUB_URL, doh: true }] : []),
+      ...PROXIES.map(p => ({ url: p + GITHUB_URL })),
+    ];
+    for (const cand of updateCandidates) {
       try {
-        writeLog('info', '[更新检查] 请求: ' + url);
+        writeLog('info', '[更新检查] 请求: ' + cand.url + (cand.doh ? ' (DoH直连)' : ''));
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 15_000);
-        const resp = await fetch(url, {
-          headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/' + currentVersion },
-          signal: controller.signal,
-        });
+        let resp;
+        if (cand.doh) {
+          const hostname = new URL(cand.url).hostname;
+          const ips = await resolveViaDoh(hostname, { raceTimeoutMs: 4000 });
+          if (!ips || !ips.length) { clearTimeout(timeout); lastError = 'DoH 解析失败'; continue; }
+          resp = await fetchViaDoh(cand.url, {
+            ip: ips[0],
+            timeoutMs: 15_000,
+            signal: controller.signal,
+            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/' + currentVersion },
+          });
+        } else {
+          resp = await fetch(cand.url, {
+            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/' + currentVersion },
+            signal: controller.signal,
+          });
+        }
         clearTimeout(timeout);
         if (!resp.ok) { lastError = 'HTTP ' + resp.status; continue; }
         const data = await resp.json();

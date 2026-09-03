@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { DSHError, DSHErrorCodes, getVersion, githubProxyUrls, GITHUB_PROXIES } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, getVersion, githubProxyUrls, GITHUB_PROXIES, resolveViaDoh, fetchViaDoh } from '../../core/src/index.js';
 
 const GITHUB_API = 'https://api.github.com';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
@@ -43,7 +43,7 @@ export class GitHubAPI {
     this.token = options.token || process.env.GITHUB_TOKEN || null;
     this.headers = {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'dsh-manager/' + (getVersion().version || '1.3.15'),
+      'User-Agent': 'dsh-manager/' + (getVersion().version || '1.3.16'),
       ...(this.token ? { 'Authorization': `Bearer ${this.token}` } : {}),
     };
   }
@@ -58,24 +58,28 @@ export class GitHubAPI {
    * @private
    */
   async _fetchWithRetry(url, options = {}, attempt = 1) {
-    // 候选 URL
+    // 候选 URL：{ url, ip? } —— ip 存在时走 DoH 直连，否则走全局 fetch
     const isGithub = url.startsWith('https://api.github.com/') || url.startsWith('https://github.com/');
     // 对 npm registry 也启用代理镜像
     const isNpmRegistry = url.startsWith('https://registry.npmjs.org/');
-    let candidates = [url];
+    let candidates = [{ url }];
     if (isGithub) {
-      candidates = githubProxyUrls(url);
+      candidates = githubProxyUrls(url).map(u => ({ url: u }));
+      // DoH 直连候选（应用内置 DoH 解析真实 IP，绕过 DNS 污染直连；解析在竞速内并行，失败自动降级）
+      const hostname = new URL(url).hostname;
+      candidates.unshift({ url, doh: hostname });
     } else if (isNpmRegistry) {
       // 添加 npm 镜像（国内加速）
       candidates = [
-        url,
-        url.replace('https://registry.npmjs.org/', 'https://registry.npmmirror.com/'),
-        ...GITHUB_PROXIES.map(p => p + url),
+        { url },
+        { url: url.replace('https://registry.npmjs.org/', 'https://registry.npmmirror.com/') },
+        ...GITHUB_PROXIES.map(p => ({ url: p + url })),
       ];
     }
 
     // 并行竞速：同时尝试所有候选，使用最快成功的响应
-    // 记录每个候选的耗时，便于调试
+    // DoH 直连候选在内部先 resolveViaDoh（多端点竞速 + 缓存）再 fetchViaDoh，
+    // 与系统直连、镜像并行发出；解析失败/直连失败都会 settle 为 error，不阻塞其他候选。
     let firstError = null;
     const results = await Promise.allSettled(
       candidates.map(async (candidate) => {
@@ -83,23 +87,38 @@ export class GitHubAPI {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
         try {
-          const response = await fetch(candidate, {
-            ...options,
-            signal: controller.signal,
-            headers: { ...this.headers, ...options.headers },
-          });
+          let response;
+          if (candidate.doh) {
+            // DoH 直连：解析真实 IP → node:https + lookup 直连（SNI 保持域名）
+            const ips = await resolveViaDoh(candidate.doh, { raceTimeoutMs: 4000 });
+            if (!ips || !ips.length) throw new Error('DNS 污染/DoH 解析失败');
+            response = await fetchViaDoh(candidate.url, {
+              ...options,
+              ip: ips[0],
+              timeoutMs: FETCH_TIMEOUT,
+              signal: controller.signal,
+              headers: { ...this.headers, ...options.headers },
+            });
+          } else {
+            response = await fetch(candidate.url, {
+              ...options,
+              signal: controller.signal,
+              headers: { ...this.headers, ...options.headers },
+            });
+          }
           clearTimeout(timeoutId);
           const elapsed = Date.now() - startTime;
+          const label = candidate.doh ? candidate.url + ' (DoH直连)' : candidate.url;
           // 4xx 错误直接返回（无需再试其他）
           if (response.ok || (response.status >= 400 && response.status < 500)) {
-            return { response, candidate, elapsed };
+            return { response, candidate: label, elapsed };
           }
           // 5xx 错误继续等更好的候选
-          return { error: new Error(`HTTP ${response.status}`), candidate, elapsed };
+          return { error: new Error(`HTTP ${response.status}`), candidate: label, elapsed };
         } catch (error) {
           clearTimeout(timeoutId);
           const elapsed = Date.now() - startTime;
-          return { error, candidate, elapsed };
+          return { error, candidate: candidate.doh ? candidate.url + ' (DoH直连)' : candidate.url, elapsed };
         }
       })
     );

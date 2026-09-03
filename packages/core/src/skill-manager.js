@@ -13,6 +13,16 @@ import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
 import { parseYAML } from './yaml-utils.js';
 import { githubProxyUrls } from './github-mirror.js';
+import { tryFetchViaDoh } from './doh-resolver.js';
+
+/** DSH Manager 自身版本（读取仓库根 package.json，避免 UA 硬编码漂移） */
+const MANAGER_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')).version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 /** kebab-case 技能名 */
 const KEBAB = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -493,46 +503,62 @@ export class SkillManager {
     const { owner, repo, branch: parsedBranch, subPath } = this.parseGitHubUrl(url);
     // 尝试从 GitHub API 获取仓库的默认分支（直连 + 国内镜像自动回退）
     let defaultBranch = parsedBranch;
-    const apiCandidates = githubProxyUrls('https://api.github.com/repos/' + owner + '/' + repo);
-    const branchResults = await Promise.all(apiCandidates.map(async (apiUrl) => {
-      try {
-        const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), 5000);
+    const apiUrl = 'https://api.github.com/repos/' + owner + '/' + repo;
+    const apiCandidates = githubProxyUrls(apiUrl);
+    const apiHeaders = { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/' + MANAGER_VERSION };
+    const parseBranch = async (resp) => {
+      if (resp && resp.ok) {
         try {
-          const resp = await fetch(apiUrl, {
-            headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'dsh-manager/1.3.5' },
-            signal: ac.signal,
-          });
-          if (resp.ok) {
-            const data = await resp.json();
-            return data.default_branch || null;
+          const data = await resp.json();
+          return data.default_branch || null;
+        } catch { return null; }
+      }
+      return null;
+    };
+    // DoH 直连（绕过 DNS 污染）+ 直连/镜像竞速
+    const branchResults = await Promise.all([
+      tryFetchViaDoh(apiUrl, { timeoutMs: 5000, headers: apiHeaders }).then(parseBranch),
+      ...apiCandidates.map(async (apiCandidate) => {
+        try {
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort(), 5000);
+          try {
+            const resp = await fetch(apiCandidate, { headers: apiHeaders, signal: ac.signal });
+            return await parseBranch(resp);
+          } finally {
+            clearTimeout(t);
           }
-          return null;
-        } finally {
-          clearTimeout(t);
-        }
-      } catch { return null; }
-    }));
+        } catch { return null; }
+      }),
+    ]);
     if (branchResults.find(Boolean)) defaultBranch = branchResults.find(Boolean);
     // 构建候选列表：首选 API 返回的默认分支，其次解析出的分支，再尝试常见分支
     const candidates = [defaultBranch, parsedBranch, 'main', 'master'].filter((v, i, a) => a.indexOf(v) === i);
     let buf = null;
     // 每个分支候选：直连 + 国内镜像并行竞速（codeload zip 经镜像加速，解决国内超时）
     for (const ref of candidates) {
-      const downloadUrls = githubProxyUrls('https://codeload.github.com/' + owner + '/' + repo + '/zip/refs/heads/' + encodeURIComponent(ref));
-      const dlResults = await Promise.all(downloadUrls.map(async (url) => {
-        try {
-          const abortController = new AbortController();
-          const timeoutTimer = setTimeout(() => abortController.abort(), DOWNLOAD_TIMEOUT_MS);
+      const downloadUrl = 'https://codeload.github.com/' + owner + '/' + repo + '/zip/refs/heads/' + encodeURIComponent(ref);
+      const downloadUrls = githubProxyUrls(downloadUrl);
+      // DoH 直连（绕过 DNS 污染）+ 直连/镜像并行竞速
+      const dlResults = await Promise.all([
+        tryFetchViaDoh(downloadUrl, { timeoutMs: DOWNLOAD_TIMEOUT_MS }).then(async (resp) => {
+          if (resp && resp.ok) return Buffer.from(await resp.arrayBuffer());
+          return null;
+        }),
+        ...downloadUrls.map(async (url) => {
           try {
-            const resp = await fetch(url, { signal: abortController.signal });
-            if (resp.ok) return Buffer.from(await resp.arrayBuffer());
-            return null;
-          } finally {
-            clearTimeout(timeoutTimer);
-          }
-        } catch { return null; }
-      }));
+            const abortController = new AbortController();
+            const timeoutTimer = setTimeout(() => abortController.abort(), DOWNLOAD_TIMEOUT_MS);
+            try {
+              const resp = await fetch(url, { signal: abortController.signal });
+              if (resp.ok) return Buffer.from(await resp.arrayBuffer());
+              return null;
+            } finally {
+              clearTimeout(timeoutTimer);
+            }
+          } catch { return null; }
+        }),
+      ]);
       buf = dlResults.find(Boolean);
       if (buf) break; // 该分支成功 → 停止
     }

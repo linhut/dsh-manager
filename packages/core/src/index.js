@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 export { GITHUB_PROXIES, githubProxyUrls } from './github-mirror.js';
+export { DOH_ENDPOINTS, resolveViaDoh, fetchViaDoh, tryFetchViaDoh, clearDohCache } from './doh-resolver.js';
 export { DSHInstaller } from './installer.js';
 export { DSHConfig } from './config.js';
 export { DSHUtils, getDSHInfo, getDSHDetectionDetail, DSH_PATHS, resolveDSHCommand, compareDSHVersions, buildCommandEnv, refreshSystemPath, detectRealArch, getSystemDiagnostics } from './dsh-utils.js';

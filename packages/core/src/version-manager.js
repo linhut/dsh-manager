@@ -12,12 +12,13 @@ import { fileURLToPath } from 'node:url';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS, getDSHVersion, isDSHInstalled, compareDSHVersions } from './dsh-utils.js';
 import { githubProxyUrls } from './github-mirror.js';
+import { tryFetchViaDoh } from './doh-resolver.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /** DSH Manager 自身版本（读取仓库根 package.json，避免硬编码漂移） */
 const MANAGER_VERSION = (() => {
   try {
-    return JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf-8')).version || 'unknown';
+    return JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8')).version || 'unknown';
   } catch {
     return 'unknown';
   }
@@ -112,27 +113,31 @@ export class DSHVersionManager {
       // npm 不可用，继续尝试 GitHub API
     }
 
-    // ② npm 失败时从 GitHub API 获取 DSH 最新 release（直连 + 国内镜像自动回退）
+    // ② npm 失败时从 GitHub API 获取 DSH 最新 release（DoH 直连 + 直连 + 国内镜像自动回退）
     const githubUrl = 'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest';
-    const candidates = githubProxyUrls(githubUrl); // [原始, 镜像1, 镜像2, 镜像3]
-    const results = await Promise.all(candidates.map(async (url) => {
+    const headers = { 'User-Agent': 'dsh-manager/' + MANAGER_VERSION };
+    // 响应 → release 信息（失败/非 2xx 返回 null）
+    const parseRelease = async (response) => {
+      if (!response || !response.ok) return null;
+      const data = await response.json();
+      const tag = (data.tag_name || '').replace(/^v/, '');
+      if (!tag) return null;
+      return { version: tag, publishedAt: data.published_at, source: 'github' };
+    };
+    // 候选并行竞速：DoH 直连（绕过 DNS 污染）+ [原始, 镜像1..3]
+    const dohTask = tryFetchViaDoh(githubUrl, { timeoutMs: 15_000, headers }).then(parseRelease);
+    const mirrorTasks = githubProxyUrls(githubUrl).map(async (url) => {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 15_000);
-        const response = await fetch(
-          url,
-          { signal: controller.signal, headers: { 'User-Agent': 'dsh-manager/' + MANAGER_VERSION } }
-        );
+        const response = await fetch(url, { signal: controller.signal, headers });
         clearTimeout(timeoutId);
-        if (!response.ok) return null;
-        const data = await response.json();
-        const tag = (data.tag_name || '').replace(/^v/, '');
-        if (!tag) return null;
-        return { version: tag, publishedAt: data.published_at, source: 'github' };
+        return parseRelease(response);
       } catch {
         return null;
       }
-    }));
+    });
+    const results = await Promise.all([dohTask, ...mirrorTasks]);
     const githubLatest = results.find(Boolean);
     if (githubLatest) return githubLatest;
 
