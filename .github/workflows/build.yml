@@ -82,7 +82,8 @@ jobs:
               dist/*.AppImage
               dist/*.deb
           # Linux ARM64（飞腾/鲲鹏 → 银河麒麟/UOS/OpenEuler ARM64，信创）
-          - os: ubuntu-22.04-arm
+          # 在 x64 runner 上交叉构建：arm64 runner 上 electron-builder 的 fpm 仅有 x86 版无法运行
+          - os: ubuntu-latest
             platform: linux-arm64
             arch: arm64
             build-cmd: npm run build:linux:arm64
@@ -157,8 +158,8 @@ jobs:
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
             ### Linux（常规）
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.AppImage` - Linux AppImage（x64）
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.deb` - Debian/Ubuntu 安装包（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x86_64.AppImage` - Linux AppImage（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-amd64.deb` - Debian/Ubuntu 安装包（x64）
 
             ### Linux（信创 / 国产化）
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.AppImage` - Linux AppImage（ARM64，飞腾/鲲鹏）
@@ -176,7 +177,7 @@ jobs:
 
             ### 信创平台安装（麒麟/UOS/OpenEuler）
 
-            - **x86_64（兆芯/海光/Intel/AMD）**：安装 `-x64.deb` 或运行 `-x64.AppImage`
+            - **x86_64（兆芯/海光/Intel/AMD）**：安装 `-amd64.deb` 或运行 `-x86_64.AppImage`
             - **ARM64（飞腾/鲲鹏）**：安装 `-arm64.deb` 或运行 `-arm64.AppImage`
             - **龙芯/申威**：Electron 不可用，用浏览器访问 DSH 网页（详见信创部署指南）
 

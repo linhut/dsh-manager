@@ -165,7 +165,7 @@ git push atomgit vx.y.z
 | Windows ARM64（信创 ARM） | `DSH-Manager-{version}-arm64.exe` | `DSH-Manager-1.3.4-arm64.exe` |
 | macOS Intel | `DSH-Manager-{version}-x64.dmg` | `DSH-Manager-1.3.4-x64.dmg` |
 | macOS Apple Silicon | `DSH-Manager-{version}-arm64.dmg` | `DSH-Manager-1.3.4-arm64.dmg` |
-| Linux x64 | `DSH-Manager-{version}-x64.AppImage` / `.deb` | `DSH-Manager-1.3.4-x64.AppImage` |
+| Linux x64 | `DSH-Manager-{version}-x86_64.AppImage` / `-amd64.deb` | `DSH-Manager-1.3.4-x86_64.AppImage` |
 | Linux ARM64（飞腾/鲲鹏） | `DSH-Manager-{version}-arm64.AppImage` / `.deb` | `DSH-Manager-1.3.4-arm64.AppImage` |
 
 > 信创环境安装指引见 [docs/信创部署指南.md](docs/信创部署指南.md)；龙芯/申威无 Electron 包，用浏览器访问 DSH 网页（纯 Web 模式）。
