@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * DSH Manager - 发布前提交清理检查（RELEASE.md §2.1 自动化）
  *
  * Usage: node scripts/release-check.mjs

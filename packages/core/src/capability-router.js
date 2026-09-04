@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * DSH Manager
  * 内置能力路由插件安装器：把随包内置的 @dsh-manager/dsh-capability-router
  * 安装进 DSH profile（node_modules + cordis.patch.yml 注册），使能力路由真正生效。

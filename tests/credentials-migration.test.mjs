@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // 凭据文件版本化布局迁移回归测试
 // 覆盖：纯扁平迁移 / 混搭布局修复（version + 顶层残留键）/ 合法版本化跳过 / 非法行拒绝
 import { describe, it } from 'node:test';

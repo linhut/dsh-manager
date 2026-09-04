@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * 图标生成脚本
  * 将 logo/ 目录下的官方 logo 文件复制到 build/ 目录（供 electron-builder 使用）
  * 用户提供各尺寸 PNG 与 ICO，直接复制，无需 sharp 依赖

@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DoH 无污染解析模块单测：DNS wire 构造/解析、多点竞速失败兜底、缓存、IP 直连参数校验
 // 纯逻辑测试，不依赖外网（真实 DoH 链路已在开发环境手工验证）
 import { describe, it } from 'node:test';

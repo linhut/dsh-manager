@@ -1,3 +1,10 @@
+<!--
+DSH Manager
+(c) 2026 Jose AI (https://www.linhut.cn)
+https://github.com/linhut/dsh-manager
+Licensed under the MIT License. See the LICENSE file for details.
+-->
+
 # 正式版本发布流程
 
 > ⚠️ **正式版本一律通过 GitHub Actions 自动构建发布**，禁止本地构建后手动上传产物。

@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * DSH Manager - Keyboard Shortcuts Module
  * 集中管理全局键盘快捷键：
  * - Ctrl+Shift+D: 调试面板

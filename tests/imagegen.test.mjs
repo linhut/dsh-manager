@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // AI 生图功能回归测试（imagegen：provider 解析 + API Key 解析 + /images/generations 调用与本地保存）
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';

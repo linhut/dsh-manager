@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // LLM 能力路由回归测试（manager.llm-routing + agent-default-model 应用）
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';

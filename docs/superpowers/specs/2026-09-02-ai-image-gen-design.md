@@ -1,3 +1,10 @@
+<!--
+DSH Manager
+(c) 2026 Jose AI (https://www.linhut.cn)
+https://github.com/linhut/dsh-manager
+Licensed under the MIT License. See the LICENSE file for details.
+-->
+
 # AI 生图功能设计（v1 文生图）
 
 日期：2026-09-02

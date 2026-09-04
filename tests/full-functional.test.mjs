@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DSH Manager 全功能测试模块
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';

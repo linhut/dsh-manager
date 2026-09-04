@@ -14,5 +14,9 @@
       ]
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": {
+    "name": "Jose AI",
+    "url": "https://www.linhut.cn"
+  }
 }

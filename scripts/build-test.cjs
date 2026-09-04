@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * 构建测试版本 DSH Manager
  * 使用 extraMetadata.version 覆盖版本号（不修改磁盘上的 package.json）
  * 产物命名为 DSH-Manager-{version}-test.{buildNum}.exe

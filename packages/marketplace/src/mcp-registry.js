@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * MCP 市场注册表（本地调试文件，不参与仓库同步）
  * 
  * 内置常用公共 MCP 服务器清单，供 MCP 市场页面展示与一键安装。

@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * DSH Manager - 无窗口子进程补丁
  * 通过 --require 注入，强制所有 child_process.spawn/exec 调用使用 windowsHide: true
  * 解决 DSH web 内部 Agent bash 调用弹窗问题

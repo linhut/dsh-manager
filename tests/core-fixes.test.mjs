@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DSH Manager 核心修复回归测试
 // 覆盖代码评审中修复的问题：流式下载、zip64、YAML 下划线键、IPC 超时层等
 import { describe, it } from 'node:test';

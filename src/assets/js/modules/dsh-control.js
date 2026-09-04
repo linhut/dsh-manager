@@ -1,4 +1,10 @@
-/** DSH Manager - DSH Control Module */
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ * DSH Manager - DSH Control Module
+ */
 'use strict';
 
 // 当前 DSH 启动/停止/修复操作对应的「进行中」Toast（常驻直到操作完成，避免用户误以为失败）

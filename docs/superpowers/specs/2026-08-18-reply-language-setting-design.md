@@ -1,3 +1,10 @@
+<!--
+DSH Manager
+(c) 2026 Jose AI (https://www.linhut.cn)
+https://github.com/linhut/dsh-manager
+Licensed under the MIT License. See the LICENSE file for details.
+-->
+
 # 设计文档：DSH 回复语言设置（Reply Language Setting）
 
 日期：2026-08-18

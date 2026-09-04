@@ -1,3 +1,10 @@
+<!--
+DSH Manager
+(c) 2026 Jose AI (https://www.linhut.cn)
+https://github.com/linhut/dsh-manager
+Licensed under the MIT License. See the LICENSE file for details.
+-->
+
 # 设计文档：基础环境最小化安装方案（低配置可用性）
 
 日期：2026-08-19

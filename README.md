@@ -1,3 +1,10 @@
+<!--
+DSH Manager
+(c) 2026 Jose AI (https://www.linhut.cn)
+https://github.com/linhut/dsh-manager
+Licensed under the MIT License. See the LICENSE file for details.
+-->
+
 <p align="center">
   <img src="logo/dsh-manager-whale_v01_transparent-256.png" alt="DSH Manager Logo" width="128">
 </p>

@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DSH Manager 插件/技能市场"标星推荐"回归测试
 // 覆盖：
 // - 后端 registry.js _injectFeaturedPlugins featured 数组包含股市行情 + 朋友 DSH 插件

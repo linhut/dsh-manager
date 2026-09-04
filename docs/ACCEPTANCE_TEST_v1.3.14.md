@@ -1,3 +1,10 @@
+<!--
+DSH Manager
+(c) 2026 Jose AI (https://www.linhut.cn)
+https://github.com/linhut/dsh-manager
+Licensed under the MIT License. See the LICENSE file for details.
+-->
+
 # DSH Manager v1.3.14-test.13 验收测试清单
 
 > 本清单验证三个核心问题修复（①能力路由 ②图片上传/识别 ③AI 生图）

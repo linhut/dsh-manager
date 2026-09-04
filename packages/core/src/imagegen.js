@@ -1,8 +1,8 @@
 /**
  * DSH Manager
- * (c) 2026 Jose AI
+ * (c) 2026 Jose AI (https://www.linhut.cn)
  * https://github.com/linhut/dsh-manager
- * MIT License
+ * Licensed under the MIT License. See the LICENSE file for details.
  */
 
 import { join } from 'node:path';

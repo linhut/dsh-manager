@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DSH Manager 技能 frontmatter 合规性测试
 // 覆盖最新 DSH 版本规则（dsh-skill-filesystem >= 0.1.0-rc.8）：
 // - frontmatter 必填 name + description，name 必须 kebab-case

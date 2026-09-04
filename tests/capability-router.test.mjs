@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // 能力路由端到端回归测试：settings.capability-router 双写 + 迁移读取 + 内置插件安装
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';

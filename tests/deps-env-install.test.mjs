@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DSH Manager 依赖环境安装修复回归测试
 // 覆盖用户报告的问题：
 // 1. 便携版 Node（最小化安装）不在系统 PATH，安装器/检测/命令调用需注入便携版 bin 目录

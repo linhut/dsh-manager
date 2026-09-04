@@ -1,4 +1,7 @@
 /**
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
  * DSH Manager - Constants Module
  * 集中管理魔法字符串：页面 ID、存储键、状态类名、快捷键映射等
  */

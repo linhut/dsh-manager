@@ -1,3 +1,10 @@
+/**
+ * DSH Manager
+ * (c) 2026 Jose AI (https://www.linhut.cn)
+ * https://github.com/linhut/dsh-manager
+ * Licensed under the MIT License. See the LICENSE file for details.
+ */
+
 // DSH Manager 安全审计修复回归测试
 // 覆盖 v1.3.18 审计修复：路径穿越/zip-slip 防护、zip 解析偏移修正、
 // XSS 内插点转义、IPC 白名单、原子写失败保护、事件通道名统一等。
