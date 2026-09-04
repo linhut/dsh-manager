@@ -207,10 +207,12 @@ function unzipToMap(buf) {
       } else if ((flags & 0x08) && buf.length - offset >= 16) {
         offset += 16;
       }
-    } else if (sig === 0x02014b50 || sig === 0x06054b50) { // 中央目录/结束记录
-      // 从中央目录条目读取总文件数，与已解析数比对（检测截断）
-      if (sig === 0x02014b50 && offset + 42 <= buf.length) {
-        const totalEntries = view.getUint16(offset + 8, true);
+    } else if (sig === 0x02014b50) { // 中央目录条目头：不再用于比对（条目数在 EOCD）
+      break;
+    } else if (sig === 0x06054b50) { // 结束记录（EOCD）：偏移 +10 才是中央目录条目总数
+      // 与已解析数比对（检测截断）；zip64（0x06064b50）已在上面拒绝
+      if (offset + 12 <= buf.length) {
+        const totalEntries = view.getUint16(offset + 10, true);
         if (totalEntries !== count) {
           throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 
             'zip 文件不完整（中央目录记录 ' + totalEntries + ' 个条目，实际解析 ' + count + ' 个）'
@@ -562,7 +564,7 @@ export class SkillManager {
       buf = dlResults.find(Boolean);
       if (buf) break; // 该分支成功 → 停止
     }
-    if (!buf) throw new DSHError(DSHErrorCodes.NETWORK_ERROR, '下载失败：仓库 ' + owner + '/' + repo + ' 分支 ' + branch + ' 不可访问');
+    if (!buf) throw new DSHError(DSHErrorCodes.NETWORK_ERROR, '下载失败：仓库 ' + owner + '/' + repo + ' 分支 ' + ref + ' 不可访问');
     let files;
     try { files = unzipToMap(buf); } catch (e) { throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'zip 解压失败: ' + e.message); }
     // 定位 SKILL.md（顶层单包裹目录自动剥离）

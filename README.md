@@ -35,9 +35,9 @@
 
 | 平台 | 安装包 | 说明 |
 |------|--------|------|
-| 🪟 **Windows** | `DSH-Manager-Setup-X.Y.Z.exe` | NSIS 安装程序，双击安装 |
+| 🪟 **Windows** | `DSH-Manager-X.Y.Z-x64.exe`（x64）/ `DSH-Manager-X.Y.Z-arm64.exe`（ARM64） | NSIS 安装程序，双击安装 |
 | 🍎 **macOS** | `DSH-Manager-X.Y.Z-x64.dmg`（Intel）/ `DSH-Manager-X.Y.Z-arm64.dmg`（Apple Silicon） | 磁盘映像，拖到 Applications |
-| 🐧 **Linux** | `DSH-Manager-X.Y.Z.AppImage` | 添加执行权限后运行 |
+| 🐧 **Linux** | `DSH-Manager-X.Y.Z-x86_64.AppImage`（x64）/ `DSH-Manager-X.Y.Z-arm64.AppImage`（ARM64） | 添加执行权限后运行 |
 
 ### ⚡ 加速下载（国内用户）
 
@@ -45,10 +45,10 @@
 
 | 平台 | gh-proxy.com 加速链接 |
 |------|----------------------|
-| 🪟 **Windows** | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/v1.3.0/DSH-Manager-Setup-1.3.0.exe` |
-| 🍎 **macOS** (Intel) | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/v1.3.0/DSH-Manager-1.3.0-x64.dmg` |
-| 🍎 **macOS** (Apple Silicon) | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/v1.3.0/DSH-Manager-1.3.0-arm64.dmg` |
-| 🐧 **Linux** | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/v1.3.0/DSH-Manager-1.3.0.AppImage` |
+| 🪟 **Windows** | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/vX.Y.Z/DSH-Manager-X.Y.Z-x64.exe` |
+| 🍎 **macOS** (Intel) | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/vX.Y.Z/DSH-Manager-X.Y.Z-x64.dmg` |
+| 🍎 **macOS** (Apple Silicon) | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/vX.Y.Z/DSH-Manager-X.Y.Z-arm64.dmg` |
+| 🐧 **Linux** | `https://gh-proxy.com/https://github.com/linhut/dsh-manager/releases/download/vX.Y.Z/DSH-Manager-X.Y.Z-x86_64.AppImage` |
 
 > 镜像仓库（GitCode / AtomGit）仅提供源码浏览，安装包请从上方链接下载。
 >
@@ -137,7 +137,7 @@ npm run build:linux  # Linux
 dsh-manager/
 ├── electron/           # Electron 主进程
 │   ├── main.js         # 主进程入口
-│   ├── preload.js      # 预加载脚本 (IPC 桥)
+│   ├── preload.cjs     # 预加载脚本 (IPC 桥)
 │   └── ipc-handlers.js # IPC 通信处理
 ├── src/                # 渲染进程 (GUI)
 │   ├── index.html      # 主页面

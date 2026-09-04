@@ -74,6 +74,10 @@ export class DSHProfileManager {
    */
   async backup(name) {
     const trimmed = (name || '').trim();
+    // 安全校验：name 必须是合法 profile 名（与 create 一致），防止 ../ 备份任意目录
+    if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+      throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, `非法的 profile 名称: "${trimmed}"`);
+    }
     const src = join(this.profilesDir, trimmed);
     if (!existsSync(src)) {
       throw new DSHError(DSHErrorCodes.NOT_FOUND, `Profile "${trimmed}" 不存在`);

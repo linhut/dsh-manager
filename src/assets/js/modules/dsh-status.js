@@ -166,7 +166,7 @@ async function installPnpm() {
   appendEnvInstallLog('开始安装 pnpm（npm install -g pnpm）...');
   showToast('正在安装 pnpm，请稍候...', 'info');
   // 订阅主进程推送的安装过程输出（实时回显）
-  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.removeAllListeners('dsh:env-install-progress');
   window.dshManager.onEnvInstallProgress((data) => {
     if (data && data.message) appendEnvInstallLog(data.message, data.level);
   });
@@ -186,7 +186,7 @@ async function installPnpm() {
     appendEnvInstallLog(`❌ ${err.message}`, 'error');
     showToast('❌ pnpm 安装失败: ' + err.message, 'error');
   } finally {
-    window.dshManager.removeAllListeners('env-install-progress');
+    window.dshManager.removeAllListeners('dsh:env-install-progress');
   }
 }
 

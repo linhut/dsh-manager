@@ -80,6 +80,7 @@ _verify-*.cjs
 .playwright-cli/
 dist-test/
 scripts/build-*.cjs
+!scripts/build-test.cjs
 scripts/check-*.mjs
 scripts/models-settings-*.png
 

@@ -7,7 +7,7 @@
 
 import { execa } from 'execa';
 import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, resolve, sep } from 'node:path';
 import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
 import { githubProxyUrls } from './github-api.js';
@@ -568,7 +568,11 @@ export class PluginInstaller {
 
     // 从 URL 提取仓库名
     const repoMatch = url.match(/([^/]+?)(?:\.git)?$/);
-    const repoName = repoMatch ? repoMatch[1] : basename(url) || 'plugin';
+    let repoName = repoMatch ? repoMatch[1] : basename(url) || 'plugin';
+    // 安全校验：仓库名必须是合法目录名（禁止 .. / 绝对路径 / 盘符），防止 join + rmSync 路径逃逸
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repoName) || repoName === '.' || repoName === '..') {
+      throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, '非法的 Git 仓库名: ' + repoName);
+    }
 
     // 目标缓存目录
     const cacheRoot = DSH_PATHS.pluginCache;
@@ -722,6 +726,11 @@ export class PluginInstaller {
     }
 
     const pluginName = pkg.name || basename(dir);
+    // 安全校验：插件名必须是合法 npm 包名（禁止 .. / 绝对路径），防止 join + rmSync/cpSync 路径逃逸
+    const PKG_NAME_RE = /^@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-~][a-z0-9-._~]*$|^[a-z0-9-~][a-z0-9-._~]*$/;
+    if (!PKG_NAME_RE.test(pluginName)) {
+      throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, '非法的插件名: ' + pluginName);
+    }
     const cacheRoot = DSH_PATHS.pluginCache;
     const dest = join(cacheRoot, pluginName);
 
@@ -781,6 +790,19 @@ export class PluginInstaller {
     const tempDir = join(cacheRoot, `tmp-${Date.now()}`);
     mkdirSync(tempDir, { recursive: true });
     try {
+      // 防 zip-slip：解压前先列出归档条目，拒绝 .. / 绝对路径 / 盘符 / NUL 条目（对齐 skill-manager safeZipRelPath）
+      const listRes = await execa('tar', ['-tzf', tarball], {
+        timeout: 120_000,
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+      const entries = (listRes.stdout || '').split('\n').map(s => s.trim()).filter(Boolean);
+      for (const entry of entries) {
+        const norm = entry.replace(/\\/g, '/');
+        if (norm.startsWith('/') || /^[A-Za-z]:/.test(norm) || norm.split('/').includes('..') || norm.includes('\0')) {
+          throw new Error('tarball 包含非法路径条目，已拒绝解压: ' + entry);
+        }
+      }
       await execa('tar', ['-xzf', tarball, '-C', tempDir], {
         timeout: 120_000,
         stdio: this.verbose ? 'inherit' : 'pipe',
@@ -794,6 +816,12 @@ export class PluginInstaller {
         const sub = entries.find(e => existsSync(join(tempDir, e.name, 'package.json')));
         if (sub) pkgDir = join(tempDir, sub.name);
       }
+      // 防御：pkgDir 必须仍在 tempDir 内（杜绝残留越界条目被 cpSync 复制）
+      const resolvedPkgDir = resolve(pkgDir);
+      const resolvedTemp = resolve(tempDir);
+      if (resolvedPkgDir !== resolvedTemp && !resolvedPkgDir.startsWith(resolvedTemp + sep)) {
+        throw new Error('解压目录越界，已中止安装');
+      }
       const pkgPath = join(pkgDir, 'package.json');
       if (!existsSync(pkgPath)) {
         throw new Error('tarball 中未找到 package.json');
@@ -801,6 +829,11 @@ export class PluginInstaller {
       const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 
       const pluginName = pkg.name || basename(tarball).replace(/\.(tgz|tar\.gz)$/i, '');
+      // 安全校验：插件名必须是合法 npm 包名（禁止 .. / 绝对路径），防止 join + rmSync/cpSync 路径逃逸
+      const PKG_NAME_RE = /^@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-~][a-z0-9-._~]*$|^[a-z0-9-~][a-z0-9-._~]*$/;
+      if (!PKG_NAME_RE.test(pluginName)) {
+        throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, '非法的插件名: ' + pluginName);
+      }
       const dest = join(cacheRoot, pluginName);
       if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
       cpSync(pkgDir, dest, { recursive: true });

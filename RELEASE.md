@@ -172,6 +172,8 @@ git push atomgit vx.y.z
 
 ## 📝 版本号检查清单（6 处一致）
 
+> 版本相关读取均动态化：`version-manager.js` 的 `MANAGER_VERSION` 与 `github-api.js` 的 `getVersion()` 均从 package.json 动态读取，无需手动同步；`electron/ipc-handlers.js` 的 `app:get-version` 优先用 Electron `app.getVersion()`（打包后自动匹配），开发环境回退读 package.json。发布时只需同步前 6 处。
+
 | # | 文件 | 位置 |
 |---|------|------|
 | 1 | `package.json` | `"version": "X.Y.Z"` |
@@ -179,7 +181,7 @@ git push atomgit vx.y.z
 | 3 | `packages/marketplace/package.json` | `"version": "X.Y.Z"` |
 | 4 | `packages/core/src/version-manager.js` | User-Agent `dsh-manager/X.Y.Z` |
 | 5 | `packages/marketplace/src/github-api.js` | User-Agent `dsh-manager/X.Y.Z` |
-| 6 | `electron/ipc-handlers.js` | `app:get-version` catch fallback `'X.Y.Z'` |
+| 6 | `electron/ipc-handlers.js` | `app:get-version`：优先 `app.getVersion()`，开发环境回退读 package.json |
 
 ## 🧯 常见问题
 

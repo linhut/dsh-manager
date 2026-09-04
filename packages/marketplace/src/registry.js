@@ -619,7 +619,8 @@ export class PluginRegistry {
     let local = [];
     if (existsSync(REGISTRY_PATH())) {
       try {
-        local = JSON.parse(readFileSync(REGISTRY_PATH(), 'utf-8'));
+        const parsed = JSON.parse(readFileSync(REGISTRY_PATH(), 'utf-8'));
+        local = Array.isArray(parsed) ? parsed : [];
       } catch {}
     }
 
@@ -1144,7 +1145,17 @@ export class PluginRegistry {
       try {
         const original = readFileSync(patchFile, 'utf-8');
         const lines = original.split(/\r?\n/);
-        const isTarget = (text) => ids.some(id => text.includes(id));
+        // 精确匹配：提取条目标识符（include/insert:/id:/裸项）后与 pluginIds 精确比对，
+        // 避免子串匹配误删 foo-bar（仅清理 foo 时）
+        const EXTRACT_ID_RE = /^-\s*(?:include|insert|id)\s*:\s*['"]?([^'"\s]+)['"]?\s*$/;
+        const isTarget = (text) => {
+          const t = text.trim();
+          const m1 = t.match(EXTRACT_ID_RE);
+          if (m1) return ids.includes(m1[1]);
+          const m2 = t.match(/^-\s+([^\s:]+)\s*$/);
+          if (m2) return ids.includes(m2[1]);
+          return false;
+        };
 
         let result = [];
         let i = 0;

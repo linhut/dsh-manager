@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { DSHError, DSHErrorCodes } from "./errors.js";
 import { DSH_PATHS } from "./dsh-utils.js";
@@ -30,7 +30,14 @@ export class MasterPromptManager {
         const data = JSON.parse(readFileSync(PROMPTS_FILE, "utf-8"));
         return Array.isArray(data.prompts) ? data.prompts : [];
       }
-    } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); }
+    } catch (e) {
+      // 损坏保护：先备份损坏文件再返回空列表，避免后续 create/update 覆盖导致旧提示词丢失
+      try {
+        const bk = PROMPTS_FILE + ".corrupt-" + Date.now();
+        copyFileSync(PROMPTS_FILE, bk);
+        console.warn("[dsh-manager] master-prompts.json 解析失败，已备份到 " + bk + ": " + e?.message);
+      } catch (be) { console.warn("[dsh-manager] master-prompts.json 备份失败:", be?.message); }
+    }
     return [];
   }
 

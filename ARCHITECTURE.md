@@ -15,7 +15,7 @@ DSH Manager 是一个**跨平台桌面应用**（类似 ccswitch），为 DeepSe
 ┌─────────────────────────────────────────────────────────────┐
 │                     Electron 主进程                           │
 │  ┌───────────────┐  ┌────────────────┐  ┌───────────────┐  │
-│  │  main.js      │  │ ipc-handlers.js│  │  preload.js   │  │
+│  │  main.js      │  │ ipc-handlers.js│  │ preload.cjs  │  │
 │  │ 窗口管理/菜单  │  │ DSH 操作/插件  │  │  IPC 桥接     │  │
 │  │ 生命周期      │  │ 配置/系统      │  │  API 暴露     │  │
 │  └───────┬───────┘  └───────┬────────┘  └───────┬───────┘  │
@@ -139,7 +139,7 @@ DSH Manager 是一个**跨平台桌面应用**（类似 ccswitch），为 DeepSe
 dsh-manager/
 ├── electron/           # Electron 主进程
 │   ├── main.js         # 主进程入口，窗口管理
-│   ├── preload.js      # 预加载脚本，IPC 桥接
+│   ├── preload.cjs     # 预加载脚本，IPC 桥接
 │   └── ipc-handlers.js # IPC 通信处理
 ├── src/                # 渲染进程 (GUI)
 │   ├── index.html      # 主页面
@@ -175,4 +175,4 @@ dsh-manager/
 - [ ] 自动更新（DSH Manager 本体）
 - [ ] 系统托盘
 - [ ] 将 app.js 剩余渲染函数进一步拆分为 pages/ 页面模块
-- [ ] IPC 调用统一通信层（错误码 + 超时 + 重试）
+- [x] IPC 调用统一通信层（错误码 + 超时 + 重试）

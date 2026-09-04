@@ -257,12 +257,12 @@ export class DSHInstaller {
             try {
               const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env: this._commandEnv });
               if (globalRoot && globalRoot.trim()) {
-                const prefix = dirname(globalRoot.trim());
+                const prefix = process.platform === 'win32' ? dirname(globalRoot.trim()) : dirname(dirname(globalRoot.trim()));
                 const bins = process.platform === 'win32'
                   ? ['dsh', 'dsh.cmd', 'dsh.ps1', 'dsh.exe']
                   : ['dsh'];
                 for (const b of bins) {
-                  const bp = join(prefix, b);
+                  const bp = process.platform === 'win32' ? join(prefix, b) : join(prefix, 'bin', b);
                   if (existsSync(bp)) rmSync(bp, { force: true, maxRetries: 5, retryDelay: 300 });
                 }
               }
@@ -590,12 +590,12 @@ export class DSHInstaller {
         try {
           const { stdout: globalRoot } = await execa('npm', ['root', '-g'], { reject: false, timeout: 10_000, windowsHide: true, env: this._commandEnv });
           if (globalRoot && globalRoot.trim()) {
-            const prefix = dirname(globalRoot.trim());
+            const prefix = process.platform === 'win32' ? dirname(globalRoot.trim()) : dirname(dirname(globalRoot.trim()));
             const bins = process.platform === 'win32'
               ? ['dsh', 'dsh.cmd', 'dsh.ps1', 'dsh.exe']
               : ['dsh'];
             for (const b of bins) {
-              const bp = join(prefix, b);
+              const bp = process.platform === 'win32' ? join(prefix, b) : join(prefix, 'bin', b);
               if (existsSync(bp)) rmSync(bp, { force: true, maxRetries: 5, retryDelay: 300 });
             }
           }

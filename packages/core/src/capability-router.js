@@ -85,6 +85,8 @@ export function resolveBundledPluginDir() {
  * @returns {boolean}
  */
 export function isCapabilityRouterInstalled(profile) {
+  // 安全校验：profile 必须是合法名称（防止 ../ 逃逸读任意目录）
+  if (!profile || !/^[a-zA-Z0-9_-]+$/.test(profile)) return false;
   const nmDir = join(DSH_PATHS.profiles, profile, 'node_modules', CAPABILITY_ROUTER_PACKAGE);
   const hasPkg = existsSync(join(nmDir, 'package.json')) && existsSync(join(nmDir, 'lib', 'index.js'));
   const patchFile = join(DSH_PATHS.profiles, profile, 'cordis.patch.yml');
@@ -142,7 +144,7 @@ function ensurePatchEntry(profile) {
     writeFileSync(tmp, nc, 'utf-8');
     renameSync(tmp, patchFile);
   } catch (err) {
-    try { if (existsSync(tmp)) renameSync(tmp, patchFile); } catch {}
+    try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch {}
     throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '能力路由 patch 写入失败: ' + err.message);
   }
   return bk;
@@ -171,7 +173,7 @@ export async function installCapabilityRouter(profile, opts) {
     const tgtPkg = join(target, 'package.json');
     const needCopy = !existsSync(tgtIndex)
       || readFileSync(srcIndex, 'utf-8') !== readFileSync(tgtIndex, 'utf-8')
-      || (existsSync(tgtPkg) && readFileSync(srcPkg, 'utf-8') !== readFileSync(tgtPkg, 'utf-8'));
+      || (existsSync(tgtPkg) ? readFileSync(srcPkg, 'utf-8') !== readFileSync(tgtPkg, 'utf-8') : true);
     if (needCopy) {
       mkdirSync(target, { recursive: true });
       // 避免删除整个 target（可能含用户私有文件），仅重写受管文件
@@ -217,6 +219,7 @@ export async function installCapabilityRouter(profile, opts) {
 export async function uninstallCapabilityRouter(profile) {
   try {
     if (!profile) profile = 'web';
+    if (!/^[a-zA-Z0-9_-]+$/.test(profile)) return { success: false, error: '非法的 profile 名称: ' + profile };
     const patchFile = join(DSH_PATHS.profiles, profile, 'cordis.patch.yml');
     if (existsSync(patchFile)) {
       const raw0 = readFileSync(patchFile, 'utf-8');

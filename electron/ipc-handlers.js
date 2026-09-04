@@ -6,8 +6,8 @@
  */
 
 import { shell, BrowserWindow, dialog, clipboard, app } from 'electron';
-import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLog } from './debug-logger.js';
 
@@ -1425,8 +1425,23 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   // 读取本地图片转 data URL（供 CSP data: 预览，避免开放 file: 协议）
   ipcMain.handle('imagegen:read-image', async (_, filePath) => {
     try {
-      const buf = readFileSync(filePath);
+      const { getImageSaveDir } = await loadCore();
+      // 安全白名单：仅允许读取图片保存目录内的图片文件，防止任意文件读取（含 ~/.dsh 凭据）
       const ext = (filePath || '').split('.').pop().toLowerCase();
+      const allowedExt = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
+      if (!allowedExt.includes(ext)) {
+        return { success: false, error: '仅支持读取 png/jpg/jpeg/webp/gif 图片' };
+      }
+      const resolved = resolve(filePath || '');
+      const saveDir = resolve(getImageSaveDir());
+      if (resolved !== saveDir && !resolved.startsWith(saveDir + sep)) {
+        return { success: false, error: '只允许读取图片保存目录内的文件' };
+      }
+      const st = statSync(resolved);
+      if (!st.isFile() || st.size > 20 * 1024 * 1024) {
+        return { success: false, error: '文件不存在或超过 20MB 限制' };
+      }
+      const buf = readFileSync(resolved);
       const mime = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif' }[ext] || 'image/png';
       return { success: true, dataUrl: 'data:' + mime + ';base64,' + buf.toString('base64') };
     } catch (e) {
@@ -1548,6 +1563,26 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     };
     let base = (baseUrl || defaults[provider] || 'https://api.openai.com/v1').replace(/\/+$/, '');
     if (!base) return { success: false, error: '请先填写 API Base URL（Azure 需填写 endpoint）' };
+    // 安全校验：仅 http/https、禁止 URL 内嵌凭据、回环地址仅放行 ollama 默认端口（防 SSRF 内网探测）
+    try {
+      const u = new URL(base);
+      if (!['http:', 'https:'].includes(u.protocol)) {
+        return { success: false, error: 'API Base URL 仅支持 http/https 协议' };
+      }
+      if (u.username || u.password) {
+        return { success: false, error: 'API Base URL 不允许包含用户名/密码' };
+      }
+      const host = u.hostname.replace(/^\[|\]$/g, ''); // 去掉 IPv6 方括号
+      const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
+      if (isLoopback && provider !== 'ollama') {
+        return { success: false, error: '回环地址仅允许 ollama 使用' };
+      }
+      if (provider === 'ollama' && isLoopback && u.port && u.port !== '11434') {
+        return { success: false, error: 'ollama 仅允许默认端口 11434' };
+      }
+    } catch {
+      return { success: false, error: 'API Base URL 格式无效' };
+    }
     const hasVersion = /\/v\d+(\.\d+)?$/.test(base);
     const candidates = hasVersion ? [base + '/models'] : [base + '/v1/models', base + '/models'];
     let lastErr = '';

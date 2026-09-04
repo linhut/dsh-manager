@@ -77,10 +77,10 @@ const MARKET_SCOPES = {
 /** IPC 事件名（主进程 → 渲染进程推送） */
 const IPC_EVENTS = {
   DSH_START_ERROR: 'dsh:start-error',
-  ENV_INSTALL_PROGRESS: 'env-install-progress',
-  PLUGIN_INSTALL_PROGRESS: 'plugin-install-progress',
+  ENV_INSTALL_PROGRESS: 'dsh:env-install-progress',
+  PLUGIN_INSTALL_PROGRESS: 'dsh:plugin-install-progress',
   SWITCH_VERSION_PROGRESS: 'dsh:switch-version-progress',
-  MAXIMIZE_CHANGE: 'window:maximized-changed',
+  MAXIMIZE_CHANGE: 'window-maximize-change',
 };
 
 /** 默认 DSH Web 地址 */

@@ -186,6 +186,20 @@ app.on('web-contents-created', (event, contents) => {
     const levelNames = ['verbose', 'info', 'warning', 'error'];
     writeLog('debug', `[渲染进程] ${levelNames[level] || level}: ${message} (源: ${sourceId}:${line})`);
   });
+
+  // 导航防护：主窗口与 webview 只允许本应用页面（file:// 本目录 index.html）或本地 DSH 页面（127.0.0.1/localhost），
+  // 阻止 XSS 后 location 跳转到远程页面把完整 dshManager preload 桥交给攻击者
+  contents.on('will-navigate', (navEvent, url) => {
+    try {
+      const parsed = new URL(url);
+      const isSelf = parsed.protocol === 'file:' && parsed.pathname.replace(/\\/g, '/').endsWith('/src/index.html');
+      const isLocalDsh = ['http:', 'https:'].includes(parsed.protocol) &&
+        ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
+      if (isSelf || isLocalDsh) return;
+    } catch { /* URL 解析失败按拒绝处理 */ }
+    navEvent.preventDefault();
+    writeLog('warn', '[导航防护] 已阻止导航到非白名单地址: ' + url);
+  });
 });
 
 // ====== 应用生命周期 ======

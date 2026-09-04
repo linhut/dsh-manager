@@ -456,7 +456,7 @@ async function installPortableNode() {
   appendEnvInstallLog('开始安装便携版 Node.js（镜像下载）...');
   showToast('正在下载便携版 Node.js，请稍候...', 'info');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 下载中...'; }
-  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.removeAllListeners('dsh:env-install-progress');
   window.dshManager.onEnvInstallProgress((data) => {
     if (data && data.message) appendEnvInstallLog(data.message, data.level);
   });
@@ -476,7 +476,7 @@ async function installPortableNode() {
     showToast('❌ 便携版 Node 安装失败: ' + err.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = '📦 便携版安装 Node（低配推荐）'; }
   } finally {
-    window.dshManager.removeAllListeners('env-install-progress');
+    window.dshManager.removeAllListeners('dsh:env-install-progress');
   }
 }
 
@@ -515,7 +515,7 @@ async function installNodejs() {
   showToast('正在通过系统包管理器安装 Node.js，请稍候（可能需要几分钟）...', 'info');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ 安装中...'; }
   // 订阅主进程推送的安装过程输出（实时回显）
-  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.removeAllListeners('dsh:env-install-progress');
   window.dshManager.onEnvInstallProgress((data) => {
     if (data && data.message) appendEnvInstallLog(data.message, data.level);
   });
@@ -535,7 +535,7 @@ async function installNodejs() {
     showToast('❌ Node.js 安装失败: ' + err.message, 'error');
     if (btn) { btn.disabled = false; btn.textContent = '⬇️ 一键安装 Node.js'; }
   } finally {
-    window.dshManager.removeAllListeners('env-install-progress');
+    window.dshManager.removeAllListeners('dsh:env-install-progress');
   }
 }
 
@@ -544,7 +544,7 @@ async function installGit() {
   clearEnvInstallLog();
   appendEnvInstallLog('开始安装 git（通过系统包管理器），请稍候...');
   showToast('正在通过系统包管理器安装 git，请稍候（可能需要几分钟）...', 'info');
-  window.dshManager.removeAllListeners('env-install-progress');
+  window.dshManager.removeAllListeners('dsh:env-install-progress');
   window.dshManager.onEnvInstallProgress((data) => {
     if (data && data.message) appendEnvInstallLog(data.message, data.level);
   });
@@ -563,7 +563,7 @@ async function installGit() {
     appendEnvInstallLog('❌ ' + err.message, 'error');
     showToast('❌ git 安装失败: ' + err.message, 'error');
   } finally {
-    window.dshManager.removeAllListeners('env-install-progress');
+    window.dshManager.removeAllListeners('dsh:env-install-progress');
   }
 }
 
@@ -885,7 +885,7 @@ async function renderPluginsPage() {
     ${items.map(p => `
       <tr class="plugin-item-row" data-bundle-body="${groupId}" style="${defaultCollapsed ? 'display:none;' : ''}">
         <td><strong>${escapeHtml(p.name || p.id)}</strong>${p.core ? ' <span class="badge badge-gray">核心</span>' : ''}${p.category === 'external' ? ' <span class="badge badge-yellow">外部</span>' : ''}${p.category === 'user' && !p.core ? ' <span class="badge badge-blue">用户</span>' : ''}</td>
-        <td><span class="badge badge-blue">${p.version || '-'}</span></td>
+        <td><span class="badge badge-blue">${escapeHtml(p.version || '-')}</span></td>
         <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : p.type === 'core' ? '框架' : 'npm'}</td>
         <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
         <td>
@@ -1444,8 +1444,8 @@ async function searchPlugins(query) {
         <tbody>
           ${filtered.map(p => `
             <tr>
-              <td><strong>${p.name || p.id}</strong></td>
-              <td><span class="badge badge-blue">${p.version}</span></td>
+              <td><strong>${escapeHtml(p.name || p.id)}</strong></td>
+              <td><span class="badge badge-blue">${escapeHtml(p.version)}</span></td>
               <td style="color:var(--text-dim);font-size:12px;">${p.type === 'github' ? 'GitHub' : 'npm'}</td>
               <td><span class="badge ${p.enabled !== false ? 'badge-green' : 'badge-gray'}">${p.enabled !== false ? '已启用' : '已禁用'}</span></td>
               <td>
@@ -1548,7 +1548,7 @@ async function installMarketPlugin(fullName) {
   const modal = showInstallProgressModal(source, '插件安装');
   try {
     // 订阅主进程推送的插件安装进度
-    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.removeAllListeners('dsh:plugin-install-progress');
     window.dshManager.onPluginInstallProgress((data) => {
       if (data && data.message) modal.update(data.message, data.level);
     });
@@ -1563,7 +1563,7 @@ async function installMarketPlugin(fullName) {
   } catch (err) {
     modal.done('❌ 安装失败: ' + err.message, 'error');
   } finally {
-    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.removeAllListeners('dsh:plugin-install-progress');
   }
 }
 
@@ -1574,7 +1574,7 @@ async function installPluginSource() {
   if (!source) { showToast('请输入插件来源', 'error'); return; }
   const modal = showInstallProgressModal(source, '插件安装');
   try {
-    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.removeAllListeners('dsh:plugin-install-progress');
     window.dshManager.onPluginInstallProgress((data) => {
       if (data && data.message) modal.update(data.message, data.level);
     });
@@ -1589,7 +1589,7 @@ async function installPluginSource() {
   } catch (err) {
     modal.done('❌ 安装失败: ' + err.message, 'error');
   } finally {
-    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.removeAllListeners('dsh:plugin-install-progress');
   }
 }
 
@@ -1620,7 +1620,7 @@ async function runBatchInstall() {
 
   const modal = showInstallProgressModal(sources.length + ' 个插件', '批量安装');
   try {
-    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.removeAllListeners('dsh:plugin-install-progress');
     window.dshManager.onPluginInstallProgress((data) => {
       if (data && data.message) modal.update(data.message, data.level);
     });
@@ -1641,7 +1641,7 @@ async function runBatchInstall() {
   } catch (err) {
     modal.done('❌ 批量安装失败: ' + err.message, 'error');
   } finally {
-    window.dshManager.removeAllListeners('plugin-install-progress');
+    window.dshManager.removeAllListeners('dsh:plugin-install-progress');
   }
 }
 
@@ -2284,7 +2284,7 @@ async function renderVersionsPage() {
     const infoEl = document.getElementById('versionInfo');
     if (data) {
       const installedRecord = (data.installed || []).map(v => `
-        <span class="badge ${v.isCurrent ? 'badge-green' : 'badge-gray'}">${v.version}${v.isCurrent ? '（当前）' : ''}</span>
+        <span class="badge ${v.isCurrent ? 'badge-green' : 'badge-gray'}">${escapeHtml(v.version)}${v.isCurrent ? '（当前）' : ''}</span>
       `).join(' ') || '<span style="color:var(--text-dim);">无记录</span>';
       infoEl.innerHTML = `
         <p style="margin-bottom:8px;">📋 可用版本: <strong>${data.versions?.length || 0}</strong> 个</p>
@@ -2292,7 +2292,7 @@ async function renderVersionsPage() {
         <div style="margin-top:16px;max-height:280px;overflow-y:auto;">
           ${(data.versions || []).map(v => `
             <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">
-              <span>${v}</span>
+              <span>${escapeHtml(v)}</span>
               <span style="display:flex;align-items:center;gap:6px;">
                 ${v === state.dshVersion
                   ? '<span class="badge badge-green">当前</span>'
@@ -2454,7 +2454,7 @@ async function renderProfiles() {
     ? '<p style="color:var(--text-dim);">暂无 Profile</p>'
     : profiles.map(p => `
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);">
-          <span><strong>${p.name}</strong></span>
+          <span><strong>${escapeHtml(p.name)}</strong></span>
           <span style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);">
             <span>${p.mtime ? new Date(p.mtime).toLocaleString() : ''}</span>
             <button class="btn btn-sm btn-ghost" onclick="backupProfile('${escapeAttr(p.name)}')">备份</button>
@@ -2646,9 +2646,9 @@ async function mcpRenderList() {
         <tbody>
           ${servers.map(s => `
             <tr>
-              <td><strong>${s.serverName}</strong></td>
+              <td><strong>${escapeHtml(s.serverName)}</strong></td>
               <td><span class="badge ${s.transport === 'stdio' ? 'badge-blue' : 'badge-green'}">${s.transport === 'stdio' ? 'stdio' : 'HTTP'}</span></td>
-              <td style="color:var(--text-dim);font-size:12px;">${s.pluginName}</td>
+              <td style="color:var(--text-dim);font-size:12px;">${escapeHtml(s.pluginName)}</td>
               <td>
                 <button class="btn btn-sm btn-ghost" onclick="mcpEditDialog('${escapeAttr(s.serverName)}')">编辑</button>
                 <button class="btn btn-sm btn-ghost" style="color:var(--error);" onclick="mcpRemove('${escapeAttr(s.serverName)}')">删除</button>
@@ -2788,7 +2788,7 @@ function mcpDialog(existing) {
           <div style="display:flex;flex-direction:column;gap:12px;">
             <div>
               <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">服务端名称 *</label>
-              <input class="input" id="mcpName" placeholder="如: filesystem" value="${existing?.serverName || ''}" ${existing ? 'disabled' : ''}>
+              <input class="input" id="mcpName" placeholder="如: filesystem" value="${escapeAttr(existing?.serverName || '')}" ${existing ? 'disabled' : ''}>
             </div>
             <div>
               <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">传输类型</label>
@@ -2806,25 +2806,25 @@ function mcpDialog(existing) {
             <div id="mcpStdioFields">
               <div style="margin-bottom:12px;">
                 <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">命令 *</label>
-                <input class="input" id="mcpCommand" placeholder="如: npx" value="${existing?.command || ''}">
+                <input class="input" id="mcpCommand" placeholder="如: npx" value="${escapeAttr(existing?.command || '')}">
               </div>
               <div style="margin-bottom:12px;">
                 <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">参数（逗号分隔）</label>
-                <input class="input" id="mcpArgs" placeholder="如: -y, @modelcontextprotocol/server-filesystem, /home/user" value="${(existing?.args || []).join(', ')}">
+                <input class="input" id="mcpArgs" placeholder="如: -y, @modelcontextprotocol/server-filesystem, /home/user" value="${escapeAttr((existing?.args || []).join(', '))}">
               </div>
               <div>
                 <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">环境变量（KEY=VALUE，分号分隔）</label>
-                <input class="input" id="mcpEnv" placeholder="如: API_KEY=xxx;TOKEN=yyy" value="${Object.entries(existing?.env || {}).map(([k,v]) => `${k}=${v}`).join('; ')}">
+                <input class="input" id="mcpEnv" placeholder="如: API_KEY=xxx;TOKEN=yyy" value="${escapeAttr(Object.entries(existing?.env || {}).map(([k,v]) => `${k}=${v}`).join('; '))}">
               </div>
             </div>
             <div id="mcpHttpFields" style="display:none;">
               <div style="margin-bottom:12px;">
                 <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">URL *</label>
-                <input class="input" id="mcpUrl" placeholder="如: https://example.com/mcp" value="${existing?.url || ''}">
+                <input class="input" id="mcpUrl" placeholder="如: https://example.com/mcp" value="${escapeAttr(existing?.url || '')}">
               </div>
               <div>
                 <label style="display:block;margin-bottom:4px;font-size:13px;color:var(--text-secondary);">请求头（KEY=VALUE，分号分隔）</label>
-                <input class="input" id="mcpHeaders" placeholder="如: Authorization=Bearer xxx" value="${Object.entries(existing?.headers || {}).map(([k,v]) => `${k}=${v}`).join('; ')}">
+                <input class="input" id="mcpHeaders" placeholder="如: Authorization=Bearer xxx" value="${escapeAttr(Object.entries(existing?.headers || {}).map(([k,v]) => `${k}=${v}`).join('; '))}">
               </div>
             </div>
           </div>
@@ -3291,7 +3291,7 @@ async function editPrompt(id) {
       '</div>' +
       '<div class="modal-footer">' +
       '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>' +
-      '<button class="btn btn-primary" onclick="updatePrompt(\'' + id + '\')">保存</button>' +
+      '<button class="btn btn-primary" onclick="updatePrompt(\'' + escapeAttr(id) + '\')">保存</button>' +
       '</div></div>';
     document.body.appendChild(modal);
   } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
@@ -3688,7 +3688,7 @@ async function renderLLMProvidersTab() {
                 <tr>
                   <td><strong>${escapeHtml(name)}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
                   <td><span class="badge badge-blue">${escapeHtml(conf.provider || 'unknown')}</span></td>
-                  <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return m.id; }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
+                  <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return escapeHtml(m.id); }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
                   <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
                     <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${escapeAttr(name)}'${conf.adapter ? `, '${escapeAttr(conf.adapter)}'` : ''})">✏️ 编辑</button>
@@ -4569,11 +4569,11 @@ async function refreshVersions() {
             <tbody>
               ${installed.map(v => `
                 <tr>
-                  <td><strong>${v.version}</strong> ${v.isCurrent ? '<span class="badge badge-green">当前</span>' : ''}</td>
+                  <td><strong>${escapeHtml(v.version)}</strong> ${v.isCurrent ? '<span class="badge badge-green">当前</span>' : ''}</td>
                   <td style="color:var(--text-dim);font-size:12px;">${v.installedAt ? new Date(v.installedAt).toLocaleString() : '-'}</td>
                   <td>
-                    ${!v.isCurrent ? `<button class="btn btn-sm btn-primary" onclick="switchVersion('${v.version}')">切换</button>` : ''}
-                    ${!v.isCurrent ? `<button class="btn btn-sm btn-ghost" onclick="removeVersion('${v.version}')">删除</button>` : ''}
+                    ${!v.isCurrent ? `<button class="btn btn-sm btn-primary" onclick="switchVersion('${escapeAttr(v.version)}')">切换</button>` : ''}
+                    ${!v.isCurrent ? `<button class="btn btn-sm btn-ghost" onclick="removeVersion('${escapeAttr(v.version)}')">删除</button>` : ''}
                   </td>
                 </tr>
               `).join('')}

@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, copyFileSync, statSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, copyFileSync, statSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
@@ -117,7 +117,7 @@ export class MCPServerManager {
     let bk = ''; if (existsSync(this.patchFile)) { try { const ts = Date.now(); bk = this.patchFile + '.bak-' + ts; copyFileSync(this.patchFile, bk); try { const m = statSync(this.patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } } catch (e) { console.warn('[mcp] 备份失败:', e.message); } }
     const dir = dirname(this.patchFile); if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const tmp = this.patchFile + '.tmp-' + Date.now();
-    try { writeFileSync(tmp, nc, 'utf-8'); renameSync(tmp, this.patchFile); } catch (err) { try { if (existsSync(tmp)) renameSync(tmp, this.patchFile); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'MCP 写入失败: ' + err.message); }
+    try { writeFileSync(tmp, nc, 'utf-8'); renameSync(tmp, this.patchFile); } catch (err) { try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch (e) { console.warn("[dsh-manager] 操作失败:", e?.message); } throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'MCP 写入失败: ' + err.message); }
     return bk;
   }
   async add(cfg) {
@@ -164,9 +164,44 @@ export class MCPServerManager {
     try { const { servers, warnings } = this.parseMcpJson(jsonText); if (servers.length === 0) return { ok: false, error: '没有可转换的服务器', warnings }; const yamlText = servers.map(s => this._buildBlock({ ...s })).join('\n'); const envVars = getEnvVarNames(yamlText); if (envVars.length > 0) warnings.push('检测到环境变量引用，已转换为 !!js process.env.*'); return { ok: true, rows: servers, yaml: yamlText, warnings, envVars }; } catch (err) { return { ok: false, error: err.message }; }
   }
   async importServers(servers, opts = {}) {
-    const mode = opts.mode || 'merge'; const w = []; const add = []; const upd = []; const skip = [];
-    if (mode === 'replace') { const es = this.list(); for (const s of es) { try { await this.remove(s.serverName); } catch (e) { w.push('移除 ' + s.serverName + ' 失败: ' + e.message); } } }
-    for (const sv of servers) { try { if (!sv.serverName) { skip.push('(unnamed)'); continue; } if (sv.transport !== 'streamable-http') sv.transport = 'stdio'; const ex = this.get(sv.serverName); await this.add(sv); if (ex) upd.push(sv.serverName); else add.push(sv.serverName); } catch (e) { skip.push(sv.serverName || '?'); w.push(sv.serverName + ': ' + e.message); } }
+    const mode = opts.mode || 'merge';
+    const w = []; const add = []; const upd = []; const skip = [];
+    // ① 先统一校验/规范化（与 add/remove 相同的规则），失败项直接跳过
+    const ready = []; const existingMap = new Map();
+    for (const sv of servers) {
+      try {
+        if (!sv || !sv.serverName) { skip.push('(unnamed)'); continue; }
+        if (!SERVER_NAME_PATTERN.test(sv.serverName)) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'serverName 命名不规范');
+        const cfg = { ...sv };
+        if (cfg.transport === 'streamable-http') { if (!cfg.url) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'URL 不能为空'); }
+        else { if (!cfg.command) throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, 'command 不能为空'); cfg.transport = 'stdio'; }
+        ready.push(cfg);
+      } catch (e) { const n = (sv && sv.serverName) || '?'; skip.push(n); w.push(n + ': ' + e.message); }
+    }
+    // ② 读写合并为一次原子操作：replace=清空全部现有 MCP 块；merge=仅剔除同名块（更新语义）
+    const dir = join(DSH_PATHS.home, 'profiles', this.profile);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    if (!existsSync(this.patchFile)) writeFileSync(this.patchFile, '# dsh profile patch layer\n[]\n', 'utf-8');
+    const raw = readFileSync(this.patchFile, 'utf-8').replace(/\r\n/g, '\n');
+    const headerLines = [];
+    for (const line of raw.split('\n')) { if (/^\s*#/.test(line)) headerLines.push(line); else break; }
+    let blocks = this._parseBlocks().filter(b => !headerLines.includes(b.block));
+    for (const b of blocks) { if (b.name === MCP_PLUGIN_NAME && b.configName) existingMap.set(b.configName, b); }
+    const keepNames = new Set(ready.map(c => c.serverName));
+    // 保留的现有块取 b.block（字符串），新块用 _buildBlock 字符串，避免 [object Object] 序列化
+    if (mode === 'replace') {
+      blocks = blocks.filter(b => !(b.name === MCP_PLUGIN_NAME && b.configName)).map(b => b.block);
+    } else {
+      blocks = blocks.filter(b => !(b.name === MCP_PLUGIN_NAME && b.configName && keepNames.has(b.configName))).map(b => b.block);
+    }
+    // ③ 追加新块，输出分类
+    for (const cfg of ready) {
+      if (existingMap.has(cfg.serverName)) upd.push(cfg.serverName); else add.push(cfg.serverName);
+      blocks.push(this._buildBlock(cfg));
+    }
+    const body = blocks.join('\n\n');
+    const nc = (headerLines.length > 0 ? headerLines.join('\n') + '\n\n' : '') + body + '\n';
+    this._atomicWrite(nc);
     return { success: true, added: add, updated: upd, skipped: skip, warnings: w };
   }
   exportJson() { const ms = {}; for (const s of this.list()) { const e = {}; if (s.transport === 'streamable-http') { e.type = 'http'; e.url = s.url || ''; if (s.headers) e.headers = s.headers; } else { e.command = s.command || ''; if (s.args) e.args = s.args; if (s.env) e.env = s.env; if (s.cwd) e.cwd = s.cwd; } ms[s.serverName] = e; } return JSON.stringify({ mcpServers: ms }, null, 2); }
