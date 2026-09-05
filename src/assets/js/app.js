@@ -70,7 +70,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       document.getElementById('maxBtn').innerHTML = isMax
         ? '<svg viewBox="0 0 12 12" width="12" height="12"><rect x="2" y="2" width="8" height="8" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>'
         : '<svg viewBox="0 0 12 12" width="12" height="12"><rect x="1" y="1" width="10" height="10" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
 
   // 初始化键盘快捷键（模块化后由 shortcuts.js 提供）
@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     autoStartConsole = (await window.dshManager.getConfig('manager.auto-start-dsh')) !== false;
     checkUpdatesOnStartup = (await window.dshManager.getConfig('manager.check-updates')) !== false;
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   // 运行配置：自定义 DSH Web 端口 → 同步 state.dshUrl（控制台区域用）
   try {
@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (rtPort && rtPort !== 3080) {
       state.dshUrl = 'http://127.0.0.1:' + rtPort;
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   // 查询主进程记录的带 token 的 DSH web URL（DSH 0.1.2-alpha.4+ 需要鉴权，裸 URL 会 401）
   // 以及上次实际启动端口（自动切换过端口时同步到 UI）
@@ -105,14 +105,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         state.dshUrl = wu.url;
       }
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   if (!/token=/.test(state.dshUrl)) {
     try {
       const actual = await window.dshManager.getDSHActualPort();
       if (actual && actual.port && actual.port !== 3080) {
         state.dshUrl = 'http://127.0.0.1:' + actual.port;
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
 
   // 注册页面到 PageManager（修复导航：此前从未调用 register，导航实际无效）
@@ -152,7 +152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (state.dshInstalled && autoStartConsole) {
         tryLoadDSHWeb();
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   })();
 
   // 异步检测 pnpm 状态（带超时保护）
@@ -180,7 +180,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 开启"启动时检查 DSH 更新"则静默检查一次
   // 低配置优化：延迟 15 秒执行，避开启动高峰期（dsh 状态检测等子进程并发）
   if (checkUpdatesOnStartup) {
-    setTimeout(() => { try { checkDSHUpdateStartup(); } catch {} }, 15_000);
+    setTimeout(() => { try { checkDSHUpdateStartup(); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); } }, 15_000);
   }
 
   // 定期检查 DSH 进程状态（30 秒轮询，确保 sidebar 状态始终准确）
@@ -200,7 +200,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           text.textContent = state.dshRunning ? (state.dshVersion ? 'DSH ' + state.dshVersion + ' 运行中' : '运行中') : (state.dshInstalled ? (state.dshVersion ? 'DSH ' + state.dshVersion : '已安装') : '未安装');
         }
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }, 30_000);
 });
 
@@ -214,7 +214,7 @@ function toggleSidebarCollapse() {
   const collapsed = sidebar.classList.toggle('collapsed');
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 }
 
 /** 恢复侧边栏折叠状态（启动时调用） */
@@ -225,7 +225,7 @@ function restoreSidebarCollapseState() {
     if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1') {
       sidebar.classList.add('collapsed');
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 }
 
 // ====== 页面切换 ======
@@ -420,7 +420,7 @@ async function renderEnvStatus() {
   const missingGit = !git.installed;
   // 便携版 Node 状态（低配置最小化安装）与 env 检测并行获取，减少等待
   let portable = { installed: false, version: null };
-  try { portable = await window.dshManager.getPortableNode(); } catch {}
+  try { portable = await window.dshManager.getPortableNode(); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   const portableRow = portable.installed
     ? row('📦', '便携版 Node', `<strong>${(portable.version || '').replace(/^v/, '')}</strong> <span class="badge badge-blue">低配推荐</span>`)
     : row('📦', '便携版 Node', '<span style="color:var(--text-dim);">未安装（镜像下载、免安装、不污染系统）</span>');
@@ -708,7 +708,7 @@ async function upgradeDSH() {
       const latest = update.latest || '最新版';
       showToast(`DSH 未安装，最新版本为 ${latest}`, 'warning');
       if (await showConfirm('安装 DSH', `检测到 DSH 尚未安装。\n最新版本: ${latest}\n是否立即下载并安装？`, { confirmText: '立即安装' })) {
-        await window.dshManager.installDSH(null, null, 'auto');
+        await window.dshManager.installDSH(update.latest, null, 'auto');
         showToast('DSH 安装成功！', 'success');
         await checkDSHStatus();
         renderInstallPage();
@@ -719,7 +719,7 @@ async function upgradeDSH() {
     if (update.hasUpdate) {
       showToast(`发现新版本: ${update.latest}`, 'info');
       if (await showConfirm('升级 DSH', `发现新版本 DSH ${update.latest}（当前: ${update.current}），是否升级？`, { confirmText: '立即升级' })) {
-        await window.dshManager.installDSH(null, null);
+        await window.dshManager.installDSH(update.latest, null);
         showToast('DSH 升级成功！', 'success');
         await checkDSHStatus();
         renderInstallPage();
@@ -777,7 +777,7 @@ async function uninstallDSH() {
     try {
       await checkDSHStatus();
       renderInstallPage();
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   } catch (err) {
     showToast('卸载失败: ' + err.message, 'error');
   }
@@ -845,11 +845,11 @@ async function renderPluginsPage() {
   try {
     // 强制刷新：读取 DSH profile 中实际安装的插件（版本/描述/来源）
     localPlugins = await window.dshManager.getLocalPlugins(true);
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   try {
     // 完整组合插件树（等同 DSH 设置页展示：含核心框架 + bundle 展开子插件 + 启用状态）
     composedPlugins = await window.dshManager.getComposedPlugins('web', true);
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   // 版本信息合并：composed 条目无版本号，从 localPlugins 按 id 补齐
   const localById = new Map(localPlugins.map(p => [p.id, p]));
@@ -2502,7 +2502,7 @@ async function renderDataManagement() {
   const el = document.getElementById('dataManagement');
   if (!el) return;
   let info = null;
-  try { info = await window.dshManager.getDSHStorageInfo(); } catch {}
+  try { info = await window.dshManager.getDSHStorageInfo(); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   if (!info) {
     el.innerHTML = '<p style="color:var(--text-dim);">加载失败</p>';
@@ -3002,7 +3002,7 @@ async function renderAboutPage() {
   if (!el) return;
 
   let version = '0.1.0';
-  try { version = await window.dshManager.getAppVersion(); } catch {}
+  try { version = await window.dshManager.getAppVersion(); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   // 获取系统信息
   let nodeVer = '-', plat = '-', arch = '-';
@@ -3011,7 +3011,7 @@ async function renderAboutPage() {
     nodeVer = info.nodeVersion || '-';
     plat = info.platform || '-';
     arch = info.arch || '-';
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   el.innerHTML = `
     <div style="width:100%;max-width:960px;margin:0 auto;padding:0 8px 24px;">
@@ -4125,7 +4125,7 @@ async function igOpenFolder() {
 
 async function renderYAMLEditorTab() {
   let config = { settings: {}, credentials: {} };
-  try { config = await window.dshManager.getAllConfig(); } catch {}
+  try { config = await window.dshManager.getAllConfig(); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   const settings = config.settings || {};
   const yamlStr = objToYAMLStr(settings);
   return `
@@ -4202,7 +4202,7 @@ async function showLLMProviderForm(editName, editAdapter) {
           model = firstModel ? (typeof firstModel === 'string' ? firstModel : firstModel.id || '') : '';
         }
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   const modal = document.createElement('div');
   modal.className = 'modal-overlay active';

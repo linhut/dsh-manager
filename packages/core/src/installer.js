@@ -9,7 +9,7 @@ import { execa } from 'execa';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
 import { DSHError, DSHErrorCodes } from './errors.js';
-import { DSH_PATHS, DSH_PACKAGE_NAME, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions, buildCommandEnv } from './dsh-utils.js';
+import { DSH_PATHS, DSH_PACKAGE_NAME, isDSHInstalled, getDSHVersion, getDSHPath, resolveDSHCommand, listDSHVersions, buildCommandEnv, compareDSHVersions } from './dsh-utils.js';
 import { requireNodeAndNpm } from './env-check.js';
 
 /**
@@ -65,6 +65,17 @@ export class DSHInstaller {
       throw new DSHError(DSHErrorCodes.DSH_INSTALL_FAILED, error.message);
     }
 
+    // 版本归一化：空 / 'latest' / 'next' 均按"取最新"处理，但 npm latest tag 常滞后于
+    // 语义最高版本（如 next 领先）。此处主动解析 dist-tags 语义最高版本精确安装，
+    // 避免出现"提示 0.1.2-rc.1、实际却装了 latest 指向的 0.1.0-rc.7"的版本倒退。
+    if (!version || version === 'latest' || version === 'next') {
+      const resolved = await this._resolveLatestVersion();
+      if (resolved) {
+        this._log(`未指定精确版本，解析 dist-tags 语义最高版本: ${resolved}`);
+        version = resolved;
+      }
+    }
+
     // 检查是否已安装
     const alreadyInstalled = await isDSHInstalled();
     if (alreadyInstalled) {
@@ -95,6 +106,34 @@ export class DSHInstaller {
       DSHErrorCodes.DSH_INSTALL_FAILED,
       `DSH 安装失败（已尝试 ${tools.join(' / ')}）:\n${summary}\n\n请检查网络连接、npm 全局安装权限，或更换镜像源后重试。`
     );
+  }
+
+  /**
+   * 解析 npm dist-tags 中的语义最高版本
+   * 口径与版本管理页"最新版"（getLatestVersion）一致：取全部 dist-tags 指向版本的最高者，
+   * 而非仅 latest tag。解析失败返回 null，由调用方决定兜底策略。
+   * @returns {Promise<string|null>}
+   * @private
+   */
+  async _resolveLatestVersion() {
+    const args = ['view', DSH_PACKAGE_NAME, 'dist-tags', '--json'];
+    if (this.options.registry && this.options.registry !== INSTALL_OPTIONS.defaultRegistry) {
+      args.push('--registry', this.options.registry);
+    }
+    try {
+      const { stdout } = await execa('npm', args, {
+        timeout: this.options.npmInstallTimeout,
+        env: this._commandEnv,
+      });
+      const tags = JSON.parse(stdout);
+      const versions = Object.values(tags).filter(
+        (v) => typeof v === 'string' && /^\d+\.\d+\.\d+/.test(v)
+      );
+      if (!versions.length) return null;
+      return versions.reduce((best, v) => (compareDSHVersions(v, best) > 0 ? v : best));
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -34,4 +34,4 @@ const debugLog = {
   getLogs() { return this.logs.map(l => '[' + l.time + '] [' + l.level.toUpperCase() + '] ' + l.message).join('\n'); },
   clearLogs() { this.logs = []; return '日志已清除'; }
 };
-try { debugLog.init(); } catch (e) { try { console.error('调试日志初始化失败:', e); } catch {} }
+try { debugLog.init(); } catch (e) { try { console.error('调试日志初始化失败:', e); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); } }

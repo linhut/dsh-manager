@@ -34,13 +34,13 @@ export async function detectNodeRuntime() {
       const { stdout } = await execa(portableBin, ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
       if (stdout && stdout.trim()) { version = stdout.trim(); source = 'portable'; }
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   if (!version) {
     try {
       const { execa } = await import('execa');
       const { stdout } = await execa('node', ['--version'], { reject: false, timeout: 10_000, windowsHide: true });
       if (stdout && stdout.trim()) { version = stdout.trim(); source = 'system'; }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   const major = version ? (parseInt(version.replace(/^v/, '').split('.')[0], 10) || null) : null;
   return { version, major, meetsRequirement: major !== null && major >= CAPABILITY_ROUTER_MIN_NODE_MAJOR, source };
@@ -65,19 +65,19 @@ export function resolveBundledPluginDir() {
     if (app && typeof app.getAppPath === 'function') {
       candidates.push(join(app.getAppPath(), 'packages', 'plugins', 'dsh-capability-router'));
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   // ③ 开发模式：本文件位于 packages/core/src/ → 相对 ../../plugins/...
   try {
     const here = dirname(fileURLToPath(import.meta.url));
     candidates.push(join(here, '..', '..', 'plugins', 'dsh-capability-router'));
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   // ④ Electron Fuses / 直接 cwd 检测（兜底）
   try {
     const cwdPkg = join(process.cwd(), 'packages', 'plugins', 'dsh-capability-router');
     if (existsSync(cwdPkg)) candidates.push(cwdPkg);
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   for (const c of candidates) {
-    try { if (c && existsSync(c) && existsSync(join(c, 'package.json'))) return c; } catch {}
+    try { if (c && existsSync(c) && existsSync(join(c, 'package.json'))) return c; } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   return null;
 }
@@ -98,7 +98,7 @@ export function isCapabilityRouterInstalled(profile) {
     try {
       const raw = readFileSync(patchFile, 'utf-8');
       hasPatch = raw.includes("name: '@" + CAPABILITY_ROUTER_PACKAGE.slice(1)) || raw.includes('name: ' + CAPABILITY_ROUTER_PACKAGE) || raw.includes("name: \"@dsh-manager/dsh-capability-router\"");
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   return hasPkg && hasPatch;
 }
@@ -139,15 +139,15 @@ function ensurePatchEntry(profile) {
       const ts = Date.now();
       bk = patchFile + '.bak-' + ts;
       copyFileSync(patchFile, bk);
-      try { const m = statSync(patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch {}
-    } catch {}
+      try { const m = statSync(patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   const tmp = patchFile + '.tmp-' + Date.now();
   try {
     writeFileSync(tmp, nc, 'utf-8');
     renameSync(tmp, patchFile);
   } catch (err) {
-    try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch {}
+    try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '能力路由 patch 写入失败: ' + err.message);
   }
   return bk;
@@ -196,7 +196,7 @@ export async function installCapabilityRouter(profile, opts) {
     let nodeInfo = null;
     try {
       nodeInfo = await detectNodeRuntime();
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     const warning = (nodeInfo && !nodeInfo.meetsRequirement)
       ? ('当前 Node ' + (nodeInfo.version || '未知') + '（' + nodeInfo.source + '）低于 ' + CAPABILITY_ROUTER_MIN_NODE_MAJOR + '，DSH 可能无法解析 profile 内插件，请升级系统 Node 或安装便携版 Node')
       : undefined;

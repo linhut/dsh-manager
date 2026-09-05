@@ -65,7 +65,7 @@ export class PluginManager {
     let updateInfo = { hasUpdate: false, latestVersion: plugin.version };
     try {
       updateInfo = await this.registry.checkPluginUpdate(pluginId);
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
     return {
       ...plugin,

@@ -101,7 +101,7 @@ export class PluginRegistry {
           try {
             const pkg = await this.github.getNpmPackage(`@${repoMatch[1]}/${repoMatch[2]}`);
             if (pkg) githubResults.push(pkg);
-          } catch {}
+          } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
         }
       }
       // ② 标签相关搜索 + 宽泛关键词搜索（保证未打 dsh-plugin 标签的插件也能被找到）
@@ -496,7 +496,7 @@ export class PluginRegistry {
         version = pj.version || null;
         description = pj.description || '';
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
     // 分类：系统组件 / 外部插件 / 用户插件
     const category = classifyPackage(name);
@@ -532,7 +532,7 @@ export class PluginRegistry {
     if (!existsSync(profilesDir)) { profilePluginsCache = result; profilePluginsCacheTime = now; return result; }
 
     let profiles = [];
-    try { profiles = readdirSync(profilesDir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); } catch {}
+    try { profiles = readdirSync(profilesDir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
     for (const profile of profiles) {
       const pkgFile = join(profilesDir, profile, 'package.json');
@@ -601,9 +601,9 @@ export class PluginRegistry {
               }
               if (!/^\s/.test(rawLine) && !line.startsWith('-')) inBlock = false;
             }
-          } catch {}
+          } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
         }
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     }
 
     profilePluginsCache = result;
@@ -621,7 +621,7 @@ export class PluginRegistry {
       try {
         const parsed = JSON.parse(readFileSync(REGISTRY_PATH(), 'utf-8'));
         local = Array.isArray(parsed) ? parsed : [];
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     }
 
     // 合并 DSH 实际安装的插件（去重：本地注册表优先）
@@ -750,7 +750,7 @@ export class PluginRegistry {
             // 缩进恢复 → 离开块
             if (!/^\s/.test(rawLine) && !line.startsWith('-')) inIncludeBlock = false;
           }
-        } catch {}
+        } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
 
       // 逐项验证：node_modules 中包是否存在且为合法 bundle
@@ -783,7 +783,7 @@ export class PluginRegistry {
           addIssue(name, 'package.json 解析失败');
         }
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
     return { total: seen.size, invalid };
   }
@@ -830,7 +830,7 @@ export class PluginRegistry {
           windowsHide: true,
         });
         removed = exitCode === 0;
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       // ② 直接编辑 package.json 兜底
       if (!removed && existsSync(pkgFile)) {
@@ -850,13 +850,13 @@ export class PluginRegistry {
             writeFileSync(pkgFile, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
             removed = true;
           }
-        } catch {}
+        } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
 
       // ③ 清理 cordis.patch.yml 中的条目（使用共享方法）
       try {
         this.cleanupPatchEntries(profile, item.id);
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       if (removed) {
         fixed.push({ id: item.id, method: 'dsh plugin remove / 配置移除' });
@@ -1043,7 +1043,7 @@ export class PluginRegistry {
             return { hasUpdate: true, currentVersion: plugin.version, latestVersion: npmVersion };
           }
         }
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     }
 
     // 从 npm 获取最新版本
@@ -1056,7 +1056,7 @@ export class PluginRegistry {
           const hasUpdate = compareDSHVersions(latestVersion, plugin.version) > 0;
           return { hasUpdate, currentVersion: plugin.version, latestVersion };
         }
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     }
 
     return { hasUpdate: false, currentVersion: plugin.version, latestVersion: plugin.version };
@@ -1099,7 +1099,7 @@ export class PluginRegistry {
           return data.results;
         }
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     return null;
   }
 
@@ -1115,7 +1115,7 @@ export class PluginRegistry {
         results,
         timestamp: Date.now(),
       }), 'utf-8');
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
 
   /**

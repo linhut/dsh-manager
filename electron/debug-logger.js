@@ -44,7 +44,7 @@ export function initDebugLog(force = false) {
         renameSync(LOG_FILE(), old);
       }
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   writeLog('debug', '========================================');
   writeLog('debug', 'DSH Manager 调试日志启动');
@@ -72,7 +72,7 @@ export function writeLog(level, message) {
     const timestamp = new Date().toISOString();
     const line = `[${timestamp}] [${level.toUpperCase()}] ${message}\n`;
     appendFileSync(LOG_FILE(), line, 'utf-8');
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 }
 
 /**
@@ -107,7 +107,7 @@ export function getLogPath() {
 export function clearLog() {
   try {
     writeFileSync(LOG_FILE(), '', 'utf-8');
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 }
 
 export function isDebugEnabled() {

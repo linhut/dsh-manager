@@ -21,7 +21,7 @@ async function checkDSHUpdateStartup() {
   try {
     const remindTime = localStorage.getItem('dsh-update-remind');
     if (remindTime && Date.now() < Number(remindTime)) return;
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   try {
     const update = await window.dshManager.checkDSHUpdate();
     if (update && update.hasUpdate) {
@@ -32,7 +32,7 @@ async function checkDSHUpdateStartup() {
       });
       showUpdateBanner(update.latest, update.current);
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 }
 
 function showUpdateBanner(latest, current) {
@@ -133,7 +133,7 @@ async function tryConnectDSH(retriesLeft = 5, userInitiated = false) {
       }
       return;
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   if (retriesLeft > 0) {
     setTimeout(function() { tryConnectDSH(retriesLeft - 1, userInitiated); }, 2000);
   } else {
@@ -542,7 +542,7 @@ function getCurrentDSHPort() {
     const url = new URL(state.dshUrl);
     const port = Number(url.port);
     if (port) return port;
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   return 3080;
 }
 
@@ -591,7 +591,7 @@ async function renderDashInfo() {
         cell.innerHTML = `🔌 端口 ${escapeHtml(proc.port)}: <span class="badge badge-green">空闲</span>`;
       }
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 }
 
 // ====== 更新 Banner 动作 ======
@@ -617,6 +617,6 @@ function dismissUpdateBanner() {
   document.body.style.paddingTop = '';
   try {
     localStorage.setItem('dsh-update-remind', String(Date.now() + 259200000));
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   showToast('已稍后提醒（3 天内不再提示）', 'info');
 }

@@ -182,7 +182,7 @@ async function loadPersistedWebUrlState() {
     if (data && typeof data.url === 'string' && data.url.includes('token=') && data.port) {
       return data;
     }
-  } catch {}
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   return null;
 }
 
@@ -192,7 +192,7 @@ function clearWebUrlState() {
   __restoredWebUrl = null;
   webUrlStateFile().then((file) => {
     if (!file) return;
-    try { if (existsSync(file)) rmSync(file, { force: true }); } catch {}
+    try { if (existsSync(file)) rmSync(file, { force: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   });
 }
 
@@ -243,14 +243,14 @@ function resolveWebUrl(port) {
     try {
       const u = new URL(lastWebTokenUrl);
       if (u.port === String(port) || (u.port === '' && port === 80)) return lastWebTokenUrl;
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   // 内存丢失（Manager 重启但 DSH 仍运行）：从持久化状态恢复带 token 的 URL
   if (typeof __restoredWebUrl === 'string' && __restoredWebUrl) {
     try {
       const u = new URL(__restoredWebUrl);
       if (u.port === String(port) || (u.port === '' && port === 80)) return __restoredWebUrl;
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   return 'http://127.0.0.1:' + port;
 }
@@ -481,7 +481,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           try {
             const { getDSHPath } = await loadCore();
             dshPath = await getDSHPath();
-          } catch {}
+          } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
           await vm.recordVersion(result.version, dshPath);
         } catch (e) {
           console.warn('[dsh-manager] 记录安装版本失败:', e?.message);
@@ -519,10 +519,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           const timeoutId = setTimeout(() => controller.abort(), 5000);
           try {
             await fetch('http://127.0.0.1:' + lastActivePort + '/api/shutdown', { method: 'POST', signal: controller.signal });
-          } catch {}
+          } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
           clearTimeout(timeoutId);
         }
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       await stopProcessByPort(lastActivePort);
       // 清理所有 DSH 相关进程
       try {
@@ -532,10 +532,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           const { stdout } = await execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { reject: false, timeout: 10_000, windowsHide: true });
           const pids = stdout.split(/\r?\n/).map(s => s.trim()).filter(s => /^\d+$/.test(s));
           for (const pid of pids) {
-            try { await execa('taskkill', ['/PID', pid, '/F', '/T'], { reject: false, timeout: 10_000, windowsHide: true }); } catch {}
+            try { await execa('taskkill', ['/PID', pid, '/F', '/T'], { reject: false, timeout: 10_000, windowsHide: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
           }
         }
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       // 再启动
       const sp = await spawnDSHWeb();
@@ -553,7 +553,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           if (health.reachable) {
             return { success: true, port: actualPort, reachable: true, webUrl: resolveWebUrl(actualPort) };
           }
-        } catch {}
+        } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
 
       return { success: true, port: actualPort, reachable: false, message: 'DSH 已重启，等待服务就绪中...' };
@@ -1135,7 +1135,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       try {
         const { getDSHPath } = await loadCore();
         dshPath = await getDSHPath();
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       if (result.newVersion) await vm.recordVersion(result.newVersion, dshPath);
       return result;
     } catch (error) {
@@ -1209,7 +1209,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         resp = await fetch('https://api.github.com', {
           headers: { 'User-Agent': 'dsh-manager' },
         });
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       if (!resp || !resp.ok) {
         // DoH 兜底：系统 DNS 被污染时，用 DoH 解析真实 IP 直连
         try {
@@ -1223,7 +1223,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
               headers: { 'User-Agent': 'dsh-manager' },
             });
           }
-        } catch {}
+        } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
       results.push({
         name: 'GitHub API',
@@ -1516,7 +1516,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('llm-routing:plugin-status', async (_, profile = 'web') => {
     const { isCapabilityRouterInstalled, detectNodeRuntime } = await loadCore();
     let node = null;
-    try { node = await detectNodeRuntime(); } catch {}
+    try { node = await detectNodeRuntime(); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     return { installed: isCapabilityRouterInstalled(profile), node };
   });
 
@@ -1829,14 +1829,14 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           let resp = null;
           try {
             resp = await fetch(url, { headers: searchHeaders, signal: AbortSignal.timeout(15000) });
-          } catch {}
+          } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
           if (!resp || !resp.ok) {
             try {
               const coreMod = await loadCore();
               if (coreMod.tryFetchViaDoh) {
                 resp = await coreMod.tryFetchViaDoh(url, { timeoutMs: 15000, headers: searchHeaders });
               }
-            } catch {}
+            } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
           }
           if (!resp || !resp.ok) continue;
           const data = await resp.json();
@@ -1857,7 +1857,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
               defaultBranch: repo.default_branch || 'main',
             });
           }
-        } catch {}
+        } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
       return { success: true, items: results, count: results.length };
     } catch (error) {
@@ -1890,7 +1890,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     try {
       const v = app.getVersion();
       if (v && v !== '0.0.0' && v !== '0.0.0.0') return v;
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     try {
       const pkg = JSON.parse(
         readFileSync(join(__dirname, '../package.json'), 'utf-8')
@@ -2170,7 +2170,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     try {
       const pkg = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8'));
       currentVersion = pkg.version || '0.0.0';
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
     writeLog('info', '[更新检查] 当前版本: ' + currentVersion);
 

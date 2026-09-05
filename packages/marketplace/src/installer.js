@@ -327,7 +327,7 @@ export class PluginInstaller {
       try {
         const clonedPkg = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf-8'));
         if (clonedPkg && clonedPkg.name) realName = clonedPkg.name;
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       const pluginId = realName;
       this.registry.registerLocalPlugin({
@@ -387,7 +387,7 @@ export class PluginInstaller {
       if (stdout) {
         return JSON.parse(stdout);
       }
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     return { name: packageName, version: 'latest', description: '' };
   }
 
@@ -512,7 +512,7 @@ export class PluginInstaller {
       } catch (error) {
         const elapsed = Date.now() - start;
         // 清理临时目录
-        try { rmSync(tmpDest, { recursive: true, force: true }); } catch {}
+        try { rmSync(tmpDest, { recursive: true, force: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
         this._log(`[并行克隆] ${candidate} 失败（${elapsed}ms）: ${error.message}`, 'warn');
         return { ok: false, candidate, elapsed, error };
       }
@@ -550,7 +550,7 @@ export class PluginInstaller {
     // 清理其余临时目录
     for (const r of settled) {
       if (r.status === 'fulfilled' && r.value.ok && r.value.tmpDest !== winner.tmpDest) {
-        try { rmSync(r.value.tmpDest, { recursive: true, force: true }); } catch {}
+        try { rmSync(r.value.tmpDest, { recursive: true, force: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
     }
     return true;
@@ -610,7 +610,7 @@ export class PluginInstaller {
       try {
         const pkgRaw = readFileSync(join(dest, 'package.json'), 'utf-8');
         pkg = JSON.parse(pkgRaw);
-      } catch {}
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       // 官方规范：插件身份 = 完整包名，优先使用 package.json 的真实包名
       const pluginId = pkg?.name || info.npmPackage || info.id || repoName;
@@ -670,7 +670,7 @@ export class PluginInstaller {
     let pkg = null;
     try {
       pkg = JSON.parse(readFileSync(join(path, 'package.json'), 'utf-8'));
-    } catch {}
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
     // 使用官方 link: 源形式安装（DSH 会做 pnpm 链接）
     const linkSource = `link:${path}`;
