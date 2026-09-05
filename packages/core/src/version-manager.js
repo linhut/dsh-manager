@@ -114,15 +114,20 @@ export class DSHVersionManager {
     }
 
     // ② npm 失败时从 GitHub API 获取 DSH 最新 release（DoH 直连 + 直连 + 国内镜像自动回退）
-    const githubUrl = 'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/latest';
+    // 注意：deepseek-harness 的全部 release 都是 prerelease，/releases/latest 恒返回 404，
+    // 因此改用 /releases?per_page=1 取最新一条（含预发布）。
+    const githubUrl = 'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases?per_page=1';
     const headers = { 'User-Agent': 'dsh-manager/' + MANAGER_VERSION };
-    // 响应 → release 信息（失败/非 2xx 返回 null）
+    // 响应 → release 信息（失败/非 2xx 返回 null）；兼容数组（per_page）与单对象（latest）两种响应形态
     const parseRelease = async (response) => {
       if (!response || !response.ok) return null;
       const data = await response.json();
-      const tag = (data.tag_name || '').replace(/^v/, '');
+      const item = Array.isArray(data) ? (data[0] || null) : data;
+      if (!item) return null;
+      // 处理 dsh-v0.1.3-alpha.1 / v0.1.2-rc.1 / 0.1.0 三种 tag 写法
+      const tag = (item.tag_name || '').replace(/^dsh-v?/i, '').replace(/^v/i, '');
       if (!tag) return null;
-      return { version: tag, publishedAt: data.published_at, source: 'github' };
+      return { version: tag, publishedAt: item.published_at, source: 'github' };
     };
     // 候选并行竞速：DoH 直连（绕过 DNS 污染）+ [原始, 镜像1..3]
     const dohTask = tryFetchViaDoh(githubUrl, { timeoutMs: 15_000, headers }).then(parseRelease);

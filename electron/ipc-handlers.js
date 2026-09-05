@@ -2226,10 +2226,16 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         const latestTag = (data.tag_name || '').replace(/^v/, '');
         if (!latestTag) { lastError = '无版本标签'; continue; }
 
-        // 提取 .exe 下载资产
-        let asset = data.assets && data.assets.find(a => a.name && a.name.endsWith('.exe') && a.name.includes('Setup'));
-        const downloadName = asset ? asset.name : ('DSH Manager Setup ' + latestTag + '.exe');
-        const downloadUrl = asset ? asset.browser_download_url : 'https://github.com/linhut/dsh-manager/releases/download/v' + latestTag + '/' + downloadName;
+        // 提取 .exe 下载资产：优先匹配当前平台架构（如 DSH-Manager-1.3.18-x64.exe），
+        // 找不到架构匹配时退回第一个 .exe 资产；不再依赖错误的 "Setup" 命名
+        const exeAssets = (data.assets || []).filter(a => a && a.name && /.exe$/i.test(a.name));
+        const archMap = { x64: 'x64', arm64: 'arm64', ia32: 'x86' };
+        const archKey = archMap[process.arch] || process.arch;
+        const asset = exeAssets.find(a => a.name.includes('-' + archKey + '.exe')) || exeAssets[0] || null;
+        const downloadName = asset ? asset.name : ('DSH-Manager-' + latestTag + '-' + archKey + '.exe');
+        const downloadUrl = asset
+          ? asset.browser_download_url
+          : 'https://github.com/linhut/dsh-manager/releases/download/v' + latestTag + '/' + encodeURIComponent(downloadName);
 
         // 构建代理下载链接（gh-proxy.com 自动加速 + github.akams.cn 网站手动加速）
         const proxyUrls = [
@@ -2237,14 +2243,19 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           'https://github.akams.cn/?url=' + encodeURIComponent(downloadUrl),
         ];
 
-        // 简易版本比较（去除非数字后缀如 -debug -test）
-        const normalizeVer = (v) => {
-          const m = v.match(/^(\d+\.\d+\.\d+)/);
-          return m ? m[1] : v;
-        };
-        const currentNorm = normalizeVer(currentVersion);
-        const latestNorm = normalizeVer(latestTag);
-        const hasUpdate = latestNorm !== currentNorm;
+        // 语义化版本比较（复用 core 的 compareDSHVersions，正确处理 rc/next 预发布格式；
+        // 若 core 加载失败则退回简单的等值比较）
+        let hasUpdate = false;
+        try {
+          const { compareDSHVersions } = await loadCore();
+          hasUpdate = compareDSHVersions(latestTag, currentVersion) > 0;
+        } catch {
+          const normalizeVer = (v) => {
+            const m = String(v || '').match(/^(\d+\.\d+\.\d+)/);
+            return m ? m[1] : v;
+          };
+          hasUpdate = normalizeVer(latestTag) !== normalizeVer(currentVersion);
+        }
 
         writeLog('info', '[更新检查] 最新: ' + latestTag + ' 当前: ' + currentVersion + ' 有更新: ' + hasUpdate);
         return {

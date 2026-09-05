@@ -4662,10 +4662,17 @@ async function checkAppUpdateUI() {
     const card = document.createElement('div');
     card.id = 'updateResultCard';
     card.style.cssText = 'margin-bottom:16px;';
-    const proxyLinks = (update.proxyUrls || []).map((url, i) => {
-      const labels = ['🚀 官方 GitHub', '⚡ 加速站 gh-proxy', '🌐 GitHub Proxy 网站'];
-      const safeUrl = escapeAttr(url);
-      return '<a class="btn btn-sm btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + safeUrl + '\')" style="margin:2px;">' + (labels[i] || '下载 ' + (i+1)) + '</a>';
+    // 下载渠道：官方 GitHub 直链 + 后端返回的加速链接（gh-proxy / akams），标签与 URL 一一对应
+    const channels = [
+      { label: '🚀 官方 GitHub', url: update.downloadUrl },
+      ...(update.proxyUrls || []).map((url, i) => ({
+        label: ['⚡ 加速站 gh-proxy', '🌐 GitHub Proxy 网站'][i] || ('下载 ' + (i + 2)),
+        url,
+      })),
+    ];
+    const proxyLinks = channels.map((ch) => {
+      const safeUrl = escapeAttr(ch.url);
+      return '<a class="btn btn-sm btn-secondary" href="javascript:void(0)" onclick="window.dshManager.openExternal(\'' + safeUrl + '\')" style="margin:2px;">' + ch.label + '</a>';
     }).join('');
     card.innerHTML = '<div class="card" style="border-color:var(--primary);">' +
       '<div class="card-header"><span class="card-title">🆕 新版本可用</span><span class="badge badge-green">v' + escapeHtml(update.latestVersion) + '</span></div>' +
