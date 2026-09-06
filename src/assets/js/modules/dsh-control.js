@@ -133,7 +133,11 @@ async function tryConnectDSH(retriesLeft = 5, userInitiated = false) {
       }
       return;
     }
-  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+  } catch (e) {
+    // 被动探测（userInitiated=false）在 DSH 未运行时失败属预期状态，静默处理避免周期性刷屏；
+    // 仅用户主动启动失败时记录告警，便于排障定位
+    if (userInitiated) console.warn('[dsh-manager] tryConnectDSH 探测失败:', e?.message || e);
+  }
   if (retriesLeft > 0) {
     setTimeout(function() { tryConnectDSH(retriesLeft - 1, userInitiated); }, 2000);
   } else {
