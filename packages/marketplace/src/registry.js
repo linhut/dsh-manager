@@ -312,7 +312,7 @@ export class PluginRegistry {
         name: 'dsh-skills',
         fullName: 'linhut/dsh-skills',
         owner: 'linhut',
-        description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能，模型可通过 skill 工具按需加载。',
+        description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works、web-search、gongwen-skill（公文）、ppt-studio（PPT）九个开箱即用技能，模型可通过 skill 工具按需加载。',
         url: 'https://github.com/linhut/dsh-skills',
         homepage: '',
         stars: 1,
@@ -656,10 +656,21 @@ export class PluginRegistry {
 
     const invalid = [];
     const seen = new Set();
-    const addIssue = (id, reason, kind = 'plugin') => {
+    // meta: { kind: 'plugin'|'module', source: 'runtime'|'static', action: 'remove'|'repair'|'inspect', detail: string }
+    //   - remove  包体损坏/缺失，可安全移除（移除后可在市场重新安装）
+    //   - repair  包体完好但依赖/宿主解析异常，应修复而非移除（如 link 安装缺宿主依赖）
+    //   - inspect 低置信提示（如包体完好但未声明 dsh.bundle），不自动处理，供人工确认
+    const addIssue = (id, reason, kind = 'plugin', meta = {}) => {
       if (seen.has(id)) return;
       seen.add(id);
-      invalid.push({ id, reason, kind });
+      invalid.push({
+        id,
+        reason,
+        kind,
+        source: meta.source || (kind === 'module' ? 'runtime' : 'static'),
+        action: meta.action || 'inspect',
+        detail: meta.detail || '',
+      });
     };
 
     // 从 stderr 提取运行时加载失败的插件（最可靠信号：DSH 自己报错说哪个插件无效）
@@ -680,7 +691,13 @@ export class PluginRegistry {
           id = (m[1] || '').trim();
         }
         if (id && !isSystemComponent(id) && !/^cordis:/i.test(id)) {
-          addIssue(id, '启动时加载失败（stderr 指示）');
+          // source=runtime 高置信；action 在后处理中按包体探活细分：
+          // 包体损坏/缺失 → remove；包体完好（如 link 安装缺宿主依赖）→ repair
+          addIssue(id, '启动时加载失败（stderr 指示）', 'plugin', {
+            source: 'runtime',
+            action: 'inspect',
+            detail: '启动时加载失败（stderr 指示），包体状态待复核',
+          });
         }
       }
       // ② 模块缺失：Cannot find module 'C:\...\node_modules\shiki\dist\core.mjs'
@@ -689,7 +706,66 @@ export class PluginRegistry {
       while ((m = re2.exec(stderr)) !== null) {
         const pkg = extractPkgNameFromPath(m[1]);
         if (pkg && !isSystemComponent(pkg)) {
-          addIssue(pkg, '模块缺失（stderr 指示）', 'module');
+          addIssue(pkg, '模块缺失（stderr 指示）', 'module', {
+            source: 'runtime',
+            action: 'repair',
+            detail: '缺失依赖模块，将自动补齐安装（不会移除插件）',
+          });
+        }
+      }
+      // ③ 契约漂移：插件 import 了宿主已移除的导出（does not provide an export named）
+      //    典型如 ui-skin-stock 旧版使用 installSettingsSection/settingsNamespace，
+      //    宿主 0.1.2-rc.1 已移除该导出。包体完好、依赖完整，remove/repair 都无济于事，
+      //    正确处置是升级插件版本或停用——标 action='adapt' 交由前端/用户决策。
+      const exportMissing =
+        /does not provide an? (?:export|an export) named/i.test(stderr) ||
+        /No ["']export["'] named/i.test(stderr);
+      if (exportMissing) {
+        // 捕获被 import 的宿主模块与缺失导出名（用于 detail 展示）
+        const emModRe = /The requested module ['"]([^'"]+)['"] does not provide an? (?:export|an export) named ['"](\w+)['"]/g;
+        const emDetails = [];
+        while ((m = emModRe.exec(stderr)) !== null) {
+          emDetails.push((m[1] || '?') + '#' + (m[2] || '?'));
+        }
+        const driftDetail = emDetails.length
+          ? '契约漂移：import ' + emDetails.join('、') + ' 已被宿主移除，应升级插件版本或停用'
+          : '契约漂移：代码 import 了宿主已移除的导出，应升级插件版本或停用';
+        // upsert：已由 loader entry 登记的条目（source=runtime/action=inspect）升级为 adapt，
+        // 未登记的补录；契约漂移判定优先级高于包体 probe，避免漂移插件落入 repair/remove
+        const upsertAdapt = (id, reason, detail) => {
+          if (!id || isSystemComponent(id) || /^cordis:/i.test(id)) return;
+          const ex = invalid.find(i => i.id === id);
+          if (ex) {
+            ex.action = 'adapt';
+            ex.source = 'runtime';
+            ex.reason = reason;
+            ex.detail = detail;
+            return;
+          }
+          if (seen.has(id)) return;
+          seen.add(id);
+          invalid.push({ id, reason, kind: 'plugin', source: 'runtime', action: 'adapt', detail });
+        };
+        // 从 SyntaxError 的 at 文件行提取插件包名（覆盖无 loader entry 包装的场景）
+        const emFileRe = /(?:file|node):[^\n]*?node_modules[\\/]([^\\/'"\n]+(?:[\\/][^\\/'"\n]+)?)[\\/][^'"\n]*?\.js:\d+:\d+/g;
+        while ((m = emFileRe.exec(stderr)) !== null) {
+          upsertAdapt(m[1].replace(/[\\/]+$/, ''), '契约漂移（import 宿主已移除的导出）', driftDetail);
+        }
+        // 归属 2（兜底）：SyntaxError 之前最近一个 loader entry 报错者（stderr 被截断、
+        // at 文件行缺失时仍能定位；只取最近一个，避免把同批被连带 entry 误标）
+        const driftSeIdx = stderr.search(/does not provide an? (?:export|an export) named/);
+        if (driftSeIdx >= 0) {
+          const reB = /failed to (?:apply|import) loader entry\s+([^\s(]+)(?:\s*\(([^)]*)\))?/g;
+          let mb;
+          let lastEntryBeforeDrift = null;
+          while ((mb = reB.exec(stderr)) !== null) {
+            if (mb.index >= driftSeIdx) break;
+            let eid = (mb[2] || '').trim();
+            if (eid && /^cordis:/i.test(eid)) continue;
+            if (!eid || eid === 'undefined') eid = (mb[1] || '').trim();
+            lastEntryBeforeDrift = eid;
+          }
+          upsertAdapt(lastEntryBeforeDrift, '契约漂移（import 宿主已移除的导出）', driftDetail);
         }
       }
     }
@@ -758,7 +834,11 @@ export class PluginRegistry {
       for (const [name, source] of candidates) {
         const pkgJsonPath = join(nmRoot, name, 'package.json');
         if (!existsSync(pkgJsonPath)) {
-          addIssue(name, `已注册（${source}）但未安装到 node_modules`);
+          addIssue(name, `已注册（${source}）但未安装到 node_modules`, 'plugin', {
+            source: 'static',
+            action: 'remove',
+            detail: '注册条目存在但包体缺失，移除后可在插件市场重新安装',
+          });
           continue;
         }
         try {
@@ -768,7 +848,11 @@ export class PluginRegistry {
           const mainPath = join(nmRoot, name, mainFile);
           const hasExports = !!(nmPkg.exports && typeof nmPkg.exports === 'object');
           if (!hasExports && !existsSync(mainPath)) {
-            addIssue(name, `入口文件缺失: ${mainFile}`);
+            addIssue(name, `入口文件缺失: ${mainFile}`, 'plugin', {
+              source: 'static',
+              action: 'remove',
+              detail: `包体存在但入口缺失（${mainFile}），已损坏，移除后可在插件市场重新安装`,
+            });
             continue;
           }
           // 校验 dsh.bundle 声明（合法 bundle 的必要标记）
@@ -777,15 +861,75 @@ export class PluginRegistry {
           // fixInvalidPlugins 会执行 `dsh plugin remove <id>` 把真实依赖卸载，导致
           // "Cannot find package 'shiki'" 之类启动失败。
           if (source === 'bundles' && !nmPkg.dsh?.bundle) {
-            addIssue(name, '未声明 dsh.bundle（不是合法 bundle，加载时可能报 "invalid plugin"）');
+            // 低置信：包体完好仅未声明 bundle，可能是合法库依赖或旧格式插件。
+            // 不自动移除，仅作为"待确认风险"提示，避免误删健康插件。
+            addIssue(name, '未声明 dsh.bundle（不是合法 bundle，加载时可能报 "invalid plugin"）', 'plugin', {
+              source: 'static',
+              action: 'inspect',
+              detail: '包体完好但未声明 dsh.bundle；可能是合法库依赖或旧格式插件，不建议移除，请人工确认',
+            });
           }
         } catch {
-          addIssue(name, 'package.json 解析失败');
+          addIssue(name, 'package.json 解析失败', 'plugin', {
+            source: 'static',
+            action: 'remove',
+            detail: 'package.json 损坏/无法解析，移除后可在插件市场重新安装',
+          });
         }
       }
     } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
-    return { total: seen.size, invalid };
+    // 后处理：对 runtime 加载失败的插件做包体探活，区分"可移除（损坏）"与"应修复（完好）"。
+    // 关键护栏：只要包体存在且入口可解析，就绝不建议移除——历史上 gongwen-skill 因 link
+    // 安装缺宿主依赖而启动失败，但其包体完好，正确处置是修复依赖而非卸载。
+    for (const item of invalid) {
+      if (item.kind === 'module') continue; // 已在提取时标记 repair
+      if (item.source === 'runtime' && item.action === 'inspect') {
+        const broken = this.probePluginBrokenness(profile, item.id);
+        if (broken) {
+          item.action = 'remove';
+          item.detail = '启动时加载失败（stderr 指示），且包体缺失/损坏；移除后可在插件市场重新安装';
+        } else {
+          item.action = 'repair';
+          item.detail = '启动时加载失败（stderr 指示）但包体完好，疑似依赖/宿主解析异常（如 link 安装缺宿主依赖）；应修复而非移除';
+        }
+      }
+    }
+
+    return {
+      total: seen.size,
+      invalid,
+      summary: {
+        removable: invalid.filter(i => i.action === 'remove' && i.kind === 'plugin'),
+        repairable: invalid.filter(i => i.action === 'repair' && i.kind === 'plugin'),
+        adaptive: invalid.filter(i => i.action === 'adapt' && i.kind === 'plugin'),
+        modules: invalid.filter(i => i.kind === 'module'),
+        inspect: invalid.filter(i => i.action === 'inspect'),
+      },
+    };
+  }
+
+  /**
+   * 包体探活：判断注册插件是否"包体损坏/缺失"（broken=true 才可移除）。
+   * broken 判定：package.json 缺失/损坏，或既无 exports 又无 main 入口文件。
+   * 包体完好（含 link 安装的插件）一律返回 false —— 此类加载失败应走修复路径。
+   * @param {string} profile
+   * @param {string} id - 插件名（支持 @scope/name）
+   * @returns {boolean} true=损坏/缺失，可移除；false=包体完好，应修复
+   */
+  probePluginBrokenness(profile, id) {
+    const nmRoot = join(DSH_HOME(), 'profiles', profile, 'node_modules');
+    const pkgJsonPath = join(nmRoot, id, 'package.json');
+    if (!existsSync(pkgJsonPath)) return true; // 包体缺失 → broken
+    try {
+      const nmPkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+      const mainFile = nmPkg.main || 'index.js';
+      const hasExports = !!(nmPkg.exports && typeof nmPkg.exports === 'object');
+      if (!hasExports && !existsSync(join(nmRoot, id, mainFile))) return true; // 入口缺失 → broken
+      return false; // 包体完好 → 不 broken
+    } catch {
+      return true; // package.json 损坏 → broken
+    }
   }
 
   /**
@@ -795,16 +939,24 @@ export class PluginRegistry {
    *   ① 官方 `dsh plugin --profile <name> remove <id>`（最干净，同步清理 pnpm 依赖）
    *   ② 直接编辑 profile/package.json：从 dependencies 与 dsh.profile.bundles 移除
    * 同时清理 cordis.patch.yml 中对应的 insert 条目。
+   *
+   * 安全护栏（本次改造重点）：默认只处理 action='remove'（包体损坏/缺失）的条目；
+   * action='repair'（包体完好但依赖/宿主异常）与 action='inspect'（低置信提示）
+   * 一律跳过并计入 skipped，防止把健康或可修复的插件（如 link 安装缺宿主依赖）
+   * 误当"无效插件"卸载。
    * @param {string} [profile='web']
-   * @returns {Promise<{fixed: Array<{id: string, method: string}>, failed: Array<{id: string, error: string}>, remaining: Array<{id: string, reason: string}>}>}
+   * @param {{actions?: Array<'remove'|'repair'|'inspect'>}} [opts]
+   * @returns {Promise<{fixed: Array<{id: string, method: string}>, failed: Array<{id: string, error: string}>, skipped: Array<{id: string, action: string, reason: string}>, remaining: Array<{id: string, reason: string}>}>}
    */
-  async fixInvalidPlugins(profile = 'web') {
+  async fixInvalidPlugins(profile = 'web', opts = {}) {
     const { invalid } = this.diagnoseInvalidPlugins(profile);
     const fixed = [];
     const failed = [];
+    const skipped = [];
+    const allowedActions = new Set(opts.actions || ['remove']);
 
     if (invalid.length === 0) {
-      return { fixed, failed, remaining: [] };
+      return { fixed, failed, skipped, remaining: [] };
     }
 
     const profilesDir = join(DSH_HOME(), 'profiles');
@@ -817,6 +969,13 @@ export class PluginRegistry {
       // 否则会把 DSH 真实依赖卸载掉，导致 "Cannot find package 'shiki'" 启动失败。
       if (item.kind === 'module') {
         failed.push({ id: item.id, error: '缺失模块（需补齐安装，不应移除）' });
+        continue;
+      }
+      // 关键保护：只移除经诊断确认"可移除"（包体损坏/缺失）的条目。
+      // action='repair'（包体完好但依赖/宿主异常，如 link 安装缺宿主依赖）与
+      // action='inspect'（低置信静态提示）不在此移除，计入 skipped。
+      if (!allowedActions.has(item.action || 'remove')) {
+        skipped.push({ id: item.id, action: item.action || 'remove', reason: item.reason });
         continue;
       }
 
@@ -867,7 +1026,7 @@ export class PluginRegistry {
 
     // 修复后复查
     const remaining = this.diagnoseInvalidPlugins(profile).invalid;
-    return { fixed, failed, remaining };
+    return { fixed, failed, skipped, remaining };
   }
 
   /**
@@ -913,9 +1072,17 @@ export class PluginRegistry {
         const idMatch = /^- id:\s*(\S+)$/.exec(line);
         if (idMatch) {
           const id = idMatch[1];
-          // 检查下一行是否为 disabled: true
-          const nextLine = (lines[i + 1] || '').trim();
-          const disabled = /^disabled:\s*true$/.test(nextLine);
+          // 扫描该 entry 的后续缩进属性块（直到下一个非缩进行），
+          // 任意属性位置出现 `disabled: true` 都视为已禁用（dump 可能先输出 name/config 再输出 disabled）
+          let j = i + 1;
+          let disabled = false;
+          while (j < lines.length && /^\s+/.test(lines[j]) && lines[j].trim() !== '') {
+            if (/^disabled\s*:\s*true$/.test(lines[j].trim())) {
+              disabled = true;
+              break;
+            }
+            j++;
+          }
           const isCore = bundle.startsWith('@deepseek-ai/');
           result.push({ id, name: id, bundle, enabled: !disabled, core: isCore });
         }
@@ -1229,113 +1396,136 @@ export class PluginRegistry {
   }
 
   /**
-   * 在 cordis.patch.yml 中设置插件的 disabled 标记（禁用/启用插件）
-   * 兼容 include/insert 单行与多行块格式
-   * @param {string} profile
+   * 解析插件在 DSH loader 中的入口 ID（loader entry id），兼容两种 ID 体系：
+   *   1. loader entry id（composed 树展示 id，如 modlens）——插件管理页禁用按钮传的就是它；
+   *   2. dsh-manager 本地登记 / bundle id（如 @liustack/modlens，来自 plugins.json 或 patch include/insert）。
+   * 写禁用 override 必须以 loader entry id 为准才能真正覆盖 bundle 内插件的 disabled 字段。
    * @param {string} pluginId
+   * @param {string} [profile='web']
+   * @param {boolean} [forceRefresh=false]
+   * @returns {Promise<{entryId: string, matchedBy: string} | null>}
+   */
+  async resolvePluginEntryId(pluginId, profile = 'web', forceRefresh = false) {
+    if (!pluginId) return null;
+    let composed = [];
+    try {
+      composed = await this.getComposedPlugins(profile, forceRefresh);
+    } catch { /* 解析失败时走本地匹配兜底 */ }
+
+    // ① pluginId 本身就是 loader entry id
+    if (composed.some((e) => e.id === pluginId)) {
+      return { entryId: pluginId, matchedBy: 'composed-id' };
+    }
+
+    // ② pluginId 是登记 / bundle id（含 scope），取该 bundle 展开的（非核心）用户 entry
+    const byBundle = composed.filter((e) => e.bundle === pluginId && !e.core);
+    if (byBundle.length === 1) return { entryId: byBundle[0].id, matchedBy: 'bundle' };
+    if (byBundle.length > 1) return { entryId: pluginId, matchedBy: 'bundle-multi' };
+
+    // ③ 名称尾段匹配（如传入短名，composed 内是 scoped 形态）
+    const tail = (id) => String(id).split('/').pop();
+    const want = tail(pluginId);
+    const byTail = composed.filter((e) => !e.core && (tail(e.id) === want || tail(e.bundle) === want));
+    if (byTail.length === 1) return { entryId: byTail[0].id, matchedBy: 'tail' };
+
+    return null;
+  }
+
+  /**
+   * 在 profile 用户层 cordis.patch.yml 中设置插件的 disabled 标记（禁用/启用插件）。
+   *
+   * 修复说明（针对“插件管理点禁用无效 / 崩溃自动暂停未成功禁用”）：
+   * 旧实现只改写 patch 文件中「已存在的 include/insert 子项」，对由 bundle 包自带的
+   * cordis.patch.yml 注册的插件（如 @liustack/modlens → entry modlens）完全不生效，
+   * 表现为返回“未找到对应条目”、不落盘 disabled 标记。
+   * 本实现改为 DSH loader 官方的 **id-targeted override** 语义：
+   *   在 profile 用户层补丁顶层维护形如 `- id: <entryId>` + `  disabled: true` 的条目，
+   *   由 applyEntryPatches 按 id 覆盖任意来源 entry 的 disabled 字段（已验证 dump-config 生效），
+   *   不要求该 entry 原本就出现在用户层 patch 中。
+   * 本方法负责幂等维护这些 override 块：禁用→追加/补 disabled；启用→删除对应块。
+   * @param {string} profile
+   * @param {string} pluginId - loader entry id（或已解析出的 entry id）
    * @param {boolean} disabled
    * @returns {{success: boolean, message?: string}}
    */
   setPluginDisabled(profile, pluginId, disabled) {
     const profilesDir = join(DSH_HOME(), 'profiles');
-    const patchFiles = [
-      join(profilesDir, profile, 'cordis.patch.yml'),
-      join(DSH_HOME(), 'cordis.patch.yml'),
-    ];
-    let touched = false;
-    for (const patchFile of patchFiles) {
-      if (!existsSync(patchFile)) continue;
-      try {
-        const original = readFileSync(patchFile, 'utf-8');
-        const lines = original.split(/\r?\n/);
-        const out = [];
-        let inBlock = null; // 'include' | 'insert' | null
-        let blockIndent = 0;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          const trimmed = line.trim();
+    const patchFile = join(profilesDir, profile, 'cordis.patch.yml');
+    const entryId = String(pluginId || '').trim();
+    if (!entryId) return { success: false, message: '插件 ID 为空' };
 
-          // 单行 include/insert: <id>
-          const singleMatch = /^-\s*(include|insert):\s*['"]?([^'"\s]+)['"]?\s*$/.exec(trimmed);
-          if (singleMatch && !inBlock) {
-            const [, type, id] = singleMatch;
-            if (id === pluginId) {
-              if (disabled) {
-                // 改为两行：- include: <id>\n  disabled: true
-                out.push(line);
-                const indent = (line.match(/^\s*/) || [''])[0] + '  ';
-                out.push(indent + 'disabled: true');
-              } else {
-                // 移除紧随的 disabled: true 行（若存在）
-                out.push(line);
-                const nextLine = lines[i + 1] || '';
-                if (nextLine.trim().startsWith('disabled:')) {
-                  i++; // 跳过下一行
-                }
-              }
-              touched = touched || true;
-            } else {
-              out.push(line);
-            }
-            continue;
-          }
-
-          // 块头：- include:/insert:（冒号后无值）
-          const blockMatch = /^-\s*(include|insert):\s*$/.exec(trimmed);
-          if (blockMatch && !inBlock) {
-            inBlock = blockMatch[1];
-            blockIndent = (line.match(/^\s*/) || [''])[0].length;
-            out.push(line);
-            continue;
-          }
-
-          // 块内行
-          if (inBlock) {
-            const indentLen = (line.match(/^\s*/) || [''])[0].length;
-            if (/^\s+/.test(line)) {
-              // 子项行：- <id> / - id: <id> / name: <id> / disabled: <bool>
-              const childMatch = /^\s*-(?:\s*(?:id|name)\s*:\s*)?['"]?([^'"\s]+)['"]?/.exec(trimmed);
-              if (childMatch && childMatch[1] === pluginId) {
-                // 找到目标条目：在条目末尾添加/移除 disabled
-                out.push(line);
-                // 查找并处理该条目的后续兄弟行（name:, disabled: 等）
-                let j = i + 1;
-                let itemLines = [line];
-                while (j < lines.length && /^\s+/.test(lines[j]) && indentLen === (lines[j].match(/^\s*/) || [''])[0].length) {
-                  itemLines.push(lines[j]);
-                  j++;
-                }
-                if (disabled && !/disabled\s*:/.test(itemLines.join('\n'))) {
-                  out.push(' '.repeat(blockIndent + 2) + 'disabled: true');
-                }
-                touched = true;
-                continue;
-              }
-              if (/^\s*disabled\s*:/.test(trimmed) && !disabled) {
-                // 删除前面的 disabled 行（已在 if 中通过 itemLines 处理）
-                continue; // 直接跳过
-              }
-              out.push(line);
-              continue;
-            }
-            // 块结束
-            inBlock = null;
-            out.push(line);
-            continue;
-          }
-
-          // 普通行
-          out.push(line);
-        }
-        const newContent = out.join('\n');
-        if (newContent !== original) {
-          writeFileSync(patchFile, newContent, 'utf-8');
-          touched = true;
-        }
-      } catch (e) {
-        console.warn('设置插件 disabled 失败:', patchFile, e.message);
+    let original = '';
+    if (existsSync(patchFile)) {
+      try { original = readFileSync(patchFile, 'utf-8'); } catch (e) {
+        return { success: false, message: '读取补丁失败: ' + (e?.message || e) };
       }
     }
-    return { success: touched, message: touched ? (disabled ? '已禁用' : '已启用') : '未找到对应条目' };
+    const lines = original.split(/\r?\n/);
+    const out = [];
+    let found = false;      // 已存在针对 entryId 的顶层 id-targeted 块
+    let hasDisabled = false;
+
+    const isEntryHead = (l) => !/^\s/.test(l) && /^-\s+id\s*:\s*/.test(l.trim());
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+      if (isEntryHead(line)) {
+        const id = trimmed.replace(/^-\s+id\s*:\s*/, '').replace(/['"]/g, '').trim();
+        if (id === entryId) {
+          const block = [line];
+          let j = i + 1;
+          while (j < lines.length && /^\s+/.test(lines[j])) {
+            block.push(lines[j]);
+            if (/^\s*disabled\s*:/.test(lines[j].trim())) hasDisabled = true;
+            j++;
+          }
+          found = true;
+          i = j - 1;
+          if (disabled) {
+            // 保留块内其它属性；缺 disabled 字段则补上
+            out.push(line);
+            const extra = block.slice(1).filter((l) => !/^\s*disabled\s*:/.test(l.trim()));
+            out.push(...extra);
+            if (!hasDisabled) out.push('  disabled: true');
+          } else {
+            // 启用：整块删除（本方法生成的块只含 id+disabled，无其它属性）
+            const extra = block.slice(1).filter((l) => !/^\s*disabled\s*:/.test(l.trim()));
+            if (extra.length) out.push(line, ...extra);
+          }
+          continue;
+        }
+        out.push(line);
+        continue;
+      }
+      out.push(line);
+    }
+
+    // 幂等短路
+    if (!disabled && !found) return { success: true, message: '已启用' };
+    if (disabled && found && hasDisabled) return { success: true, message: '已禁用' };
+
+    // 空态识别：内容仅注释 / [] / 空
+    const body = out.filter((l) => l.trim() !== '' && !l.trim().startsWith('#'));
+    const isEmptyArr = body.length === 0 || (body.length === 1 && body[0].trim() === '[]');
+
+    let newContent;
+    if (disabled && !found) {
+      const row = ['- id: ' + entryId, '  disabled: true'];
+      if (isEmptyArr) {
+        const comments = out.filter((l) => l.trim().startsWith('#')).join('\n').trimEnd();
+        newContent = (comments ? comments + '\n' : '') + row.join('\n');
+      } else {
+        newContent = out.join('\n').trimEnd() + '\n' + row.join('\n');
+      }
+    } else {
+      // 启用命中（删除块）/ 禁用命中但缺 disabled（已补）→ 直接拼结果
+      newContent = out.join('\n').trimEnd();
+    }
+    if (newContent.trim() === '') newContent = '[]';
+
+    if (original.trimEnd() !== newContent.trimEnd()) {
+      writeFileSync(patchFile, newContent + '\n', 'utf-8');
+    }
+    return { success: true, message: disabled ? '已禁用' : '已启用' };
   }
 }

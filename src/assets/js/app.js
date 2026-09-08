@@ -73,6 +73,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
 
+  // 插件崩溃自动隔离：实时接收主进程广播（不限当前页面），toast 提示
+  if (window.dshManager && typeof window.dshManager.onPluginQuarantineEvent === 'function') {
+    window.dshManager.onPluginQuarantineEvent((ev) => {
+      try {
+        if (!ev) return;
+        const who = ev.pluginId || ev.provider;
+        if (ev.autoPaused) {
+          const note = ev.alreadyDisabled ? '（该插件此前已禁用，重启 DSH 会话后生效）' : '（可在插件管理页恢复）';
+          showToast(`插件保护：${who} 触发 LLM 崩溃，已自动暂停${note}`, 'warning', 8000);
+        } else if (ev.reason === 'system-provider') {
+          showToast(`LLM 核心 provider ${ev.provider} 异常（系统适配器，不自动暂停），已写入隔离日志`, 'warning', 8000);
+        } else if (ev.reason === 'unresolved') {
+          showToast(`LLM provider ${ev.provider} 异常，但未能定位到本地插件，已写入隔离日志`, 'warning', 8000);
+        } else {
+          showToast(`插件保护：${who} 检测到异常，请到插件管理页查看隔离详情`, 'warning', 6000);
+        }
+      } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+    });
+  }
+
   // 初始化键盘快捷键（模块化后由 shortcuts.js 提供）
   if (typeof initKeyboardShortcuts === 'function') {
     initKeyboardShortcuts();
@@ -834,11 +854,103 @@ function toggleAllBundles(expand) {
   });
 }
 
+/**
+ * 插件崩溃隔离横幅：展示已自动暂停的插件与隔离日志状态
+ * 无隔离记录时返回空串（不渲染）。
+ */
+async function buildQuarantineBannerHtml() {
+  const ov = await window.dshManager.quarantineOverview();
+  if (!ov) return '';
+  const paused = (ov.local || []).filter((p) => p.quarantine && p.quarantine.active);
+  const unresolvedProviders = (ov.groups || [])
+    .filter((g) => !(ov.local || []).some((p) => p.quarantine && p.quarantine.provider === g.provider && p.quarantine.active))
+    .filter((g) => g.count > 0);
+  if (paused.length === 0 && unresolvedProviders.length === 0) return '';
+
+  const fmtTs = (ts) => {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    } catch (e) { return ''; }
+  };
+  const totalEvents = (ov.recent && ov.recent.length) || ov.events || 0;
+
+  const pausedRows = paused.map((p) => {
+    const q = p.quarantine || {};
+    const hint = q.message || q.reason || '会话 turn 崩溃';
+    return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;border-bottom:1px dashed var(--border-color, rgba(128,128,128,0.2));">
+      <span class="badge badge-gray" style="background:#c62828;color:#fff;">已暂停</span>
+      <strong>${escapeHtml(p.name || p.id)}</strong>
+      <span style="font-size:12px;color:var(--text-dim);">provider: ${escapeHtml(q.provider || '-')}</span>
+      <span style="font-size:12px;color:var(--text-dim);">崩溃 ${q.count || 1} 次 · ${fmtTs(q.lastTs || q.updatedAt)}</span>
+      <span style="font-size:12px;color:var(--text-dim);">${escapeHtml(hint)}</span>
+      <span style="margin-left:auto;">
+        <button class="btn btn-sm btn-primary" onclick="quarantineRecoverPlugin('${escapeAttr(p.id)}')">🔓 恢复并信任</button>
+      </span>
+    </div>`;
+  }).join('');
+
+  const unresolvedRows = unresolvedProviders.map((g) =>
+    `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;border-bottom:1px dashed var(--border-color, rgba(128,128,128,0.2));">
+      <span class="badge badge-gray" style="background:#6a1b9a;color:#fff;">未定位来源</span>
+      <strong>${escapeHtml(g.provider)}</strong>
+      <span style="font-size:12px;color:var(--text-dim);">崩溃 ${g.count} 次 · 未能匹配到本地插件（可能属系统适配器，未自动暂停）</span>
+    </div>`
+  ).join('');
+
+  return `<div class="card" style="margin-bottom:20px;border:1px solid #c62828;background:linear-gradient(135deg, rgba(198,40,40,0.10), rgba(198,40,40,0.03));">
+    <div class="card-header">
+      <span class="card-title">🛡️ 插件崩溃自动隔离</span>
+      <button class="btn btn-sm btn-ghost" style="margin-left:auto;" onclick="quarantineClearHistory()">🗑 清空隔离历史</button>
+    </div>
+    <div class="card-body" style="padding:10px 16px;">
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:6px;">
+        检测到插件导致 DSH 会话崩溃，已自动暂停对应插件以保护会话；确认插件修复后可点击恢复。
+        ${totalEvents ? `<span style="color:var(--text-dim);">（隔离日志共 ${totalEvents} 条）</span>` : ''}
+      </div>
+      ${pausedRows}
+      ${unresolvedRows}
+      <div style="font-size:12px;color:var(--text-dim);padding-top:6px;">
+        提示：禁用/暂停将在下次 DSH 会话重启后完全生效；恢复插件后若再次崩溃会重新进入隔离。
+      </div>
+    </div>
+  </div>`;
+}
+
+async function quarantineRecoverPlugin(id) {
+  try {
+    const r = await window.dshManager.quarantineRecoverPlugin(id);
+    showToast(r && r.message ? r.message : '插件已恢复并信任', 'success', 4000);
+  } catch (e) {
+    showToast('恢复失败: ' + (e?.message || e), 'error', 5000);
+  }
+  renderPluginsPage();
+}
+
+async function quarantineClearHistory() {
+  try {
+    await window.dshManager.quarantineClearHistory();
+    showToast('已清空隔离历史', 'success', 3000);
+  } catch (e) {
+    showToast('清空失败: ' + (e?.message || e), 'error', 5000);
+  }
+  renderPluginsPage();
+}
+
 async function renderPluginsPage() {
   // 进入插件页时清空搜索缓存，确保数据最新
   _localPluginsCache = null;
   const el = document.getElementById('pluginsContent');
   if (!el) return;
+
+  // 拉取插件隔离概览（自动暂停状态 / 隔离日志摘要），渲染顶部横幅
+  let quarantineBannerHtml = '';
+  try {
+    if (window.dshManager && typeof window.dshManager.quarantineOverview === 'function') {
+      quarantineBannerHtml = await buildQuarantineBannerHtml();
+    }
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
   let localPlugins = [];
   let composedPlugins = [];
@@ -903,6 +1015,7 @@ async function renderPluginsPage() {
   }).join('');
 
   el.innerHTML = `
+    ${quarantineBannerHtml}
     <div style="margin-bottom:20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
       <button class="btn btn-primary" onclick="showMarketplace()">
         🛒 浏览插件市场
@@ -1175,9 +1288,9 @@ async function loadMarketplace(query) {
       fullName: 'linhut/dsh-skills',
       stars: 1,
       forks: 0,
-      description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能，模型可通过 skill 工具按需加载。',
+      description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works、web-search、gongwen-skill（公文）、ppt-studio（PPT）九个开箱即用技能，模型可通过 skill 工具按需加载。',
       language: 'JavaScript',
-      topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'recommended'],
+      topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'web-search', 'gongwen', 'ppt', 'recommended'],
       recommended: true,
     },
     {
@@ -2089,8 +2202,8 @@ async function loadSkillMarketplace(query) {
     {
       fullName: 'linhut/dsh-skills',
       name: 'dsh-skills',
-      description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works 六个开箱即用的方法论技能',
-      stars: 0, forks: 0, topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'recommended'],
+      description: '实用技能合集 - 内置 brainstorming、using-superpowers、finishing-a-development-branch、writing-skills、github-actions-docs、how-it-works、web-search、gongwen-skill（公文）、ppt-studio（PPT）九个开箱即用技能',
+      stars: 0, forks: 0, topics: ['dsh-plugin', 'dsh', 'skills', 'deepseek-harness', 'superpowers', 'brainstorming', 'web-search', 'gongwen', 'ppt', 'recommended'],
       recommended: true,
     },
     {

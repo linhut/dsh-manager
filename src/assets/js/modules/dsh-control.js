@@ -245,10 +245,49 @@ async function tryStartDSH() {
         : ('exit code ' + (data?.exitCode ?? '?'));
       
       // 检查是否有无效插件/缺失模块导致启动失败，提供一键修复
-      const invalidPlugins = data?.invalidPlugins;
-      if (invalidPlugins && invalidPlugins.length > 0) {
+      const invalidPlugins = data?.invalidPlugins || [];
+      if (invalidPlugins.length > 0) {
         const missingModules = invalidPlugins.filter(function(p) { return p.kind === 'module'; });
-        const badPlugins = invalidPlugins.filter(function(p) { return p.kind !== 'module'; });
+        // 契约漂移（插件 import 了宿主已移除的导出，如旧版设置面板 API）：
+        // 包体完好但 API 不兼容，自动修复/移除均无效，只能升级插件版本或停用
+        const driftPlugins = (data?.contractDrift || []).filter(function(p) { return p && p.kind !== 'module'; });
+        // 无效插件弹窗需排除契约漂移项（移除对它们无效，且会造成"移除→仍失败"的误导）
+        const badPlugins = invalidPlugins.filter(function(p) {
+          return p.kind !== 'module' && p.action !== 'adapt' && String(p.reason || '').indexOf('契约漂移') < 0;
+        });
+
+        // ①-0 契约漂移插件：不能移除也不能自动修复，请停用或升级
+        if (driftPlugins.length > 0) {
+          const names = driftPlugins.map(function(p) { return p.id; }).join('、');
+          const driftDetail = (driftPlugins[0] && driftPlugins[0].detail) || '';
+          dismissDSHOpToast();
+          const msg = '检测到 ' + driftPlugins.length + ' 个插件与当前 DSH 版本不兼容（契约漂移）：\n' + names +
+            (driftDetail ? '\n\n原因：' + driftDetail : '') +
+            '\n\n这类问题无法通过"移除"或"自动修复"解决（包体完好、依赖完整，只是用了 DSH 已移除的接口）。\n推荐升级插件版本；在升级前可先停用该插件恢复 DSH 启动。';
+          showConfirm('插件与 DSH 版本不兼容', msg, { confirmText: '停用并重启', cancelText: '稍后处理', confirmVariant: 'primary' })
+            .then(async function(ok) {
+              if (!ok) {
+                showToast('已取消。可在插件管理中停用或升级 ' + names, 'info', 5000);
+                return;
+              }
+              let allOk = true;
+              for (const p of driftPlugins) {
+                try {
+                  await window.dshManager.disablePlugin(p.id);
+                } catch (e) {
+                  allOk = false;
+                  showToast('停用 ' + p.id + ' 失败: ' + e.message + '，请到插件管理页操作', 'error', 6000);
+                }
+              }
+              if (allOk) {
+                showToast('已停用不兼容插件，正在重启 DSH...', 'info');
+                fixAndRestartDSH([]);
+              } else {
+                switchPage('plugins');
+              }
+            });
+          return;
+        }
 
         // ① 缺失模块（如 shiki/js-yaml）：确定性依赖问题，无需用户确认，直接自动修复
         if (missingModules.length > 0) {
@@ -260,12 +299,22 @@ async function tryStartDSH() {
           return;
         }
 
-        // ② 无效插件：移除属于破坏性操作，需用户确认
+        // ② 无效插件：可能为包体损坏（需移除）或依赖缺失（可自动修复），均需用户确认
         if (badPlugins.length > 0) {
-          const names = badPlugins.map(function(p) { return p.id; }).join('、');
+          const removeOnes = badPlugins.filter(function(p) { return p.action === 'remove'; });
+          const repairOnes = badPlugins.filter(function(p) { return p.action !== 'remove'; });
+          const hasRemove = removeOnes.length > 0;
+          const hasRepair = repairOnes.length > 0;
           dismissDSHOpToast();
-          const msg = '检测到 ' + badPlugins.length + ' 个无效插件（' + names + '）导致 DSH 无法启动。\n是否一键移除并重新启动？';
-          showConfirm('移除无效插件', msg, { confirmText: '移除并重启', cancelText: '取消', confirmVariant: 'danger' })
+          const parts = [];
+          if (hasRepair) {
+            parts.push(repairOnes.length + ' 个依赖缺失可自动修复（' + repairOnes.map(function(p) { return p.id; }).join('、') + '）');
+          }
+          if (hasRemove) {
+            parts.push(removeOnes.length + ' 个包体损坏需移除（' + removeOnes.map(function(p) { return p.id; }).join('、') + '，移除后如需可重新安装）');
+          }
+          const msg = '检测到 ' + badPlugins.length + ' 个无效插件导致 DSH 无法启动：\n' + parts.join('；') + '\n是否自动处理并重新启动？';
+          showConfirm(hasRemove ? '移除损坏插件并修复' : '修复无效插件', msg, { confirmText: '自动处理并重启', cancelText: '取消', confirmVariant: hasRemove ? 'danger' : 'primary' })
             .then(function(ok) { if (ok) fixAndRestartDSH(badPlugins.map(function(p) { return p.id; })); });
           return;
         }
@@ -340,6 +389,9 @@ async function fixAndRestartDSH(moduleIds) {
       }
       if (result.depFix && result.depFix.repaired && result.depFix.repaired.length > 0) {
         summary.push('修复依赖 ' + result.depFix.repaired.length + ' 个包');
+      }
+      if (result.linkFix && result.linkFix.injected && result.linkFix.injected.length > 0) {
+        summary.push('补齐 link 插件宿主依赖 ' + result.linkFix.injected.length + ' 个');
       }
       if (result.globalFix && result.globalFix.fixed && result.globalFix.fixed.length > 0) {
         summary.push('修复全局依赖 ' + result.globalFix.fixed.length + ' 个');

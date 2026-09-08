@@ -173,6 +173,13 @@ jobs:
             > 信创环境安装指引见 [docs/信创部署指南.md](https://github.com/linhut/dsh-manager/blob/main/docs/信创部署指南.md)
 
             ---
+            ### ⚡ 本版本亮点
+
+            - **适配 DSH 新版本 API 大改（0.1.2-rc.1）**：插件安装迁移到官方 `dsh.profile.bundles` 机制、能力路由按 advisory 语义校验、契约漂移（import 已移除导出）自动检测、插件崩溃自动隔离、link 插件宿主依赖自动补齐
+            - **内置技能同步升级**：`linhut/dsh-skills` 现内置 **9 个技能**，含 web-search（联网搜索）、gongwen-skill（公文全流程）、ppt-studio（PPT 全能工坊）
+            - 完整适配范围声明见 [docs/适配范围-DSH-API大改.md](https://github.com/linhut/dsh-manager/blob/main/docs/适配范围-DSH-API大改.md)
+
+            ---
             ### 安装说明
 
             **Windows**: 双击运行 `.exe` 安装程序，按照向导完成安装

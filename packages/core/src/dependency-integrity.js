@@ -5,7 +5,7 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  */
 
-import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, cpSync, mkdirSync, rmSync, lstatSync, realpathSync } from "node:fs";
 import { join, dirname, resolve, sep } from "node:path";
 import { execa } from "execa";
 import { DSH_PATHS, getDSHPath } from "./dsh-utils.js";
@@ -479,6 +479,64 @@ export async function repairAllProfiles(options) {
   for (const p of profiles) results[p] = await repairProfileFromGlobal(p, options);
   const tr = Object.values(results).reduce((s, r) => s + r.repaired.length, 0);
   return { profiles, results, summary: "Checked " + profiles.length + " profiles, repaired " + tr + " packages" };
+}
+
+export async function repairLinkPluginHostDeps(profile = "web") {
+  validateProfileName(profile);
+  const nmRoot = join(DSH_PATHS.profiles, profile, "node_modules");
+  const pkgFile = join(DSH_PATHS.profiles, profile, "package.json");
+  const checked = [], injected = [], skipped = [], failed = [];
+  if (!existsSync(nmRoot) || !existsSync(pkgFile)) {
+    return { checked, injected, skipped, failed, summary: "profile 不存在，跳过 link 宿主依赖检查" };
+  }
+  let pkg;
+  try { pkg = JSON.parse(readFileSync(pkgFile, "utf-8")); }
+  catch (e) { return { checked, injected, skipped, failed, summary: "读取 profile package.json 失败: " + e.message }; }
+
+  // 候选：profile dependencies + bundles 中登记的非系统插件
+  const candidates = [];
+  const seen = new Set();
+  const addCand = (id) => { if (id && !seen.has(id)) { seen.add(id); candidates.push(id); } };
+  if (pkg.dependencies) for (const id of Object.keys(pkg.dependencies)) addCand(id);
+  if (pkg.bundles) for (const b of pkg.bundles) { const id = typeof b === "string" ? b : (b.id || b.name); addCand(id); }
+  const hostNs = "@deepseek-ai/";
+  for (const id of candidates) {
+    if (isSystemComponent(id)) continue; // 系统组件由 repairGlobalDSHInstall 治理
+    const p = join(nmRoot, id);
+    if (!existsSync(p)) continue;
+    let st;
+    try { st = lstatSync(p); } catch (e) { failed.push({ id, error: "lstat: " + e.message }); continue; }
+    if (!st.isSymbolicLink()) continue; // 非 link 安装不归本函数治理
+    let real;
+    try { real = realpathSync(p); } catch (e) { failed.push({ id, error: "realpath: " + e.message }); continue; }
+    // pnpm 常规安装也是 symlink，但指向 profile 内部 .pnpm 虚拟店；只有指向外部的才是 link: 源
+    if (real === p || real.startsWith(nmRoot)) continue;
+    // 读取 link 目标 package.json，收集宿主命名空间依赖
+    let lpkg;
+    try { lpkg = JSON.parse(readFileSync(join(real, "package.json"), "utf-8")); }
+    catch (e) { failed.push({ id, error: "读取 link 目标 package.json 失败: " + e.message }); continue; }
+    checked.push(id);
+    const need = new Map();
+    const collect = (deps) => { if (!deps) return; for (const [k, v] of Object.entries(deps)) if (k.startsWith(hostNs)) need.set(k, v); };
+    collect(lpkg.peerDependencies); collect(lpkg.dependencies);
+    const linkNm = join(real, "node_modules");
+    for (const [dep, spec] of need) {
+      const depParts = dep.split("/"); // @deepseek-ai/xxx → ['@deepseek-ai','xxx']
+      const srcPkg = join(nmRoot, dep);
+      const dstDir = join(linkNm, depParts[0], depParts[1]);
+      if (!existsSync(srcPkg)) { skipped.push({ id, reason: "宿主 profile 无此包: " + dep }); continue; }
+      if (existsSync(join(dstDir, "package.json"))) { skipped.push({ id, reason: dep + " 副本已存在" }); continue; }
+      try {
+        mkdirSync(join(linkNm, depParts[0]), { recursive: true });
+        cpSync(srcPkg, dstDir, { recursive: true, force: true });
+        injected.push(id + "@" + dep);
+      } catch (e) { failed.push({ id, error: "注入 " + dep + " 失败: " + e.message }); }
+    }
+  }
+  const summary = injected.length
+    ? "link 宿主依赖注入 " + injected.length + " 处（" + injected.join("、") + "）"
+    : "link 宿主依赖无需注入（checked " + checked.length + ", skipped " + skipped.length + ", failed " + failed.length + "）";
+  return { checked, injected, skipped, failed, summary };
 }
 
 export async function getDependencyHealth(profile) {

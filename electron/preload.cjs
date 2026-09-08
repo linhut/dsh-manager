@@ -72,6 +72,15 @@ contextBridge.exposeInMainWorld('dshManager', {
   pickPluginDir: () => ipcRenderer.invoke('marketplace:pick-plugin-dir'),
   selectSkillDirectory: () => ipcRenderer.invoke('skills:pick-dir'),
 
+  // ====== 插件崩溃自动隔离（quarantine） ======
+  quarantineOverview: () => ipcRenderer.invoke('quarantine:overview'),
+  quarantineClearHistory: () => ipcRenderer.invoke('quarantine:clear-history'),
+  quarantineRecoverPlugin: (pluginId) => ipcRenderer.invoke('quarantine:recover-plugin', pluginId),
+  onPluginQuarantineEvent: (callback) => {
+    ipcRenderer.on('dsh:plugin-quarantine-event', (_, data) => callback(data));
+    return () => ipcRenderer.removeAllListeners('dsh:plugin-quarantine-event');
+  },
+
   // ====== 配置管理 ======
   getConfig: (key) => ipcRenderer.invoke('config:get', key),
   setConfig: (key, value) => ipcRenderer.invoke('config:set', key, value),

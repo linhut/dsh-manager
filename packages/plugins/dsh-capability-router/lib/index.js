@@ -10,8 +10,9 @@
  *  - 监听 agent/request waterfall（prepend: true，最外层），每次请求前根据当前轮次
  *    用户消息内容判定能力：含图片块 → vision（识图）；代码特征文本 → code（代码）；
  *    无命中 → defaultCapability（默认 semantic，语义模型）。
- *  - 仅当路由启用、该能力已配置 provider+model、且能被解析时才改写；能力未配置、
- *    模型不可解析、或当前已是目标模型时原样透传，绝不产生"看得见但用不上"的悬空配置。
+ *  - 仅当路由启用、该能力已配置 provider+model、且 provider 已被适配器注册时才改写；
+ *    能力未配置、provider 未注册、或当前已是目标模型时原样透传，绝不产生
+ *    "看得见但用不上"的悬空配置（模型按官方 advisory 语义由 prepareCall 兜底校验）。
  */
 import { Service } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
@@ -35,7 +36,10 @@ function writeRouteLog(line) {
     const file = routeLogPath();
     mkdirSync(dirname(file), { recursive: true });
     appendFileSync(file, "[" + new Date().toISOString() + "] " + line + String.fromCharCode(10), "utf-8");
-  } catch {}
+  } catch (err) {
+    // 日志落盘失败不阻断路由，但至少向 stderr 暴露原因，避免"设置了但不知道生不生效"
+    console.debug("[capability-router] 运行时日志写入失败: " + (err && err.message ? err.message : String(err)));
+  }
 }
 
 /** Settings namespace：与 Manager 端 settings.yaml 的 capability-router 段对应。 */
@@ -98,11 +102,11 @@ export function isCodeText(text) {
   if (/^[ \t]*```/m.test(t)) return true;
   // 文件路径 + 语言扩展
   if (/[\w-]+\.(js|ts|tsx|jsx|py|go|rs|java|c|cpp|cs|php|rb|sh|bash|sql|json|yaml|yml|html|css|vue|swift|kt|dart|mjs|cjs)\b/.test(t)) return true;
-  // 常见编程关键词（需要词边界，避免误伤自然语言）
+  // 常见编程关键词（需要词边界，避免误伤自然语言）；关键词均为静态正则，不会抛错
   const keywordHits = ["function", "const ", "let ", "import ", "export ", "from ", "class ", "interface ", "def ", "return ", "=>", "console.log", "public static void main", "#include", "package ", "using namespace"];
   let hits = 0;
   for (const kw of keywordHits) {
-    try { if (new RegExp(kw, "m").test(t)) hits++; } catch {}
+    if (new RegExp(kw, "m").test(t)) hits++;
   }
   return hits >= 2;
 }
@@ -131,17 +135,29 @@ function lastUserBlocks(session) {
   }
 }
 
-/** 校验 provider/model 是否已被适配器注册（避免指向不存在的路由）。 */
-function isResolvable(ctx, provider, model) {
+/**
+ * 校验 provider 是否已被适配器注册（避免指向不存在的路由），模型采用官方 advisory 语义：
+ * 提供方目录（listModels）不因"模型未列入"而拒绝请求——官方契约要求消费方不得把
+ * 目录缺席当作拒绝依据，真正的模型校验由 DSH 的 prepareCall 兜底。
+ * @param {object} ctx - Cordis 上下文
+ * @param {string} provider - 目标 provider 路由键
+ * @param {string} model - 目标模型 id（仅用于日志/一致性，不参与硬校验）
+ * @returns {Promise<boolean>} provider 已注册（或 llm 服务不可用）时为 true
+ */
+async function isResolvable(ctx, provider, model) {
   try {
     const llm = ctx && ctx.get ? ctx.get("llm") : undefined;
     if (!llm || typeof llm.listProviders !== "function") return true; // llm 服务不可用时放行，交给 prepareCall 兜底
     const providers = llm.listProviders();
     if (!Array.isArray(providers)) return true;
+    // 官方 LlmProviderInfo = { id, name }；按 id 或 name 匹配
     const p = providers.find(function (x) { return x && (x.id === provider || x.name === provider); });
-    if (!p) return false;
-    const models = p.models || [];
-    return models.length === 0 || models.some(function (m) { return m && (m.id === model || m === model); });
+    if (!p) return false; // 路由未注册 → 透传，避免把请求指向不存在的 provider
+    // 目录查询抛错（如 registration() 失配）视为不可解析；空目录/未列出模型均放行（advisory）
+    if (typeof llm.listModels === "function") {
+      try { await llm.listModels(p.id || provider); } catch { return false; }
+    }
+    return true;
   } catch {
     return true;
   }
@@ -260,7 +276,7 @@ var CapabilityRouter = class extends Service {
       }
       const spec = routing.capabilities[capability];
       if (!spec || !spec.provider || !spec.model) return resolved; // 该能力未配置 → 透传
-      if (!isResolvable(this.ctx, spec.provider, spec.model)) return resolved; // 路由不存在 → 透传
+      if (!(await isResolvable(this.ctx, spec.provider, spec.model))) return resolved; // 路由不存在 → 透传
       // 与当前一致则不变
       if (resolved && resolved.provider === spec.provider && resolved.model === spec.model) return resolved;
       const withoutEffort = resolved ? Object.assign({}, resolved) : {};

@@ -1,22 +1,42 @@
 {
   "name": "@dsh-manager/dsh-capability-router",
-  "version": "1.0.0",
-  "description": "按消息内容（图片→识图、代码→代码、其他→语义）自动切换 LLM provider/model 的能力路由插件",
+  "version": "1.0.1",
+  "description": "按消息内容（图片→识图、代码→代码、其他→语义）自动切换 LLM provider/model 的 DSH 能力路由插件",
   "main": "lib/index.js",
   "type": "module",
   "exports": {
     ".": "./lib/index.js"
   },
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@dsh-manager/dsh-capability-router"
-      ]
-    }
-  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "dsh",
+    "deepseek-harness",
+    "capability-router",
+    "llm-routing",
+    "model-routing"
+  ],
   "license": "MIT",
   "author": {
     "name": "Jose AI",
     "url": "https://www.linhut.cn"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linhut/dsh-manager.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh": ">=0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.2"
   }
 }

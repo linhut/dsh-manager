@@ -6,7 +6,7 @@
  */
 
 import { shell, BrowserWindow, dialog, clipboard, app } from 'electron';
-import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync, realpathSync, lstatSync, symlinkSync } from 'node:fs';
 import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLog } from './debug-logger.js';
@@ -142,6 +142,19 @@ let __restoredWebUrl = null;
 /** 持久化状态加载完成的 Promise（getDSHWebUrl 前 await，避免时序竞态） */
 let __webUrlStateReady = Promise.resolve();
 
+// ====== 插件崩溃自动隔离（quarantine） ======
+// 数据面：DSH 侧 vendor patch（dsh-llm）在 adapter 契约缺失/崩溃时向
+// ~/.dsh/manager/plugin-quarantine.jsonl 追加事件；Manager 侧监听该文件，
+// 按 provider 启发式定位本地插件并自动暂停（disable），再向 UI 推送提示。
+let quarantineWatcherStarted = false;
+let quarantineDebounceTimer = null;
+/** 已消费事件指纹（provider|ts），避免文件多次 change 触发重复处理 */
+const processedQuarantineKeys = new Set();
+const QUARANTINE_PROCESSED_MAX = 500;
+/** provider -> 上次自动暂停时间戳；冷却期内不重复自动暂停，防循环崩溃刷屏 */
+const quarantineCooldown = new Map();
+
+
 /**
  * DSH web 状态持久化：token URL 存内存会在「Manager 重启但 DSH 仍运行」时丢失，
  * 导致打开软件无法识别已运行的 DSH（裸 URL 401 白屏，只能网页访问）。
@@ -253,6 +266,161 @@ function resolveWebUrl(port) {
     } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
   return 'http://127.0.0.1:' + port;
+}
+
+/**
+ * 向渲染进程推送插件隔离通知（webview 会话崩溃导致的新事件）
+ */
+function pushQuarantineNotice(win, payload) {
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('dsh:plugin-quarantine-event', payload);
+  }
+}
+
+/**
+ * 对一条隔离事件执行“自动暂停”治理：
+ * - 核心/系统 provider：不自动暂停，仅提示；
+ * - 无法映射到本地插件：不自动暂停，仅记录；
+ * - 命中本地插件且不在冷却期：PluginManager.disable 停用，并推送 UI 提示；
+ * - 已禁用插件再次崩溃：跳过 disable（幂等），仅提示需要重启 DSH 会话。
+ * @returns {Promise<{autoPaused: boolean, reason: string, pluginId?: string, provider?: string}>}
+ */
+async function autoPausePluginForEvent(ev, getMainWindow) {
+  const core = await loadCore();
+  const provider = ev && ev.provider;
+  const ts = ev && ev.ts;
+  if (!provider || !ts) return { autoPaused: false, reason: 'invalid-event' };
+
+  const noticeBase = {
+    provider,
+    model: ev.model || '',
+    message: ev.message || '',
+    ts,
+    stage: ev.stage || 'adapter-crash',
+  };
+
+  // 1) 核心/系统 provider：不自动暂停（避免把官方适配器当用户插件停掉）
+  if (core.isSystemProvider(provider)) {
+    writeLog('info', `[quarantine] 核心 provider "${provider}" 崩溃，按策略仅提示不自动暂停`);
+    pushQuarantineNotice(getMainWindow(), { ...noticeBase, autoPaused: false, reason: 'system-provider' });
+    return { autoPaused: false, reason: 'system-provider', provider };
+  }
+
+  // 2) 定位本地插件
+  const marketplace = await loadMarketplace();
+  const manager = new marketplace.PluginManager();
+  let list;
+  try {
+    list = await manager.listAll();
+  } catch (e) {
+    writeLog('warn', `[quarantine] 获取本地插件列表失败: ${e?.message || e}，跳过自动暂停`);
+    return { autoPaused: false, reason: 'list-failed', provider };
+  }
+  const local = (list.local || []).map((p) => ({ id: p.id, enabled: p.enabled }));
+  const hit = core.resolvePluginForProvider(provider, local);
+  if (!hit) {
+    writeLog('warn', `[quarantine] provider "${provider}" 崩溃但无法映射到本地插件，仅记录`);
+    pushQuarantineNotice(getMainWindow(), { ...noticeBase, autoPaused: false, reason: 'unresolved' });
+    return { autoPaused: false, reason: 'unresolved', provider };
+  }
+
+  const now = Date.now();
+  const cooldownMs = core.QUARANTINE_COOLDOWN_MS || 30 * 60 * 1000;
+  const last = quarantineCooldown.get(provider) || 0;
+  if (now - last < cooldownMs) {
+    writeLog('info', `[quarantine] provider "${provider}" 距上次自动暂停不足冷却期，跳过（插件 ${hit.pluginId}）`);
+    return { autoPaused: false, reason: 'cooldown', pluginId: hit.pluginId, provider };
+  }
+
+  // 3) 已禁用则无需重复 disable（仍提示用户重启会话使停用生效）
+  const pluginObj = local.find((p) => p.id === hit.pluginId);
+  if (pluginObj && pluginObj.enabled === false) {
+    writeLog('warn', `[quarantine] provider "${provider}" 崩溃，插件 ${hit.pluginId} 已处于禁用态，等待会话重启生效`);
+    pushQuarantineNotice(getMainWindow(), { ...noticeBase, pluginId: hit.pluginId, matchedBy: hit.matchedBy, autoPaused: true, alreadyDisabled: true });
+    return { autoPaused: true, alreadyDisabled: true, pluginId: hit.pluginId, provider };
+  }
+
+  // 4) 自动暂停
+  try {
+    await manager.disable(hit.pluginId);
+    quarantineCooldown.set(provider, now);
+    writeLog('warn', `[quarantine] provider "${provider}" 崩溃（${ts}），已自动暂停插件 ${hit.pluginId}（匹配: ${hit.matchedBy}）`);
+    pushQuarantineNotice(getMainWindow(), { ...noticeBase, pluginId: hit.pluginId, matchedBy: hit.matchedBy, autoPaused: true });
+    return { autoPaused: true, pluginId: hit.pluginId, provider };
+  } catch (e) {
+    writeLog('error', `[quarantine] 自动暂停插件 ${hit.pluginId} 失败: ${e?.message || e}`);
+    return { autoPaused: false, reason: 'disable-failed', pluginId: hit.pluginId, provider };
+  }
+}
+
+/**
+ * 消费隔离事件文件（增量、幂等）：遍历事件，自动暂停可定位的崩溃插件。
+ */
+async function drainQuarantineFile(getMainWindow) {
+  const core = await loadCore();
+  const events = core.latestQuarantineEvents ? core.latestQuarantineEvents(100) : [];
+  let handled = 0;
+  for (const ev of events) {
+    if (!ev || !ev.provider || !ev.ts) continue;
+    const key = `${ev.provider}|${ev.ts}`;
+    if (processedQuarantineKeys.has(key)) continue;
+    processedQuarantineKeys.add(key);
+    if (processedQuarantineKeys.size > QUARANTINE_PROCESSED_MAX) {
+      const oldest = processedQuarantineKeys.values().next().value;
+      if (oldest) processedQuarantineKeys.delete(oldest);
+    }
+    try {
+      await autoPausePluginForEvent(ev, getMainWindow);
+      handled += 1;
+    } catch (e) {
+      writeLog('error', `[quarantine] 处理隔离事件失败: ${e?.message || e}`);
+    }
+  }
+  if (handled > 0) writeLog('info', `[quarantine] 本轮消费 ${handled} 条新隔离事件`);
+}
+
+/**
+ * 启动插件崩溃隔离监视器（幂等，仅启动一次）：
+ * watch ~/.dsh/manager 目录变化（jsonl 由 DSH 子进程追加写，可能重建文件），
+ * 防抖 300ms 后消费增量事件。启动时立即消费一次历史事件，兜底 Manager
+ * 停机期间持续崩溃的插件。
+ */
+function startQuarantineWatcher(getMainWindow) {
+  if (quarantineWatcherStarted) return;
+  quarantineWatcherStarted = true;
+
+  const schedule = () => {
+    if (quarantineDebounceTimer) clearTimeout(quarantineDebounceTimer);
+    quarantineDebounceTimer = setTimeout(() => {
+      quarantineDebounceTimer = null;
+      drainQuarantineFile(getMainWindow).catch((e) => {
+        writeLog('warn', `[quarantine] drain 失败: ${e?.message || e}`);
+      });
+    }, 300);
+  };
+
+  (async () => {
+    try {
+      const core = await loadCore();
+      const file = core.QUARANTINE_FILE ? core.QUARANTINE_FILE() : null;
+      const dir = file ? dirname(file) : join(app.getPath('userData'), '..', '.dsh', 'manager');
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      try {
+        const fs = await import('node:fs');
+        fs.watch(dir, (eventType, filename) => {
+          if (filename && String(filename).includes('plugin-quarantine')) schedule();
+        });
+        writeLog('info', `[quarantine] 已启动插件崩溃隔离监视器（${dir}）`);
+      } catch (e) {
+        writeLog('warn', `[quarantine] 启动文件监视失败，改用轮询兜底: ${e?.message || e}`);
+        setInterval(() => schedule(), 3000);
+      }
+      // 启动即消费历史事件（Manager 停机期间发生的崩溃也兜底暂停）
+      schedule();
+    } catch (e) {
+      writeLog('warn', `[quarantine] 初始化失败: ${e?.message || e}`);
+    }
+  })();
 }
 
 /**
@@ -683,6 +851,13 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
             }
           }
 
+          // 契约漂移项（插件 import 了宿主已移除的导出，如 ui-skin-stock 用旧 installSettingsSection API）
+          // 不可自动修复、也不可移除——正确处置是升级插件版本或停用。与可自愈项分流，
+          // 避免自愈空转（remove/repair 都无效）与"误移除健康插件"。
+          const contractDrift = (invalidPlugins || []).filter(
+            p => p.action === 'adapt' || (p.reason || '').indexOf('契约漂移') >= 0
+          );
+
           const win = getMainWindow();
           const sendError = (extra = {}) => {
             if (win && !win.isDestroyed()) {
@@ -691,6 +866,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
                 stderr: stderr.slice(0, 2000),
                 port: actualPort,
                 invalidPlugins,
+                contractDrift,
                 ...extra,
               });
             }
@@ -706,12 +882,25 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
               const { copyModuleToProfile, repairProfileDependencies } = await loadCore();
               const { PluginRegistry } = await loadMarketplace();
               const registry = new PluginRegistry();
-              // ① 移除无效插件（plugin kind）
+              // ① 移除无效插件（plugin kind，包体损坏类；契约漂移/repair 类由 fixInvalidPlugins 自动跳过）
               try {
                 const fixResult = await registry.fixInvalidPlugins('web');
                 repaired.push(...(fixResult.fixed || []).map(f => f.id));
               } catch (fixErr) {
                 writeLog('warn', '移除无效插件异常: ' + (fixErr?.message || fixErr));
+              }
+              // ①.1 修复 link 安装插件缺失的宿主依赖（repair 类，如 gongwen-skill 缺 @deepseek-ai/* 副本；
+              //      包体完好的 link 插件因宿主依赖不可解析而启动失败时，注入宿主副本即可自愈）
+              try {
+                const { repairLinkPluginHostDeps } = await loadCore();
+                const linkFix = await repairLinkPluginHostDeps('web');
+                const injected = (linkFix?.injected || []).filter(Boolean);
+                if (injected.length > 0) {
+                  repaired.push(...injected);
+                  writeLog('info', 'link 插件宿主依赖注入 ' + injected.length + ' 项: ' + injected.join('、'));
+                }
+              } catch (linkErr) {
+                writeLog('warn', 'link 插件宿主依赖注入异常: ' + (linkErr?.message || linkErr));
               }
               // ② 定向补齐缺失模块（module kind，如 shiki）
               const moduleIds = invalidPlugins.filter(p => p.kind === 'module').map(p => p.id);
@@ -801,6 +990,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
                       port: sp2.actualPort,
                       webUrl: resolveWebUrl(sp2.actualPort),
                       invalidPlugins: [],
+                      contractDrift: [],
                       autoRepaired: true,
                       repaired,
                       failed,
@@ -962,13 +1152,21 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
       // ①.5 修复依赖完整性：profile 缺失模块（如 shiki）从全局副本补齐；
       //      全局安装自身缺失（如 js-yaml）在全局目录内 npm install 恢复
-      const { repairProfileFromGlobal, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies } = await loadCore();
+      const { repairProfileFromGlobal, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies, repairLinkPluginHostDeps } = await loadCore();
       let depFix = { repaired: [], failed: [], skipped: [], summary: '' };
       let globalFix = { fixed: [], failed: [], summary: '' };
+      let linkFix = { checked: [], injected: [], skipped: [], failed: [], summary: '' };
       try {
         globalFix = await repairGlobalDSHInstall();
       } catch (gErr) {
         globalFix = { fixed: [], failed: [], summary: '全局依赖修复异常: ' + (gErr?.message || gErr) };
+      }
+      // ①.5-link 修复 link 安装插件缺失的宿主依赖（包体完好的 link 插件启动失败主因，
+      //      与契约漂移（adapt）区分：此处仅注入宿主依赖副本，不触碰插件代码）
+      try {
+        linkFix = await repairLinkPluginHostDeps('web');
+      } catch (lErr) {
+        linkFix = { checked: [], injected: [], skipped: [], failed: [], summary: 'link 宿主依赖修复异常: ' + (lErr?.message || lErr) };
       }
       try {
         depFix = await repairProfileFromGlobal('web', { includeSystem: true });
@@ -1094,6 +1292,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         fixResult,
         depFix,
         globalFix,
+        linkFix,
         moduleFix,
         profileRebuild,
         port: actualPort,
@@ -1363,6 +1562,43 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     const { PluginManager } = await loadMarketplace();
     const manager = new PluginManager();
     return await manager.disable(pluginId);
+  });
+
+  // ====== 插件崩溃自动隔离（quarantine） ======
+  // 启动文件监视（幂等）：DSH 侧 adapter 崩溃写入 plugin-quarantine.jsonl，
+  // Manager 自动暂停对应插件并向 UI 广播提示
+  startQuarantineWatcher(getMainWindow);
+
+  // 隔离总览：合并本地插件状态（附加 quarantine 徽标）+ 最近隔离事件分组
+  ipcMain.handle('quarantine:overview', async () => {
+    const core = await loadCore();
+    const marketplace = await loadMarketplace();
+    const manager = new marketplace.PluginManager();
+    const list = await manager.listAll();
+    const local = core.attachQuarantineState(list.local || []);
+    return {
+      local,
+      recent: core.latestQuarantineEvents ? core.latestQuarantineEvents(50) : [],
+      groups: core.groupQuarantineByProvider ? core.groupQuarantineByProvider() : [],
+      cooldownMs: core.QUARANTINE_COOLDOWN_MS || 30 * 60 * 1000,
+    };
+  });
+
+  // 清空隔离事件历史（不动插件启用/禁用状态）
+  ipcMain.handle('quarantine:clear-history', async () => {
+    const core = await loadCore();
+    return { success: core.clearQuarantineEvents() };
+  });
+
+  // 手动“恢复并信任”插件：enable + 清掉隔离历史（供 UI 一键恢复）
+  ipcMain.handle('quarantine:recover-plugin', async (_, pluginId) => {
+    const core = await loadCore();
+    const marketplace = await loadMarketplace();
+    const manager = new marketplace.PluginManager();
+    await manager.enable(pluginId);
+    core.clearQuarantineEvents();
+    writeLog('info', `[quarantine] 用户手动恢复插件 ${pluginId} 并清空隔离历史`);
+    return { success: true };
   });
 
   // ====== 配置 ======

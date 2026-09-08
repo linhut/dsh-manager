@@ -4,7 +4,11 @@
  * Licensed under the MIT License. See the LICENSE file for details.
  * DSH Manager
  * 内置能力路由插件安装器：把随包内置的 @dsh-manager/dsh-capability-router
- * 安装进 DSH profile（node_modules + cordis.patch.yml 注册），使能力路由真正生效。
+ * 安装进 DSH profile（node_modules + 官方 dsh.profile.bundles 登记），
+ * 使能力路由真正生效。安装机制与 DSH 官方插件体系对齐：
+ * 插件包声明 dsh.bundle.patch（cordis.patch.yml），profile 清单列出该 bundle
+ * 即自动应用其补丁层（见 @deepseek-ai/dsh-app-boot loadProfile）。
+ * 同时负责从旧的 cordis.patch.yml insert 方式自动迁移到 bundles 方式。
  */
 
 import { existsSync, mkdirSync, rmSync, cpSync, readFileSync, writeFileSync, renameSync, statSync, copyFileSync, chmodSync } from 'node:fs';
@@ -12,7 +16,6 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-import { DSHError, DSHErrorCodes } from './errors.js';
 import { DSH_PATHS } from './dsh-utils.js';
 
 /** 能力路由插件随 DSH 解析所需的最低 Node 大版本（cordis-plugin-loader fromInternal 要求 Node >= 22） */
@@ -83,7 +86,58 @@ export function resolveBundledPluginDir() {
 }
 
 /**
- * 检查能力路由插件是否已安装到 profile：node_modules 有包 且 patch 里有注册条目。
+ * 读取 profile 的 package.json（DSH 官方 profile 清单）。
+ * 兼容缺失/损坏场景：缺失返回默认骨架，损坏抛错由调用方处理。
+ * @param {string} profile
+ * @returns {object} manifest
+ */
+function readProfileManifest(profile) {
+  const profileDir = join(DSH_PATHS.profiles, profile);
+  const file = join(profileDir, 'package.json');
+  if (!existsSync(file)) return { name: 'dsh-profile-' + profile, private: true, dependencies: {}, dsh: { profile: { bundles: [] } } };
+  try {
+    const manifest = JSON.parse(readFileSync(file, 'utf-8'));
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('profile package.json 不是对象');
+    return manifest;
+  } catch (err) {
+    throw new Error('profile 清单解析失败 ' + file + ': ' + (err.message || String(err)));
+  }
+}
+
+/**
+ * 原子写回 profile 的 package.json（备份 + 临时文件 + rename）。
+ * @param {string} profile
+ * @param {object} manifest
+ * @returns {string} backupPath 或 ''
+ */
+function writeProfileManifest(profile, manifest) {
+  const profileDir = join(DSH_PATHS.profiles, profile);
+  const file = join(profileDir, 'package.json');
+  mkdirSync(profileDir, { recursive: true });
+  let bk = '';
+  if (existsSync(file)) {
+    try {
+      const ts = Date.now();
+      bk = file + '.bak-' + ts;
+      copyFileSync(file, bk);
+      try { const m = statSync(file).mode & 0o777; if (m) chmodSync(bk, m); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+  }
+  const tmp = file + '.tmp-' + Date.now();
+  try {
+    writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+    renameSync(tmp, file);
+  } catch (err) {
+    try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+    throw new Error('profile 清单写入失败: ' + (err.message || String(err)));
+  }
+  return bk;
+}
+
+/**
+ * 检查能力路由插件是否已安装到 profile：
+ * ① 官方机制：node_modules 有包且 profile 清单 dsh.profile.bundles 已登记；
+ * ② 兼容旧安装：cordis.patch.yml 仍有 insert 条目（等待下次安装迁移）。
  * @param {string} profile - profile 名（如 'web'）
  * @returns {boolean}
  */
@@ -92,65 +146,87 @@ export function isCapabilityRouterInstalled(profile) {
   if (!profile || !/^[a-zA-Z0-9_-]+$/.test(profile)) return false;
   const nmDir = join(DSH_PATHS.profiles, profile, 'node_modules', CAPABILITY_ROUTER_PACKAGE);
   const hasPkg = existsSync(join(nmDir, 'package.json')) && existsSync(join(nmDir, 'lib', 'index.js'));
+  if (!hasPkg) return false;
+  // ① bundles 登记
+  try {
+    const manifest = readProfileManifest(profile);
+    const bundles = manifest && manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
+    if (bundles.includes(CAPABILITY_ROUTER_PACKAGE)) return true;
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+  // ② 旧 patch 方式（迁移前视为已安装，避免重复提示安装）
   const patchFile = join(DSH_PATHS.profiles, profile, 'cordis.patch.yml');
-  let hasPatch = false;
   if (existsSync(patchFile)) {
     try {
       const raw = readFileSync(patchFile, 'utf-8');
-      hasPatch = raw.includes("name: '@" + CAPABILITY_ROUTER_PACKAGE.slice(1)) || raw.includes('name: ' + CAPABILITY_ROUTER_PACKAGE) || raw.includes("name: \"@dsh-manager/dsh-capability-router\"");
+      return raw.includes("name: '@" + CAPABILITY_ROUTER_PACKAGE.slice(1)) || raw.includes('name: ' + CAPABILITY_ROUTER_PACKAGE) || raw.includes("name: \"@dsh-manager/dsh-capability-router\"");
     } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
-  return hasPkg && hasPatch;
+  return false;
 }
 
 /**
- * 在 profile 的 cordis.patch.yml 中追加能力路由插件注册条目（幂等）。
- * 复用 MCPServerManager 的原子写入思路：保留头部注释、剔除残留空数组、尾插条目。
+ * 将能力路由插件登记进 profile 清单的 dsh.profile.bundles（官方机制，幂等），
+ * 并迁移旧的 cordis.patch.yml insert 方式（移除条目，避免 loader 重复注册）。
+ * 保留头部注释、校验 profile 合法性；写回全程原子 + 备份。
  * @param {string} profile
- * @returns {string} backupPath 或 ''
+ * @returns {{bk: string, migrated: boolean, added: boolean}}
  */
-function ensurePatchEntry(profile) {
-  const profileDir = join(DSH_PATHS.profiles, profile);
-  const patchFile = join(profileDir, 'cordis.patch.yml');
-  if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true });
-  if (!existsSync(patchFile)) writeFileSync(patchFile, '# dsh profile patch layer\n[]\n', 'utf-8');
-  const raw = readFileSync(patchFile, 'utf-8').replace(/\r\n/g, '\n');
-  // 幂等：已有该条目则不动
-  if (raw.indexOf("'@dsh-manager/dsh-capability-router'") >= 0 || raw.indexOf('@dsh-manager/dsh-capability-router') >= 0) {
-    return '';
+function ensureBundleEntry(profile) {
+  const manifest = readProfileManifest(profile);
+  const bundles = manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
+  let added = false;
+  if (!bundles.includes(CAPABILITY_ROUTER_PACKAGE)) {
+    bundles.push(CAPABILITY_ROUTER_PACKAGE);
+    added = true;
   }
-  // 保留头部注释，剔除残留 []
-  const header = [];
-  for (const line of raw.split('\n')) {
-    if (/^\s*#/.test(line)) header.push(line);
-    else break;
+  manifest.dsh = Object.assign({}, manifest.dsh || {}, {
+    profile: Object.assign({}, (manifest.dsh && manifest.dsh.profile) || {}, { bundles }),
+  });
+  // 写回时由 writeProfileManifest 统一完成原子写 + 备份（备份路径作为 backupPath 上报）
+  const bk = added ? writeProfileManifest(profile, manifest) : '';
+  // 迁移：移除 cordis.patch.yml 中的旧 insert 条目（bundles 生效后由 loader 按官方层序应用）
+  const migrated = removeLegacyPatchEntry(profile);
+  return { bk, migrated, added };
+}
+
+/**
+ * 移除 cordis.patch.yml 中能力路由插件的旧 insert 条目（幂等）。
+ * @param {string} profile
+ * @returns {boolean} 是否发生了移除
+ */
+function removeLegacyPatchEntry(profile) {
+  const patchFile = join(DSH_PATHS.profiles, profile, 'cordis.patch.yml');
+  if (!existsSync(patchFile)) return false;
+  const raw0 = readFileSync(patchFile, 'utf-8');
+  const raw = raw0.replace(/\r\n/g, '\n');
+  // 找到条目块（id: capability-router 起的 - insert: 块）整体移除
+  const lines = raw.split('\n');
+  const out = [];
+  let skip = false;
+  let removed = false;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t === '- insert:' && i + 1 < lines.length && lines[i + 1].trim().indexOf('capability-router') >= 0) {
+      skip = true;
+      removed = true;
+      continue;
+    }
+    if (skip) {
+      // 直到缩进回到 0 的行结束块
+      if (lines[i].trim() !== '' && lines[i].length === lines[i].trimStart().length) skip = false;
+      else continue;
+    }
+    out.push(lines[i]);
   }
-  const bodyRest = raw.split('\n').slice(header.length).filter(function (l) { return l.trim() !== '[]' && l.trim() !== ''; }).join('\n');
-  const block = '- insert:' + '\n' + "    - id: capability-router" + '\n' + "      name: '@dsh-manager/dsh-capability-router'" + '\n' + '      config:' + '\n' + '        enabled: true' + '\n' + '        defaultCapability: semantic' + '\n' + '        capabilities: {}';
-  const parts = [];
-  if (header.length > 0) parts.push(header.join('\n'));
-  if (bodyRest.trim()) parts.push(bodyRest);
-  parts.push(block);
-  const nc = parts.join('\n\n') + '\n';
-  // 原子写入 + 备份
-  let bk = '';
-  if (existsSync(patchFile)) {
-    try {
-      const ts = Date.now();
-      bk = patchFile + '.bak-' + ts;
-      copyFileSync(patchFile, bk);
-      try { const m = statSync(patchFile).mode & 0o777; if (m) chmodSync(bk, m); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
-    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
-  }
-  const tmp = patchFile + '.tmp-' + Date.now();
-  try {
+  if (!removed) return false;
+  let nc = out.join('\n').replace(/\n{3,}/g, '\n\n');
+  if (!nc.trim()) nc = '# dsh profile patch layer\n[]\n';
+  if (nc !== raw0) {
+    const tmp = patchFile + '.tmp-' + Date.now();
     writeFileSync(tmp, nc, 'utf-8');
     renameSync(tmp, patchFile);
-  } catch (err) {
-    try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
-    throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '能力路由 patch 写入失败: ' + err.message);
   }
-  return bk;
+  return true;
 }
 
 /**
@@ -168,29 +244,38 @@ export async function installCapabilityRouter(profile, opts) {
     const profileNm = join(DSH_PATHS.profiles, profile, 'node_modules');
     const target = join(profileNm, CAPABILITY_ROUTER_PACKAGE);
     let method = '';
-    // ① 复制包文件（lib/index.js + package.json）——内容不同则覆盖更新
+    // ① 复制包文件（lib/index.js + package.json + cordis.patch.yml）——内容不同则覆盖更新
     //    （多次测试/升级场景：旧版本残留若不更新，用户测到的仍是旧代码）
+    //    cordis.patch.yml 必须一并拷贝：dsh.profile.bundles 登记后，DSH boot 的
+    //    loadOverlayPatches 会读取该文件应用补丁层，缺失将导致 DSH 启动失败（ENOENT）。
     const srcIndex = join(srcDir, 'lib', 'index.js');
     const srcPkg = join(srcDir, 'package.json');
+    const srcPatch = join(srcDir, 'cordis.patch.yml');
     const tgtIndex = join(target, 'lib', 'index.js');
     const tgtPkg = join(target, 'package.json');
+    const tgtPatch = join(target, 'cordis.patch.yml');
+    const fileChanged = (src, tgt) => (existsSync(tgt) ? readFileSync(src, 'utf-8') !== readFileSync(tgt, 'utf-8') : true);
     const needCopy = !existsSync(tgtIndex)
-      || readFileSync(srcIndex, 'utf-8') !== readFileSync(tgtIndex, 'utf-8')
-      || (existsSync(tgtPkg) ? readFileSync(srcPkg, 'utf-8') !== readFileSync(tgtPkg, 'utf-8') : true);
+      || fileChanged(srcIndex, tgtIndex)
+      || fileChanged(srcPkg, tgtPkg)
+      || fileChanged(srcPatch, tgtPatch);
     if (needCopy) {
       mkdirSync(target, { recursive: true });
       // 避免删除整个 target（可能含用户私有文件），仅重写受管文件
       rmSync(tgtIndex, { force: true });
       rmSync(tgtPkg, { force: true });
+      rmSync(tgtPatch, { force: true });
       mkdirSync(join(target, 'lib'), { recursive: true });
       cpSync(srcIndex, tgtIndex, { force: true });
       cpSync(srcPkg, tgtPkg, { force: true });
+      if (existsSync(srcPatch)) cpSync(srcPatch, tgtPatch, { force: true });
       method = 'copied';
     } else {
       method = 'already-exists';
     }
-    // ② 注册到 cordis.patch.yml
-    const bk = ensurePatchEntry(profile);
+    // ② 登记到 profile 清单 dsh.profile.bundles（官方机制），并迁移旧 cordis.patch.yml 条目
+    const reg = ensureBundleEntry(profile);
+    const bk = reg.bk;
     const installed = isCapabilityRouterInstalled(profile);
     // ③ Node 门槛检查：DSH 解析 profile 插件需要 Node >= 22
     let nodeInfo = null;
@@ -203,11 +288,11 @@ export async function installCapabilityRouter(profile, opts) {
     return {
       success: installed,
       installed,
-      method: method + (bk ? '+patch' : ''),
+      method: method + (reg.added ? '+bundle' : '') + (reg.migrated ? '+migrated' : ''),
       backupPath: bk || undefined,
       node: nodeInfo || undefined,
       warning,
-      error: installed ? undefined : '复制完成但 patch 注册失败',
+      error: installed ? undefined : '复制完成但 bundle 登记失败',
     };
   } catch (err) {
     return { success: false, installed: false, method: 'none', error: err.message || String(err) };
@@ -215,7 +300,8 @@ export async function installCapabilityRouter(profile, opts) {
 }
 
 /**
- * 卸载内置能力路由插件（移除 patch 条目；文件保留无害，下次启动自动重装）。
+ * 卸载内置能力路由插件（从 profile 清单 bundles 移除 + 清理旧 patch 条目；
+ * 文件保留无害，下次安装会覆盖更新）。
  * @param {string} profile
  * @returns {Promise<{success: boolean}>}
  */
@@ -223,35 +309,19 @@ export async function uninstallCapabilityRouter(profile) {
   try {
     if (!profile) profile = 'web';
     if (!/^[a-zA-Z0-9_-]+$/.test(profile)) return { success: false, error: '非法的 profile 名称: ' + profile };
-    const patchFile = join(DSH_PATHS.profiles, profile, 'cordis.patch.yml');
-    if (existsSync(patchFile)) {
-      const raw0 = readFileSync(patchFile, 'utf-8');
-      const raw = raw0.replace(/\r\n/g, '\n');
-      // 找到条目块（id: capability-router 起的 - insert: 块）整体移除
-      const lines = raw.split('\n');
-      const out = [];
-      let skip = false;
-      for (let i = 0; i < lines.length; i++) {
-        const t = lines[i].trim();
-        if (t === '- insert:' && i + 1 < lines.length && lines[i + 1].trim().indexOf('capability-router') >= 0) {
-          skip = true;
-          continue;
-        }
-        if (skip) {
-          // 直到缩进回到 0 的行结束块
-          if (lines[i].trim() !== '' && lines[i].length === lines[i].trimStart().length) skip = false;
-          else continue;
-        }
-        out.push(lines[i]);
-      }
-      let nc = out.join('\n').replace(/\n{3,}/g, '\n\n');
-      if (!nc.trim()) nc = '# dsh profile patch layer\n[]\n';
-      if (nc !== raw0) {
-        const tmp = patchFile + '.tmp-' + Date.now();
-        writeFileSync(tmp, nc, 'utf-8');
-        renameSync(tmp, patchFile);
-      }
+    // ① 从 profile 清单 dsh.profile.bundles 移除（官方机制）
+    const manifest = readProfileManifest(profile);
+    const bundles = manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
+    const idx = bundles.indexOf(CAPABILITY_ROUTER_PACKAGE);
+    if (idx >= 0) {
+      bundles.splice(idx, 1);
+      manifest.dsh = Object.assign({}, manifest.dsh || {}, {
+        profile: Object.assign({}, (manifest.dsh && manifest.dsh.profile) || {}, { bundles }),
+      });
+      writeProfileManifest(profile, manifest);
     }
+    // ② 清理旧 cordis.patch.yml insert 条目（若残留）
+    removeLegacyPatchEntry(profile);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message || String(err) };

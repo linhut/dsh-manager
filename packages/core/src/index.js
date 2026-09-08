@@ -23,11 +23,23 @@ export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
 export { getDSHProcessInfo, stopProcessByPort, DSH_WEB_PORT, findAvailablePort, isPortFree, testDSHHealth, diagnoseDSHProcess } from './process-manager.js';
 export { DSHProfileManager } from './profile-manager.js';
 export { SkillManager } from './skill-manager.js';
-export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules, checkGlobalDSHIntegrity, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies } from './dependency-integrity.js';
+export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules, checkGlobalDSHIntegrity, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies, repairLinkPluginHostDeps } from './dependency-integrity.js';
 export { MasterPromptManager } from './master-prompt-manager.js';
 export { installCapabilityRouter, uninstallCapabilityRouter, isCapabilityRouterInstalled, resolveBundledPluginDir, detectNodeRuntime, CAPABILITY_ROUTER_PACKAGE, CAPABILITY_ROUTER_MIN_NODE_MAJOR } from './capability-router.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 export { generateImage, findProviderConfig, resolveApiKey, getImageSaveDir } from './imagegen.js';
+export {
+  QUARANTINE_FILE,
+  QUARANTINE_COOLDOWN_MS,
+  readQuarantineEvents,
+  latestQuarantineEvents,
+  groupQuarantineByProvider,
+  resolvePluginForProvider,
+  isSystemProvider,
+  attachQuarantineState,
+  clearQuarantineEvents,
+  appendQuarantineEvent,
+} from './plugin-quarantine.js';
 
 /**
  * 获取 DSH Manager 版本信息（从 package.json 读取，避免硬编码漂移）

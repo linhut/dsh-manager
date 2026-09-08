@@ -93,6 +93,13 @@ Licensed under the MIT License. See the LICENSE file for details.
 - **Agent Presets**：查看已配置的 Agent 预设
 - **系统管理**：MCP 服务端管理、Profile 管理、数据管理
 
+### 🧩 内置技能（随 dsh-skills 打包）
+- **web-search**：联网搜索（DuckDuckGo 零配置）
+- **gongwen-skill**：公文全流程处理（GB/T 9704，check/optimize/模板/样式学习/md2docx 等）
+- **ppt-studio**：PPT 全能工坊（PPTD+JSON 双引擎，原生 .pptx 输出）
+
+> 📖 DSH 新版本 API 大改的适配范围声明见 [docs/适配范围-DSH-API大改.md](docs/适配范围-DSH-API大改.md)。
+
 ---
 
 

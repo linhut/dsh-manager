@@ -84,10 +84,10 @@ describe('安全审计修复：源码检查', () => {
     assert.ok(src.includes("join(prefix, 'bin', b)"), 'POSIX bin 应位于 prefix/bin 下');
   });
 
-  it('capability-router uninstall 校验 profile 且 needCopy 覆盖 tgtPkg 缺失', () => {
+  it('capability-router uninstall 校验 profile 且 needCopy 覆盖目标缺失', () => {
     const src = read('packages/core/src/capability-router.js');
     assert.ok(src.includes('非法的 profile 名称'), 'uninstallCapabilityRouter 应校验 profile');
-    assert.ok(src.includes('existsSync(tgtPkg) ?'), 'needCopy 应在 tgtPkg 缺失时判定为需拷贝');
+    assert.ok(src.includes('existsSync(tgt) ?'), 'needCopy 应在目标文件缺失时判定为需拷贝');
   });
 
   it('master-prompt-manager read() 损坏时先备份再返回空', () => {

@@ -79,15 +79,24 @@ export class PluginManager {
    * @returns {Promise<{success: boolean}>}
    */
   async enable(pluginId) {
-    const plugin = this.registry.getLocalPlugins().find(p => p.id === pluginId);
-    if (!plugin) {
-      throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
+    // 兼容双 ID 体系：loader entry id（插件管理页）或登记/bundle id（崩溃自动隔离）均可用
+    const localPlugin = this.registry.getLocalPlugins().find((p) => p.id === pluginId);
+    let entryId = pluginId;
+    if (!localPlugin) {
+      const resolved = await this.registry.resolvePluginEntryId(pluginId, this.profile, true).catch(() => null);
+      if (!resolved) {
+        throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
+      }
+      entryId = resolved.entryId;
+    } else {
+      const resolved = await this.registry.resolvePluginEntryId(pluginId, this.profile, false).catch(() => null);
+      if (resolved) entryId = resolved.entryId;
     }
 
-    // 更新本地注册表
+    // 更新本地注册表（登记条目存在才写，避免把 loader entry 混入 plugins.json）
     this.registry.updatePluginStatus(pluginId, { enabled: true, enabledAt: new Date().toISOString() });
-    // 实际修改 cordis.patch.yml 移除 disabled 标记
-    this.registry.setPluginDisabled(this.profile, pluginId, false);
+    // 实际修改 cordis.patch.yml：移除 id-targeted override
+    this.registry.setPluginDisabled(this.profile, entryId, false);
     return { success: true };
   }
 
@@ -97,15 +106,24 @@ export class PluginManager {
    * @returns {Promise<{success: boolean}>}
    */
   async disable(pluginId) {
-    const plugin = this.registry.getLocalPlugins().find(p => p.id === pluginId);
-    if (!plugin) {
-      throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
+    // 兼容双 ID 体系：loader entry id（插件管理页）或登记/bundle id（崩溃自动隔离）均可用
+    const localPlugin = this.registry.getLocalPlugins().find((p) => p.id === pluginId);
+    let entryId = pluginId;
+    if (!localPlugin) {
+      const resolved = await this.registry.resolvePluginEntryId(pluginId, this.profile, true).catch(() => null);
+      if (!resolved) {
+        throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
+      }
+      entryId = resolved.entryId;
+    } else {
+      const resolved = await this.registry.resolvePluginEntryId(pluginId, this.profile, false).catch(() => null);
+      if (resolved) entryId = resolved.entryId;
     }
 
-    // 更新本地注册表
+    // 更新本地注册表（登记条目存在才写，避免把 loader entry 混入 plugins.json）
     this.registry.updatePluginStatus(pluginId, { enabled: false, disabledAt: new Date().toISOString() });
-    // 实际修改 cordis.patch.yml 添加 disabled: true 标记
-    this.registry.setPluginDisabled(this.profile, pluginId, true);
+    // 实际修改 cordis.patch.yml：写 id-targeted override（不要求条目原本存在于补丁中）
+    this.registry.setPluginDisabled(this.profile, entryId, true);
     return { success: true };
   }
 

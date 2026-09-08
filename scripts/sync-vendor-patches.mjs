@@ -40,6 +40,13 @@ const PATCHES = [
     rel: 'lib/index.js',
     note: 'announceReady 8s 兜底，loader 因 include/UI bundle 挂起时仍打印认证 URL',
   },
+  {
+    archive: 'dsh-llm@0.1.2-rc.1',
+    pkg: 'dsh-llm',
+    marker: 'ADAPTER_CONTRACT_MISSING',
+    rel: 'lib/index.js',
+    note: '插件适配器崩溃隔离信号：prepareCall 契约缺失/执行失败转为带 provider 上下文的 LlmError 并落盘 plugin-quarantine.jsonl，供 dsh-manager 自动暂停问题插件',
+  },
 ];
 
 function collectTargets() {
