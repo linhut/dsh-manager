@@ -169,3 +169,13 @@ v1.3.20 发布后在全新/升级机器上出现 DSH 无法启动与功能告警
 | 3 | `ignored error: JSON.parse(...).replace is not a function`（插件页/隔离概览更新检查报错） | `registry.js` 对 `npm view --json` 输出直接 `JSON.parse(stdout).replace(...)`，输出为 JSON 对象/非 JSON 时抛错 | 新增防御式解析 `parseNpmViewVersion()`：兼容字符串字面量、`{version}` 对象、纯文本/空值 |
 
 > 已损坏 `cordis.patch.yml` 的机器：升级到 v1.3.21 后，Manager 启动/安装能力路由时会自动检测并修复为合法数组，无需手动编辑文件。
+
+## 七、v1.3.22 热修复记录（link 插件缺宿主依赖）
+
+v1.3.21 修复 patch 数组问题后，用户机器（pnpm 严格布局）仍因 **link 安装的插件缺宿主依赖** 无法启动 DSH：
+
+| # | 现象（用户日志） | 根因 | v1.3.22 修复 |
+|---|---|---|---|
+| 1 | `failed to import loader entry ui-skin-stock (@linxin666/dsh-client-ui-skin-stock): Cannot find package '@deepseek-ai/schemastery' imported from ...\plugin-cache\dsh-stock-terminal\lib\index.js` | 插件以 `link:` 方式安装在 profile 外部（`~/.dsh/manager/plugin-cache/...`），运行时 import 宿主依赖时 Node 从 link 目标向上找不到；旧 `repairLinkPluginHostDeps` 只从 profile 顶层 `node_modules/@deepseek-ai/` 找宿主包，**pnpm 严格布局下传递依赖在 `.pnpm` 虚拟店，顶层没有 → 注入 0 项**，且只注入单个包不处理该包自身的依赖闭包 | **重构 `repairLinkPluginHostDeps`**：① 多级来源查找（顶层 `.pnpm` 虚拟店 → 宿主包嵌套 → 全局 DSH）；② BFS 递归闭包注入（插件缺的依赖 + 其自身依赖全部复制到 link 目标 `node_modules/`，不限 `@deepseek-ai` 命名空间）；③ visited 防循环、100 包上限防失控 |
+
+> link 安装插件的机器：升级到 v1.3.22 后，Manager 启动自愈会自动检测 link 插件缺失的宿主依赖并递归补齐（含 schemastery 的依赖 cosmokit、@standard-schema/spec 等），无需手动操作。

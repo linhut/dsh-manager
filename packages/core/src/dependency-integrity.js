@@ -481,6 +481,86 @@ export async function repairAllProfiles(options) {
   return { profiles, results, summary: "Checked " + profiles.length + " profiles, repaired " + tr + " packages" };
 }
 
+/**
+ * 在 profile 依赖树中定位一个包的真实目录（多级查找，兼容 npm hoisted / pnpm 严格布局）。
+ * 查找顺序：
+ *   ① profile 顶层 node_modules/<pkg>（npm hoisted 布局；symlink 会 realpath 到 .pnpm 真实目录）
+ *   ② pnpm 虚拟店 node_modules/.pnpm/<scope>+<name>@<ver>/node_modules/<pkg>（pnpm 严格布局）
+ *   ③ 宿主包嵌套 node_modules（@deepseek-ai/dsh 等 DSH 核心包的 node_modules/<pkg>）
+ *   ④ 全局 DSH 安装目录 node_modules/<pkg>
+ * @param {string} nmRoot - profile 的 node_modules 根
+ * @param {string} pkgName - 包名（支持 @scope/name）
+ * @param {string|null} globalNm - 全局 DSH node_modules（可空）
+ * @returns {string|null} 包的真实目录（含 package.json），找不到返回 null
+ */
+function resolvePackageSourceDir(nmRoot, pkgName, globalNm) {
+  const candidates = [];
+  // ① 顶层（npm hoisted）
+  candidates.push(join(nmRoot, pkgName));
+  // ② pnpm 虚拟店
+  const pnpmDir = join(nmRoot, '.pnpm');
+  if (existsSync(pnpmDir)) {
+    try {
+      const slash = pkgName.indexOf('/');
+      const scope = slash > 0 ? pkgName.slice(0, slash) : '';
+      const base = scope ? pkgName.slice(slash + 1) : pkgName;
+      // pnpm 虚拟店目录命名：scoped 包为 `@scope+name@ver`（带前导 @），非 scoped 为 `name@ver`
+      const prefix = (scope ? scope + '+' : '') + base + '@';
+      for (const e of readdirSync(pnpmDir)) {
+        if (e.startsWith(prefix)) {
+          candidates.push(join(pnpmDir, e, 'node_modules', pkgName));
+        }
+      }
+    } catch { /* 虚拟店不可读时忽略 */ }
+  }
+  // ③ 宿主包嵌套（DSH 核心依赖通常在这些包的 node_modules 下）
+  const hosts = ['@deepseek-ai/dsh', '@deepseek-ai/dsh-app-boot', '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-base'];
+  for (const h of hosts) candidates.push(join(nmRoot, h, 'node_modules', pkgName));
+  // ④ 全局 DSH
+  if (globalNm) candidates.push(join(globalNm, pkgName));
+
+  for (const c of candidates) {
+    try {
+      if (c && existsSync(join(c, 'package.json'))) {
+        return realpathSync(c) || c;
+      }
+    } catch { /* 单个候选失败继续 */ }
+  }
+  return null;
+}
+
+/**
+ * 读取包的依赖声明（dependencies + peerDependencies 合并）。
+ * @param {string} dir - 包的真实目录
+ * @returns {Record<string, string>} 依赖名 → 版本范围
+ */
+function readPkgDeps(dir) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8'));
+    return Object.assign({}, pkg.dependencies || {}, pkg.peerDependencies || {});
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 修复 link 安装插件缺失的宿主依赖（多级来源查找 + 递归闭包注入）。
+ *
+ * 背景：DSH 插件以 `link:` 方式安装时（如 npm 安装失败降级 git clone + link），
+ * 插件包位于 profile 外部（如 ~/.dsh/manager/plugin-cache/xxx），其 lib 代码 import
+ * 宿主依赖（@deepseek-ai/schemastery、@deepseek-ai/cosmokit 等）时，Node ESM 从
+ * link 目标向上查找 node_modules 找不到 → DSH 启动报 ERR_MODULE_NOT_FOUND。
+ *
+ * 修复策略：
+ *   1. 找出 profile 中所有指向外部的 link 插件（symlink 且 realpath 不在 profile 内）；
+ *   2. 从插件 dependencies ∪ peerDependencies 出发 BFS，把每个缺失依赖及其自身依赖
+ *      （递归闭包，不限 @deepseek-ai 命名空间）从 profile 依赖树复制到 link 目标的
+ *      node_modules/ 下，直到闭包闭合；
+ *   3. 来源查找兼容 npm hoisted（顶层）、pnpm 严格（.pnpm 虚拟店）、宿主嵌套、全局 DSH。
+ *   4. visited 防循环、maxPackages 上限防异常闭包。
+ * @param {string} profile
+ * @returns {Promise<{checked: string[], injected: string[], skipped: Array<{id: string, reason: string}>, failed: Array<{id: string, error: string}>, summary: string}>}
+ */
 export async function repairLinkPluginHostDeps(profile = "web") {
   validateProfileName(profile);
   const nmRoot = join(DSH_PATHS.profiles, profile, "node_modules");
@@ -493,13 +573,18 @@ export async function repairLinkPluginHostDeps(profile = "web") {
   try { pkg = JSON.parse(readFileSync(pkgFile, "utf-8")); }
   catch (e) { return { checked, injected, skipped, failed, summary: "读取 profile package.json 失败: " + e.message }; }
 
+  // 全局 DSH node_modules（兜底来源）
+  let globalNm = null;
+  try { globalNm = await getGlobalDSHNodeModules(); } catch { /* 忽略 */ }
+
   // 候选：profile dependencies + bundles 中登记的非系统插件
   const candidates = [];
   const seen = new Set();
   const addCand = (id) => { if (id && !seen.has(id)) { seen.add(id); candidates.push(id); } };
   if (pkg.dependencies) for (const id of Object.keys(pkg.dependencies)) addCand(id);
   if (pkg.bundles) for (const b of pkg.bundles) { const id = typeof b === "string" ? b : (b.id || b.name); addCand(id); }
-  const hostNs = "@deepseek-ai/";
+
+  const MAX_PACKAGES = 100; // 单个插件的闭包注入上限，防异常超大依赖树
   for (const id of candidates) {
     if (isSystemComponent(id)) continue; // 系统组件由 repairGlobalDSHInstall 治理
     const p = join(nmRoot, id);
@@ -511,26 +596,43 @@ export async function repairLinkPluginHostDeps(profile = "web") {
     try { real = realpathSync(p); } catch (e) { failed.push({ id, error: "realpath: " + e.message }); continue; }
     // pnpm 常规安装也是 symlink，但指向 profile 内部 .pnpm 虚拟店；只有指向外部的才是 link: 源
     if (real === p || real.startsWith(nmRoot)) continue;
-    // 读取 link 目标 package.json，收集宿主命名空间依赖
-    let lpkg;
-    try { lpkg = JSON.parse(readFileSync(join(real, "package.json"), "utf-8")); }
-    catch (e) { failed.push({ id, error: "读取 link 目标 package.json 失败: " + e.message }); continue; }
+    // 校验 link 目标可读（package.json 缺失/损坏视为失败，不阻塞其它插件）
+    if (!existsSync(join(real, "package.json"))) {
+      failed.push({ id, error: "link 目标缺少 package.json" });
+      continue;
+    }
     checked.push(id);
-    const need = new Map();
-    const collect = (deps) => { if (!deps) return; for (const [k, v] of Object.entries(deps)) if (k.startsWith(hostNs)) need.set(k, v); };
-    collect(lpkg.peerDependencies); collect(lpkg.dependencies);
+
     const linkNm = join(real, "node_modules");
-    for (const [dep, spec] of need) {
-      const depParts = dep.split("/"); // @deepseek-ai/xxx → ['@deepseek-ai','xxx']
-      const srcPkg = join(nmRoot, dep);
-      const dstDir = join(linkNm, depParts[0], depParts[1]);
-      if (!existsSync(srcPkg)) { skipped.push({ id, reason: "宿主 profile 无此包: " + dep }); continue; }
-      if (existsSync(join(dstDir, "package.json"))) { skipped.push({ id, reason: dep + " 副本已存在" }); continue; }
+    const visited = new Set([id]);
+    const queue = Object.keys(readPkgDeps(real));
+    let pluginInjected = 0;
+    while (queue.length > 0 && pluginInjected < MAX_PACKAGES) {
+      const dep = queue.shift();
+      if (!dep || visited.has(dep)) continue;
+      visited.add(dep);
+      const dstDir = join(linkNm, dep);
+      if (existsSync(join(dstDir, "package.json"))) continue; // 已满足
+      const srcDir = resolvePackageSourceDir(nmRoot, dep, globalNm);
+      if (!srcDir) {
+        skipped.push({ id, reason: "宿主依赖树中找不到: " + dep });
+        continue;
+      }
       try {
-        mkdirSync(join(linkNm, depParts[0]), { recursive: true });
-        cpSync(srcPkg, dstDir, { recursive: true, force: true });
+        mkdirSync(dirname(dstDir), { recursive: true });
+        cpSync(srcDir, dstDir, { recursive: true, force: true });
         injected.push(id + "@" + dep);
-      } catch (e) { failed.push({ id, error: "注入 " + dep + " 失败: " + e.message }); }
+        pluginInjected += 1;
+        // 递归闭包：该包自己的依赖也入队（peer 大包若宿主有则一并复制）
+        for (const d of Object.keys(readPkgDeps(srcDir))) {
+          if (!visited.has(d)) queue.push(d);
+        }
+      } catch (e) {
+        failed.push({ id, error: "注入 " + dep + " 失败: " + e.message });
+      }
+    }
+    if (pluginInjected >= MAX_PACKAGES && queue.length > 0) {
+      skipped.push({ id, reason: "闭包超过上限（" + MAX_PACKAGES + "），剩余未注入: " + queue.slice(0, 5).join("、") });
     }
   }
   const summary = injected.length
