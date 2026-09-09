@@ -234,4 +234,55 @@ describe('能力路由端到端', () => {
     assert.ok(pkg.files && pkg.files.includes('lib'), 'files 应包含 lib（随 npm/pnpm 发布）');
     assert.ok(pkg.keywords && pkg.keywords.includes('dsh-plugin'), 'keywords 应含 dsh-plugin（插件市场检索）');
   });
+
+  it('迁移旧 insert 条目后 cordis.patch.yml 必须仍为顶层 YAML 数组（回归 v1.3.20 启动失败）', async () => {
+    await withHome(async () => {
+      const mod = await import('../packages/core/src/capability-router.js');
+      const profileDir = join(process.env.DSH_HOME, 'profiles', 'web');
+      const pkgDir = join(profileDir, 'node_modules', '@dsh-manager', 'dsh-capability-router');
+      mkdirSync(join(pkgDir, 'lib'), { recursive: true });
+      // 最典型旧残留：只有注释 + 一个 insert 块（无其它条目）
+      const patchFile = join(profileDir, 'cordis.patch.yml');
+      writeFileSync(patchFile, [
+        '# dsh profile patch layer',
+        '- insert:',
+        '    - id: capability-router',
+        "      name: '@dsh-manager/dsh-capability-router'",
+        '      config:',
+        '        enabled: true',
+        ''
+      ].join('\n'), 'utf-8');
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@dsh-manager/dsh-capability-router', version: '0.0.1', main: 'lib/index.js' }), 'utf-8');
+      writeFileSync(join(pkgDir, 'lib', 'index.js'), 'export default class OldPlugin {};\n', 'utf-8');
+
+      const r = await mod.installCapabilityRouter('web');
+      assert.equal(r.method, 'copied+bundle+migrated', '旧残留应迁移');
+      const after = readFileSync(patchFile, 'utf-8');
+      // DSH 要求顶层 YAML 数组：非注释首行必须是 `- ` 条目或 `[]`
+      const lines = after.split(/\r?\n/).filter((l) => l.trim() !== '');
+      const firstContent = lines.find((l) => !l.trim().startsWith('#'));
+      assert.ok(
+        firstContent === '[]' || (firstContent && firstContent.startsWith('- ')),
+        '迁移后应为顶层数组，实际首条非注释行: ' + JSON.stringify(firstContent)
+      );
+    });
+  });
+
+  it('已损坏（非数组）的 cordis.patch.yml 在安装能力路由时被自愈为合法数组', async () => {
+    await withHome(async () => {
+      const mod = await import('../packages/core/src/capability-router.js');
+      const profileDir = join(process.env.DSH_HOME, 'profiles', 'web');
+      const pkgDir = join(profileDir, 'node_modules', '@dsh-manager', 'dsh-capability-router');
+      mkdirSync(join(pkgDir, 'lib'), { recursive: true });
+      writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@dsh-manager/dsh-capability-router', version: '1.0.1', main: 'lib/index.js' }), 'utf-8');
+      writeFileSync(join(pkgDir, 'lib', 'index.js'), 'export default class CapabilityRouter {}\n', 'utf-8');
+      // v1.3.20 曾把 patch 写坏：只剩注释，无数组条目（DSH 报 must be a top-level YAML array）
+      const patchFile = join(profileDir, 'cordis.patch.yml');
+      writeFileSync(patchFile, '# dsh profile patch layer\n\n', 'utf-8');
+      const r = await mod.installCapabilityRouter('web');
+      assert.equal(r.success, true);
+      const after = readFileSync(patchFile, 'utf-8');
+      assert.ok(after.trim().includes('[]') || /(^|\n)\s*-\s/.test(after), '损坏的 patch 应被自愈为顶层数组，实际: ' + JSON.stringify(after));
+    });
+  });
 });

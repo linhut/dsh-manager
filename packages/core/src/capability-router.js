@@ -184,13 +184,37 @@ function ensureBundleEntry(profile) {
   });
   // 写回时由 writeProfileManifest 统一完成原子写 + 备份（备份路径作为 backupPath 上报）
   const bk = added ? writeProfileManifest(profile, manifest) : '';
+  // 自愈：历史版本（1.3.20）可能把 cordis.patch.yml 写成非数组导致 DSH 拒绝启动，
+  // 先修复为合法顶层数组再迁移旧条目（修复动作计入 migrated 状态供 UI 展示）。
+  const selfHealed = ensureValidPatchArray(profile);
   // 迁移：移除 cordis.patch.yml 中的旧 insert 条目（bundles 生效后由 loader 按官方层序应用）
-  const migrated = removeLegacyPatchEntry(profile);
+  const migrated = removeLegacyPatchEntry(profile) || selfHealed;
   return { bk, migrated, added };
 }
 
 /**
- * 移除 cordis.patch.yml 中能力路由插件的旧 insert 条目（幂等）。
+ * 校验 cordis.patch.yml 是否为 DSH 要求的"顶层 YAML 数组"。
+ * 迁移旧 insert 条目时若把文件写坏（如只剩注释/空行/对象），DSH 启动会报
+ * "must be a top-level YAML array of loader patch entries"——本函数用于判定。
+ * @param {string} raw - patch 文件原文
+ * @returns {boolean}
+ */
+function isPatchArray(raw) {
+  const lines = String(raw || '').split(/\r?\n/);
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    // 顶层数组条目：`- xxx` / `-`（含缩进宽容）；`[]` 也是合法空数组
+    if (/^-\s*(\S|\s*$)/.test(t) || t === '[]') return true;
+    return false; // 出现非注释、非数组条目的内容 → 不是顶层数组
+  }
+  // 全注释/空文件：DSH 也需要顶层数组，判定为非法
+  return false;
+}
+
+/**
+ * 移除 cordis.patch.yml 中能力路由插件的旧 insert 条目（幂等），
+ * 并确保写回后文件始终是 DSH 要求的"顶层 YAML 数组"。
  * @param {string} profile
  * @returns {boolean} 是否发生了移除
  */
@@ -220,13 +244,51 @@ function removeLegacyPatchEntry(profile) {
   }
   if (!removed) return false;
   let nc = out.join('\n').replace(/\n{3,}/g, '\n\n');
-  if (!nc.trim()) nc = '# dsh profile patch layer\n[]\n';
+  // 安全护栏：迁移后必须仍是顶层数组。若残留只有注释/空行（无任何 - 条目），
+  // 补 `[]`——否则 DSH loadOverlayPatches 会报 "must be a top-level YAML array" 拒绝启动。
+  if (!isPatchArray(nc)) {
+    const head = nc.replace(/\n{3,}/g, '\n\n').trim();
+    nc = (head ? head + '\n' : '') + '[]\n';
+  }
   if (nc !== raw0) {
     const tmp = patchFile + '.tmp-' + Date.now();
     writeFileSync(tmp, nc, 'utf-8');
     renameSync(tmp, patchFile);
   }
   return true;
+}
+
+/**
+ * 自愈：确保 profile 的 cordis.patch.yml 是 DSH 要求的顶层 YAML 数组。
+ * 历史版本（1.3.20）的 removeLegacyPatchEntry 可能把文件写成只剩注释/空行
+ * （非数组），导致 DSH 启动报 "must be a top-level YAML array"。本函数在
+ * 安装/卸载能力路由前调用：发现非数组时备份并重写为合法空数组（保留注释头）。
+ * @param {string} profile
+ * @returns {boolean} 是否发生了修复
+ */
+function ensureValidPatchArray(profile) {
+  const patchFile = join(DSH_PATHS.profiles, profile, 'cordis.patch.yml');
+  if (!existsSync(patchFile)) return false;
+  let raw = '';
+  try { raw = readFileSync(patchFile, 'utf-8'); } catch { return false; }
+  if (isPatchArray(raw)) return false;
+  // 保留注释行作为文件头，追加空数组占位
+  const head = raw
+    .split(/\r?\n/)
+    .filter((l) => l.trim().startsWith('#'))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const fixed = (head ? head + '\n' : '') + '[]\n';
+  const tmp = patchFile + '.tmp-' + Date.now();
+  try {
+    writeFileSync(tmp, fixed, 'utf-8');
+    renameSync(tmp, patchFile);
+    return fixed !== raw;
+  } catch (e) {
+    console.warn('[dsh-manager] ignored error:', e?.message || e);
+    return false;
+  }
 }
 
 /**

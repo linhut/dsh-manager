@@ -46,6 +46,29 @@ function extractPkgNameFromPath(p) {
   return parts[0];
 }
 
+/**
+ * 防御式解析 `npm view <pkg> version --json` 的输出为版本字符串。
+ * npm 输出通常是 JSON 字符串字面量 `"1.2.3"`，但某些 registry/错误场景下可能输出
+ * JSON 对象（`{"version":"1.2.3"}`）、纯文本或空值。直接 `JSON.parse(...).replace`
+ * 在解析出对象/数组时会抛 "replace is not a function"（历史线上报错）。
+ * @param {string} stdout - npm view 的 stdout
+ * @returns {string|null} 规范化后的版本号（去掉前导 v），失败返回 null
+ */
+export function parseNpmViewVersion(stdout) {
+  if (!stdout || typeof stdout !== 'string') return null;
+  const text = stdout.trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === 'string' && parsed.trim()) return parsed.trim().replace(/^v/i, '');
+    if (parsed && typeof parsed === 'object' && typeof parsed.version === 'string' && parsed.version.trim()) {
+      return parsed.version.trim().replace(/^v/i, '');
+    }
+  } catch { /* 非 JSON，走下面正则兜底 */ }
+  const m = /(?:^|\s)(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/.exec(text);
+  return m ? m[1].replace(/^v/i, '') : null;
+}
+
 export class PluginRegistry {
   /**
    * @param {object} [options]
@@ -1203,8 +1226,8 @@ export class PluginRegistry {
       const packageName = repo;
       try {
         const { stdout } = await execa('npm', ['view', packageName, 'version', '--json'], { reject: false, timeout: 15_000, windowsHide: true });
-        if (stdout) {
-          const npmVersion = JSON.parse(stdout).replace(/^v/, '');
+        const npmVersion = parseNpmViewVersion(stdout);
+        if (npmVersion) {
           const npmUpdate = compareDSHVersions(npmVersion, plugin.version) > 0;
           if (npmUpdate) {
             return { hasUpdate: true, currentVersion: plugin.version, latestVersion: npmVersion };
@@ -1218,8 +1241,8 @@ export class PluginRegistry {
       const packageName = plugin.source.replace('npm:', '');
       try {
         const { stdout } = await execa('npm', ['view', packageName, 'version', '--json'], { reject: false, timeout: 15_000, windowsHide: true });
-        if (stdout) {
-          const latestVersion = JSON.parse(stdout).replace(/^v/, '');
+        const latestVersion = parseNpmViewVersion(stdout);
+        if (latestVersion) {
           const hasUpdate = compareDSHVersions(latestVersion, plugin.version) > 0;
           return { hasUpdate, currentVersion: plugin.version, latestVersion };
         }

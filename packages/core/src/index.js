@@ -12,7 +12,7 @@ export { GITHUB_PROXIES, githubProxyUrls } from './github-mirror.js';
 export { DOH_ENDPOINTS, resolveViaDoh, fetchViaDoh, tryFetchViaDoh, clearDohCache } from './doh-resolver.js';
 export { DSHInstaller } from './installer.js';
 export { DSHConfig } from './config.js';
-export { DSHUtils, getDSHInfo, getDSHDetectionDetail, DSH_PATHS, resolveDSHCommand, compareDSHVersions, buildCommandEnv, refreshSystemPath, detectRealArch, getSystemDiagnostics } from './dsh-utils.js';
+export { DSHUtils, getDSHInfo, getDSHDetectionDetail, DSH_PATHS, resolveDSHCommand, compareDSHVersions, buildCommandEnv, refreshSystemPath, detectRealArch, getSystemDiagnostics, getDSHPath, isDSHInstalled, getDSHVersion, listDSHVersions, isDSHInPath } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
 export { MCPServerManager } from './mcp-manager.js';
 export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';

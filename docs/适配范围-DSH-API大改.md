@@ -157,3 +157,15 @@ import 的 `installSettingsSection` / `settingsNamespace`），升级后旧插�
 - [x] 契约漂移检测：`does not provide an export named` 识别与 adapt 分类
 - [x] 插件崩溃隔离：事件落盘 → 自动暂停 → UI 横幅/恢复 → 清空历史
 - [x] link 插件宿主依赖注入：符号链接插件缺 `@deepseek-ai/*` 自动补齐
+
+## 六、v1.3.21 热修复记录（线上安装报错）
+
+v1.3.20 发布后在全新/升级机器上出现 DSH 无法启动与功能告警，定位到三处问题，v1.3.21 修复：
+
+| # | 现象（用户日志） | 根因 | v1.3.21 修复 |
+|---|---|---|---|
+| 1 | `dsh: overlay .../cordis.patch.yml must be a top-level YAML array of loader patch entries`（DSH 完全无法启动） | 能力路由安装器迁移旧 `cordis.patch.yml insert` 条目后，若文件只剩注释/空行，写回内容不是顶层数组，DSH `loadOverlayPatches` 拒绝启动 | 迁移后强制保证顶层数组（无条目时补 `[]`）；并对已损坏（非数组）的 patch 文件**自动自愈**为合法空数组 |
+| 2 | `ignored error: getDSHPath is not a function`（安装/切换 DSH 版本后记录版本失败） | `electron/ipc-handlers.js` 用 `const { getDSHPath } = await loadCore()` 解构，但 `packages/core/src/index.js` 未 re-export `getDSHPath`（dsh-utils 已导出） | core index.js 补导出 `getDSHPath` 及其余 dsh-utils 实用函数 |
+| 3 | `ignored error: JSON.parse(...).replace is not a function`（插件页/隔离概览更新检查报错） | `registry.js` 对 `npm view --json` 输出直接 `JSON.parse(stdout).replace(...)`，输出为 JSON 对象/非 JSON 时抛错 | 新增防御式解析 `parseNpmViewVersion()`：兼容字符串字面量、`{version}` 对象、纯文本/空值 |
+
+> 已损坏 `cordis.patch.yml` 的机器：升级到 v1.3.21 后，Manager 启动/安装能力路由时会自动检测并修复为合法数组，无需手动编辑文件。
