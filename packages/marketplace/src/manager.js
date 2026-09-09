@@ -93,10 +93,14 @@ export class PluginManager {
       if (resolved) entryId = resolved.entryId;
     }
 
+    // 先落盘 patch（真实生效），成功后再同步本地注册表状态，
+    // 避免"注册表显示已启用但 patch 未生效"的状态分叉。
+    const patchResult = this.registry.setPluginDisabled(this.profile, entryId, false);
+    if (!patchResult || patchResult.success !== true) {
+      throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, `启用插件 ${pluginId} 失败：patch 写入未成功（${patchResult?.message || '未知原因'}）`);
+    }
     // 更新本地注册表（登记条目存在才写，避免把 loader entry 混入 plugins.json）
     this.registry.updatePluginStatus(pluginId, { enabled: true, enabledAt: new Date().toISOString() });
-    // 实际修改 cordis.patch.yml：移除 id-targeted override
-    this.registry.setPluginDisabled(this.profile, entryId, false);
     return { success: true };
   }
 
@@ -120,10 +124,14 @@ export class PluginManager {
       if (resolved) entryId = resolved.entryId;
     }
 
+    // 先落盘 patch（真实生效），成功后再同步本地注册表状态，
+    // 避免"注册表显示已禁用但 patch 未生效"的状态分叉。
+    const patchResult = this.registry.setPluginDisabled(this.profile, entryId, true);
+    if (!patchResult || patchResult.success !== true) {
+      throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, `禁用插件 ${pluginId} 失败：patch 写入未成功（${patchResult?.message || '未知原因'}）`);
+    }
     // 更新本地注册表（登记条目存在才写，避免把 loader entry 混入 plugins.json）
     this.registry.updatePluginStatus(pluginId, { enabled: false, disabledAt: new Date().toISOString() });
-    // 实际修改 cordis.patch.yml：写 id-targeted override（不要求条目原本存在于补丁中）
-    this.registry.setPluginDisabled(this.profile, entryId, true);
     return { success: true };
   }
 

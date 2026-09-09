@@ -243,10 +243,44 @@ app.whenReady().then(async () => {
     writeLog('warn', '启动预检: 凭据检查异常（不影响应用启动）: ' + preErr.message);
   }
 
+  // 内置内容自动安装（首次运行 + 每次启动校验，幂等）：
+  // 把随包内置的技能同步到 ~/.dsh/skills，并自动安装内置插件（能力路由 / dsh-skills）。
+  // 异步执行、不阻塞窗口创建；失败仅记日志，不影响应用启动。
+  ensureBundledContentOnStartup().catch((err) => {
+    writeLog('warn', '内置内容自动安装异常: ' + (err?.message || err));
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
   });
 });
+
+/** 启动时执行内置技能/插件自动安装（幂等，日志记录结果） */
+async function ensureBundledContentOnStartup() {
+  try {
+    const core = await import('../packages/core/src/index.js');
+    const result = await core.ensureBundledContent({ profile: 'web' });
+    const skills = result.skills || {};
+    if (skills.source) {
+      const changed = (skills.results || []).filter(r => r.action === 'installed' || r.action === 'updated');
+      writeLog('info', `内置技能同步完成: 来源 ${skills.source}，新装/更新 ${changed.length} 个，跳过 ${skills.skipped || 0} 个`
+        + (changed.length ? '（' + changed.map(r => r.name).join(', ') + '）' : ''));
+    } else {
+      writeLog('warn', '内置技能同步跳过: ' + (skills.error || '未找到内置技能源'));
+    }
+    const plugins = result.plugins;
+    if (plugins) {
+      if (plugins.capabilityRouter) {
+        writeLog('info', '内置插件[能力路由]: ' + (plugins.capabilityRouter.already ? '已安装，跳过' : (plugins.capabilityRouter.success ? '自动安装完成' : '安装失败: ' + (plugins.capabilityRouter.error || ''))));
+      }
+      if (plugins.dshSkills) {
+        writeLog('info', '内置插件[dsh-skills]: ' + (plugins.dshSkills.already ? '已安装，跳过' : (plugins.dshSkills.success ? '自动安装完成' : '安装失败: ' + (plugins.dshSkills.error || ''))));
+      }
+    }
+  } catch (e) {
+    writeLog('warn', '内置内容自动安装失败: ' + (e?.message || e));
+  }
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

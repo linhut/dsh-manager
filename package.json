@@ -1,6 +1,6 @@
 {
   "name": "dsh-manager",
-  "version": "1.3.21",
+  "version": "1.4.0",
   "description": "🐳 DeepSeek Harness 安装与管理工具 — 一键安装、插件市场、版本管理",
   "author": {
     "name": "linhut",
@@ -72,6 +72,14 @@
         "to": "packages",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "dsh-skills",
+        "to": "dsh-skills",
+        "filter": [
+          "**/*",
+          "!.git/**/*"
         ]
       }
     ]

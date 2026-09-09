@@ -831,6 +831,23 @@ async function diagnoseAndFixPlugins() {
   }
 }
 
+// 清理本地注册表中的幽灵条目（历史遗留的非法 id，如 --mcp）
+async function cleanupGhostPluginsUI() {
+  try {
+    showToast('正在扫描幽灵条目...', 'info');
+    const result = await window.dshManager.cleanupGhostPlugins();
+    const removed = result?.removed || [];
+    if (removed.length === 0) {
+      showToast('✅ 未发现幽灵条目', 'success');
+    } else {
+      showToast(`🧹 已清理 ${removed.length} 个幽灵条目：${removed.map(r => r.id).join(', ')}`, 'success', 6000);
+      renderPluginsPage();
+    }
+  } catch (err) {
+    showToast('清理失败: ' + err.message, 'error');
+  }
+}
+
 // 折叠/展开某个 bundle 分组
 function toggleBundleGroup(groupId) {
   const bodyRows = document.querySelectorAll(`tr[data-bundle-body="${groupId}"]`);
@@ -1024,6 +1041,7 @@ async function renderPluginsPage() {
         🔄 检查更新
       </button>
       <button class="btn btn-ghost" onclick="diagnoseAndFixPlugins()" title="扫描插件树中无效条目（如已注册但包缺失/非合法 bundle），一键移除以恢复 DSH 启动">🩺 诊断并修复</button>
+      <button class="btn btn-ghost" onclick="cleanupGhostPluginsUI()" title="清理本地注册表中的幽灵条目（历史遗留的非法 id，如 --mcp）">🧹 清理幽灵条目</button>
       <button class="btn btn-ghost" onclick="toggleAllBundles(true)" title="展开所有 bundle 分组">📂 全部展开</button>
       <button class="btn btn-ghost" onclick="toggleAllBundles(false)" title="收起所有 bundle 分组">📁 全部收起</button>
       <span style="font-size:12px;color:var(--text-dim);">共 ${totalPlugins} 个插件（用户 bundle ${userBundles.length} 组 · 核心框架 ${coreBundles.length} 组）</span>
@@ -1807,11 +1825,106 @@ async function checkPluginUpdates() {
     const hasUpdates = updates.filter(u => u.hasUpdate);
     if (hasUpdates.length === 0) {
       showToast('所有插件已是最新', 'success');
-    } else {
-      showToast(`发现 ${hasUpdates.length} 个插件可更新`, 'warning');
+      return;
     }
+    // 缓存本次检查结果，供一键更新复用（避免重复网络请求）
+    window.__pluginUpdatesCache = hasUpdates;
+    // 展示可更新列表 + 一键更新 / 逐条更新
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    const rows = hasUpdates.map(u => `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;font-size:13px;">${escapeHtml(u.name || u.id)}</div>
+          <div style="font-size:11px;color:var(--text-dim);">
+            ${escapeHtml(u.currentVersion || '?')} → <span style="color:var(--success);">${escapeHtml(u.latestVersion || 'latest')}</span>
+            <span style="margin-left:6px;color:var(--text-dim);">${escapeHtml(u.source || '')}</span>
+          </div>
+        </div>
+        <button class="btn btn-sm btn-primary" data-update-id="${escapeAttr(u.id)}" onclick="updateSinglePlugin('${escapeAttr(u.id)}', this)">⬇ 更新</button>
+      </div>`).join('');
+    modal.innerHTML = `
+      <div class="modal" style="min-width:520px;max-width:640px;">
+        <div class="modal-header">
+          <h3 class="modal-title">🔄 插件更新（${hasUpdates.length}）</h3>
+          <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button>
+        </div>
+        <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
+          ${rows}
+        </div>
+        <div class="modal-footer" style="justify-content:space-between;">
+          <span id="pluginUpdateStatus" style="font-size:12px;color:var(--text-dim);"></span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+            <button class="btn btn-primary" onclick="updateAllPlugins(this)">⬇ 一键更新全部</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
   } catch (err) {
     showToast('检查失败: ' + err.message, 'error');
+  }
+}
+
+async function updateSinglePlugin(pluginId, btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '更新中…';
+  try {
+    const result = await window.dshManager.updatePlugin(pluginId);
+    const st = document.getElementById('pluginUpdateStatus');
+    if (st) st.textContent = `✅ ${result.name || pluginId}: ${result.oldVersion || '?'} → ${result.newVersion || '?'}`;
+    showToast(`插件 ${pluginId} 更新成功（重启后生效）`, 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，新版本已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
+    btn.textContent = '✅ 已更新';
+    // 更新后强制刷新本地列表，让版本显示同步
+    window.dshManager.getLocalPlugins(true).catch(() => {});
+    return result;
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    const st = document.getElementById('pluginUpdateStatus');
+    if (st) st.textContent = `❌ ${pluginId} 更新失败: ${err.message}`;
+    showToast(`更新失败: ${err.message}`, 'error');
+    throw err;
+  }
+}
+
+async function updateAllPlugins(btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '更新中…';
+  const st = document.getElementById('pluginUpdateStatus');
+  // 复用弹窗打开时缓存的可更新列表，避免重复网络请求
+  const cached = window.__pluginUpdatesCache || [];
+  try {
+    const updates = cached.length > 0
+      ? cached
+      : (await window.dshManager.checkPluginUpdates()).filter(u => u.hasUpdate);
+    const hasUpdates = updates.filter(u => u.hasUpdate);
+    let ok = 0, fail = 0;
+    if (st) st.textContent = `正在更新 ${hasUpdates.length} 个插件…`;
+    for (const u of hasUpdates) {
+      try {
+        await updateSinglePlugin(u.id, document.querySelector(`button[data-update-id="${escapeAttr(u.id)}"]`));
+        ok++;
+      } catch { fail++; }
+    }
+    if (st) st.textContent = `更新完成：成功 ${ok}，失败 ${fail}`;
+    showToast(`更新完成：成功 ${ok}，失败 ${fail}`, fail > 0 ? 'warning' : 'success');
+  } catch (err) {
+    if (st) st.textContent = '更新失败: ' + err.message;
+    showToast('更新失败: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
   }
 }
 
@@ -1865,6 +1978,7 @@ async function renderSkillsPage() {
       '    <button class="btn btn-primary" onclick="openCreateSkill()">＋ 新建技能</button>',
       '    <button class="btn" onclick="openImportSkillDialog()">⬇ GitHub 导入</button>',
       '    <button class="btn" onclick="importSkillFromDir()">📂 目录导入</button>',
+      '    <button class="btn" onclick="showPluginSkillSync()" title="从已安装插件（如 gongwen-skill）同步最新技能文本到用户技能目录">🔁 插件同步</button>',
       '    <button class="btn btn-secondary" onclick="showSkillMarketplace()">🛒 技能市场</button>',
       '  </div>',
       '</div>',
@@ -2156,6 +2270,77 @@ async function importSkillFromDir() {
     });
     renderSkillsPage();
   } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
+}
+
+// ====== 从已安装插件同步技能 ======
+async function showPluginSkillSync() {
+  try {
+    showToast('正在扫描已安装插件中的技能...', 'info');
+    const status = await window.dshManager.skillsPluginSyncStatus();
+    if (!status || status.length === 0) {
+      showToast('未在已安装插件中发现技能定义（SKILL.md）', 'warning');
+      return;
+    }
+    const rows = status.map(s => `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;font-size:13px;">${escSkillHtml(s.skillName)}</div>
+          <div style="font-size:11px;color:var(--text-dim);">
+            插件：<code>${escSkillHtml(s.plugin)}</code> · v${escSkillHtml(s.version || '?')}
+            ${s.installed ? ` · 用户副本 ${s.localMtime ? '（' + s.localMtime.replace('T', ' ').slice(0, 19) + '）' : ''}` : ' · 未安装到用户技能目录'}
+          </div>
+          ${s.outdated ? '<div style="font-size:11px;color:var(--warning);">⚠️ 插件内技能较新，建议同步</div>' : '<div style="font-size:11px;color:var(--success);">✓ 已是最新</div>'}
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="importPluginSkillUI('${escapeAttr(s.plugin)}', '${escapeAttr(s.skillName)}', this)" ${s.outdated ? '' : 'disabled'}>${s.outdated ? '⬇ 同步' : '已最新'}</button>
+      </div>`).join('');
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    modal.innerHTML = `
+      <div class="modal" style="min-width:560px;max-width:680px;">
+        <div class="modal-header">
+          <h3 class="modal-title">🔁 从插件同步技能</h3>
+          <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button>
+        </div>
+        <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
+          <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">将已安装插件内置的最新技能定义（SKILL.md 等）复制到 ~/.dsh/skills/，解决"插件更新但技能还是旧版"的问题。</p>
+          ${rows}
+        </div>
+        <div class="modal-footer">
+          <span id="pluginSkillSyncStatus" style="font-size:12px;color:var(--text-dim);"></span>
+          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  } catch (e) {
+    showToast('扫描失败: ' + e.message, 'error');
+  }
+}
+
+async function importPluginSkillUI(plugin, skillName, btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '同步中…';
+  try {
+    const r = await window.dshManager.skillsImportPluginSkill(plugin, { overwrite: true });
+    const st = document.getElementById('pluginSkillSyncStatus');
+    if (st) st.textContent = `✅ ${skillName} 已同步（${r.path}）`;
+    showToast(`✅ 技能 ${skillName} 已从插件同步`, 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，技能已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
+    btn.textContent = '✅ 已同步';
+    renderSkillsPage();
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    const st = document.getElementById('pluginSkillSyncStatus');
+    if (st) st.textContent = `❌ 同步失败: ${e.message}`;
+    showToast('同步失败: ' + e.message, 'error');
+  }
 }
 
 // ====== 技能市场 ======
@@ -2535,6 +2720,7 @@ async function renderSettingsPage() {
       <button class="btn btn-secondary" onclick="openSettingsTab('llm')">🤖 LLM 提供商</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('yaml')">📝 YAML 编辑器</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('presets')">🧠 Agent Presets</button>
+      <button class="btn btn-secondary" onclick="openSettingsTab('bundled')">📦 内置内容</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('system')">🔧 系统管理</button>
     </div>
     <div id="settingsTabs">
@@ -3600,6 +3786,9 @@ function openSettingsTab(tab) {
     case 'presets':
       renderPresetsTab().then(html => { tabEl.innerHTML = html; });
       break;
+    case 'bundled':
+      renderBundledContentTab().then(html => { tabEl.innerHTML = html; });
+      break;
     case 'system':
       tabEl.innerHTML = renderSystemManagementTab();
       break;
@@ -4262,26 +4451,200 @@ async function renderYAMLEditorTab() {
 async function renderPresetsTab() {
   const config = await window.dshManager.getAllConfig();
   const agentPresets = config.settings?.['agent-presets'] || {};
-  const entries = Object.entries(agentPresets);
+  // 兼容 DSH 官方格式：agent-presets.default = 'preset-id'（字符串）
+  const defaultRef = typeof agentPresets === 'object' && !Array.isArray(agentPresets)
+    ? (typeof agentPresets.default === 'string' ? agentPresets.default : '')
+    : '';
+  const entries = Object.entries(agentPresets).filter(([k]) => k !== 'default');
+
+  // 扫描磁盘真实预设目录（用户级 + 内置），获取完整预设列表与元数据
+  let dirPresets = [];
+  try {
+    dirPresets = await window.dshManager.listAgentPresetDirs();
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+
+  const currentDefault = defaultRef
+    || (dirPresets.find(p => p.isDefault)?.id || '');
+
+  const presetsHtml = dirPresets.map(p => `
+    <tr>
+      <td><code>${escapeHtml(p.id)}</code></td>
+      <td>
+        <strong>${escapeHtml(p.name)}</strong>
+        ${p.kind === 'bundled' ? ' <span class="badge badge-gray">内置</span>' : ' <span class="badge badge-blue">用户</span>'}
+        ${p.id === currentDefault ? ' <span class="badge badge-green">⭐ 当前默认</span>' : ''}
+      </td>
+      <td style="font-size:11px;color:var(--text-dim);max-width:220px;word-break:break-all;">${escapeHtml(p.path)}</td>
+      <td>
+        <button class="btn btn-sm btn-ghost" onclick="viewAgentPreset('${escapeAttr(p.id)}')" title="查看 agent.cordis.yml 内容">👁 查看</button>
+        ${p.id !== currentDefault
+          ? `<button class="btn btn-sm btn-primary" onclick="setDefaultAgentPreset('${escapeAttr(p.id)}', this)">⭐ 设为默认</button>`
+          : '<span style="font-size:11px;color:var(--text-dim);">已为默认</span>'}
+      </td>
+    </tr>`).join('');
+
   return `
     <div class="card">
-      <div class="card-header"><span class="card-title">🧠 Agent Presets（${entries.length}）</span></div>
+      <div class="card-header">
+        <span class="card-title">🧠 Agent Presets（${dirPresets.length}）</span>
+        <span style="font-size:12px;color:var(--text-dim);">当前默认：<code>${escapeHtml(currentDefault || '（未设置）')}</code></span>
+      </div>
       <div class="card-body">
-        ${entries.length === 0
-          ? '<p style="color:var(--text-dim);">暂无 Agent Presets 配置</p>'
+        ${dirPresets.length === 0
+          ? '<p style="color:var(--text-dim);">未发现 Agent Preset 目录（~/.dsh/.agent-presets/ 下应包含 <code>agent.cordis.yml</code>）。</p>'
           : `
+            <div class="table-wrap"><table class="table">
+              <thead><tr><th>ID</th><th>名称</th><th>路径</th><th>操作</th></tr></thead>
+              <tbody>${presetsHtml}</tbody>
+            </table></div>
+            <p style="font-size:11px;color:var(--text-dim);margin-top:8px;">💡 设置默认预设后，新建会话将使用该预设的组合（persona / 工具 / 技能编排）。修改生效需新建会话。</p>
+          `}
+        ${entries.length > 0 ? `
+          <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">settings.yaml 中 agent-presets 段的配置条目：</div>
             <div class="table-wrap"><table class="table"><thead><tr><th>ID</th><th>名称</th><th>路径</th></tr></thead><tbody>
               ${entries.map(([id, conf]) => {
-                // 兼容 DSH 官方格式：agent-presets.default = 'preset-id'（字符串）
                 const name = typeof conf === 'string' ? conf : (conf?.name || id);
                 const path = typeof conf === 'string' ? '' : (conf?.path || '-');
                 return `<tr><td><code>${escapeHtml(id)}</code></td><td><strong>${escapeHtml(name)}</strong>${typeof conf === 'string' ? ' <span class="badge badge-blue">默认引用</span>' : ''}</td><td style="font-size:12px;color:var(--text-dim);">${escapeHtml(path)}</td></tr>`;
               }).join('')}
             </tbody></table></div>
-          `}
+          </div>` : ''}
       </div>
     </div>
   `;
+}
+
+async function viewAgentPreset(id) {
+  try {
+    const detail = await window.dshManager.getAgentPresetDetail(id);
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay active';
+    modal.innerHTML = `
+      <div class="modal" style="min-width:640px;max-width:760px;">
+        <div class="modal-header">
+          <h3 class="modal-title">📄 Agent Preset: <code>${escapeHtml(id)}</code></h3>
+          <button class="modal-close" onclick="this.closest('.modal-overlay').remove()">×</button>
+        </div>
+        <div class="modal-body" style="max-height:65vh;overflow:auto;">
+          <p style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">${escapeHtml(detail.path)}</p>
+          <pre class="code-textarea" style="margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;">${escapeHtml(detail.content)}</pre>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">关闭</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  } catch (err) {
+    showToast('读取预设失败: ' + err.message, 'error');
+  }
+}
+
+async function setDefaultAgentPreset(id, btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '设置中…';
+  try {
+    await window.dshManager.setDefaultAgentPreset(id);
+    showToast(`✅ 已将「${id}」设为默认 Agent Preset（新会话生效）`, 'success', 6000);
+    openSettingsTab('presets');
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = orig;
+    showToast('设置失败: ' + err.message, 'error');
+  }
+}
+
+// ====== 内置内容管理（随包技能/插件自动安装） ======
+async function renderBundledContentTab() {
+  let status = null;
+  try {
+    status = await window.dshManager.getBundledContentStatus();
+  } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
+
+  const skills = status?.skills || {};
+  const skillRows = Object.keys(skills).sort().map(name => {
+    const s = skills[name];
+    const t = s?.syncedAt ? new Date(s.syncedAt).toLocaleString() : '-';
+    return `<tr><td><code>${escapeHtml(name)}</code></td><td style="font-size:12px;color:var(--text-dim);">${escapeHtml(t)}</td></tr>`;
+  }).join('');
+
+  return `
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header">
+        <span class="card-title">📦 内置内容自动安装</span>
+        <span style="font-size:12px;color:var(--text-dim);">${status?.lastSyncAt ? '上次同步：' + new Date(status.lastSyncAt).toLocaleString() : '尚未同步'}</span>
+      </div>
+      <div class="card-body">
+        <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:12px;">
+          dsh-manager 随包携带内置技能（dsh-skills：公文 / PPT / 联网搜索 / 方法论等 9 个技能）与内置插件（能力路由 / dsh-skills）。
+          启动时会自动同步到 <code>~/.dsh/skills</code> 并安装内置插件，开箱即用；内置技能有更新时自动覆盖旧版，你手动修改过的本地副本在内置未变化时不会被覆盖。
+        </p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+          <button class="btn btn-sm btn-primary" onclick="syncBundledSkillsUI(this)">🔁 立即同步技能</button>
+          <button class="btn btn-sm btn-secondary" onclick="installBundledPluginsUI(this)">🔌 安装内置插件</button>
+        </div>
+        <div id="bundledContentStatus" style="font-size:12px;color:var(--text-dim);margin-bottom:8px;"></div>
+        ${skillRows ? `
+          <div class="table-wrap"><table class="table">
+            <thead><tr><th>技能</th><th>上次同步</th></tr></thead>
+            <tbody>${skillRows}</tbody>
+          </table></div>` : '<p style="color:var(--text-dim);">尚无技能同步记录（启动 dsh-manager 后自动同步，或点上方按钮手动同步）。</p>'}
+      </div>
+    </div>
+  `;
+}
+
+async function syncBundledSkillsUI(btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '同步中…';
+  const st = document.getElementById('bundledContentStatus');
+  try {
+    const r = await window.dshManager.syncBundledSkills();
+    const changed = (r.results || []).filter(x => x.action === 'installed' || x.action === 'updated');
+    if (st) st.textContent = r.error
+      ? `⚠️ ${r.error}`
+      : `✅ 同步完成：新装/更新 ${r.synced} 个（${changed.map(x => x.name).join(', ') || '无'}），跳过 ${r.skipped} 个`;
+    showToast(r.error ? ('同步失败: ' + r.error) : `✅ 内置技能同步完成（${r.synced} 个更新，${r.skipped} 个跳过）`, r.error ? 'error' : 'success');
+    openSettingsTab('bundled');
+  } catch (err) {
+    if (st) st.textContent = '❌ 同步失败: ' + err.message;
+    showToast('同步失败: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function installBundledPluginsUI(btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '安装中…';
+  const st = document.getElementById('bundledContentStatus');
+  try {
+    const r = await window.dshManager.installBundledPlugins('web');
+    const parts = [];
+    if (r.capabilityRouter) parts.push('能力路由: ' + (r.capabilityRouter.already ? '已安装' : (r.capabilityRouter.success ? '✅' : '❌ ' + (r.capabilityRouter.error || ''))));
+    if (r.dshSkills) parts.push('dsh-skills: ' + (r.dshSkills.already ? '已安装' : (r.dshSkills.success ? '✅' : '❌ ' + (r.dshSkills.error || ''))));
+    if (st) st.textContent = '🔌 ' + parts.join('；');
+    showToast('🔌 内置插件安装完成', 'success', 6000, {
+      actionLabel: '🔄 重启 DSH',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，插件已加载', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
+  } catch (err) {
+    if (st) st.textContent = '❌ 安装失败: ' + err.message;
+    showToast('安装失败: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
 }
 
 async function setManagerSetting(key, value) {

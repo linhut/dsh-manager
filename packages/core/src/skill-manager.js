@@ -762,4 +762,143 @@ export class SkillManager {
       bySource: Object.fromEntries(['user', 'custom', 'project', 'bundled'].map(k => [k, items.filter(s => s.source === k).length])),
     };
   }
+
+  // ====== 从已安装 DSH 插件同步技能 ======
+  // 背景：部分插件包（如 gongwen-skill）自带 SKILL.md 技能定义，
+  // 但插件更新 ≠ 技能更新——插件装进 profiles/<p>/node_modules，
+  // 而技能目录 ~/.dsh/skills 是另一条链路。以下方法让用户能把
+  // 插件内的最新技能文本一键同步到用户技能目录。
+
+  /**
+   * 扫描各 profile 已安装插件中携带 SKILL.md 的技能包。
+   * 排除 DSH 系统组件（@deepseek-ai/、@dsh-manager/）。
+   * @returns {Array<{plugin: string, skillName: string, skillFile: string, version: string|null, profile: string}>}
+   */
+  listPluginSkills() {
+    const out = [];
+    const profilesDir = DSH_PATHS.profiles;
+    if (!existsSync(profilesDir)) return out;
+    let profiles = [];
+    try { profiles = readdirSync(profilesDir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); } catch { return out; }
+    const SYSTEM_NS = ['@deepseek-ai/', '@dsh-manager/'];
+    for (const profile of profiles) {
+      const nm = join(profilesDir, profile, 'node_modules');
+      if (!existsSync(nm)) continue;
+      let entries = [];
+      try { entries = readdirSync(nm, { withFileTypes: true }); } catch { continue; }
+      const candidates = [];
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          if (e.name.startsWith('@')) {
+            // scoped：@scope/name
+            const scopeDir = join(nm, e.name);
+            try {
+              for (const sub of readdirSync(scopeDir, { withFileTypes: true })) {
+                if (sub.isDirectory()) candidates.push(join(scopeDir, sub.name));
+              }
+            } catch { /* 跳过 */ }
+          } else {
+            candidates.push(join(nm, e.name));
+          }
+        }
+      }
+      for (const pkgDir of candidates) {
+        const rel = relative(nm, pkgDir).split(/[\\/]/).join('/');
+        if (SYSTEM_NS.some(ns => rel.startsWith(ns))) continue;
+        const skillFile = join(pkgDir, 'SKILL.md');
+        if (!existsSync(skillFile)) continue;
+        let version = null;
+        try {
+          const pj = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf-8'));
+          version = pj.version || null;
+        } catch { /* 无 package.json 或解析失败 */ }
+        out.push({ plugin: rel, skillName: basename(pkgDir), skillFile, version, profile });
+      }
+    }
+    // 按插件名去重（多 profile 安装同一插件时取第一个）
+    const seen = new Set();
+    return out.filter(s => (seen.has(s.plugin) ? false : (seen.add(s.plugin), true)));
+  }
+
+  /**
+   * 从已安装插件复制技能到用户技能目录（覆盖更新）。
+   * 只复制技能定义文件（SKILL.md 及其同目录的非隐藏文件），
+   * 不复制 node_modules/.git 等运行时无关内容。
+   * @param {string} plugin - 插件名（如 gongwen-skill 或 @scope/name）
+   * @param {object} [options]
+   * @param {boolean} [options.overwrite=true] - 目标已存在时是否覆盖
+   * @returns {{success: boolean, name: string, path: string, plugin: string}}
+   */
+  importFromPlugin(plugin, options = {}) {
+    const overwrite = options.overwrite !== false;
+    const found = this.listPluginSkills().find(s => s.plugin === plugin);
+    if (!found) {
+      throw new DSHError(DSHErrorCodes.NOT_FOUND, '未在已安装插件中找到技能定义: ' + plugin);
+    }
+    const text = readFileSync(found.skillFile, 'utf-8');
+    // 按最新 DSH 规则校验并规范化 frontmatter（缺 name/description、旧 camelCase 字段自动修复/报错）
+    const normalized = normalizeSkillFrontmatter(text);
+    const name = normalized.name;
+    const target = join(this.userSkillsDir, name);
+    if (existsSync(target) && !overwrite) {
+      throw new DSHError(DSHErrorCodes.ALREADY_EXISTS, '技能已存在: ' + name + '（可使用 overwrite 覆盖）');
+    }
+    mkdirSync(this.userSkillsDir, { recursive: true });
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+    mkdirSync(target, { recursive: true });
+
+    // 复制 SKILL.md 及同目录的附属文件（scripts/ 等），排除 node_modules/.git 等
+    const srcDir = dirname(found.skillFile);
+    const ignore = new Set(['node_modules', '.git', '.DS_Store', '__pycache__', '.venv', 'venv', '.github', '.pytest_cache', '.ruff_cache', 'dist', 'build', '.codegraph', '.research', '.githooks']);
+    const copied = ['SKILL.md'];
+    try {
+      for (const e of readdirSync(srcDir, { withFileTypes: true })) {
+        if (ignore.has(e.name)) continue;
+        const src = join(srcDir, e.name);
+        const dest = join(target, e.name);
+        if (e.isDirectory()) {
+          cpSync(src, dest, { recursive: true });
+          copied.push(e.name + '/');
+        } else if (e.isFile()) {
+          cpSync(src, dest);
+          copied.push(e.name);
+        }
+      }
+    } catch (e) { console.warn('[dsh-manager] 操作失败:', e?.message); }
+    // SKILL.md 写规范化版本
+    writeFileSync(join(target, 'SKILL.md'), normalized.text, 'utf-8');
+    return { success: true, name, path: join(target, 'SKILL.md'), plugin, copied };
+  }
+
+  /**
+   * 列出"可同步"的插件技能及其与用户技能目录的差异（版本/更新时间对比）
+   * 供管理页判断哪些插件技能需要同步。
+   * @returns {Array<object>}
+   */
+  listPluginSkillSyncStatus() {
+    const pluginSkills = this.listPluginSkills();
+    const userSkills = new Map(this.scan().filter(s => s.source === 'user').map(s => [s.name, s]));
+    return pluginSkills.map(ps => {
+      const local = userSkills.get(ps.skillName);
+      let outdated = false;
+      let localMtime = null;
+      let pluginMtime = null;
+      try { pluginMtime = statSync(ps.skillFile).mtime.toISOString(); } catch { /* 忽略 */ }
+      if (local) {
+        try { localMtime = statSync(local.path).mtime.toISOString(); } catch { /* 忽略 */ }
+      }
+      // 用户技能不存在，或插件 SKILL.md 比用户副本更新 → 需要同步
+      outdated = !local || (pluginMtime && (!localMtime || pluginMtime > localMtime));
+      return {
+        plugin: ps.plugin,
+        skillName: ps.skillName,
+        version: ps.version,
+        profile: ps.profile,
+        installed: !!local,
+        outdated,
+        pluginMtime,
+        localMtime,
+      };
+    });
+  }
 }

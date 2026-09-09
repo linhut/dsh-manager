@@ -26,6 +26,7 @@ export { SkillManager } from './skill-manager.js';
 export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileIntegrity, repairProfileFromGlobal, repairAllProfiles, getDependencyHealth, getGlobalDSHNodeModules, getProfileNodeModules, checkGlobalDSHIntegrity, repairGlobalDSHInstall, copyModuleToProfile, repairProfileDependencies, repairLinkPluginHostDeps } from './dependency-integrity.js';
 export { MasterPromptManager } from './master-prompt-manager.js';
 export { installCapabilityRouter, uninstallCapabilityRouter, isCapabilityRouterInstalled, resolveBundledPluginDir, detectNodeRuntime, CAPABILITY_ROUTER_PACKAGE, CAPABILITY_ROUTER_MIN_NODE_MAJOR } from './capability-router.js';
+export { resolveBundledSkillsRoot, syncBundledSkills, installBundledPlugins, installDshSkillsPlugin, ensureBundledContent, getBundledContentState } from './bundled-content.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 export { generateImage, findProviderConfig, resolveApiKey, getImageSaveDir } from './imagegen.js';
 export {

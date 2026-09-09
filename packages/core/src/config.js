@@ -266,6 +266,98 @@ export class DSHConfig {
     return presets;
   }
 
+  /**
+   * 扫描磁盘上的全部 Agent Preset 目录（用户级 ~/.dsh/.agent-presets + 部署内置 agent-presets），
+   * 读取每个预设的 preset.yml 元数据与 agent.cordis.yml 存在性。
+   * 相比 listAgentPresets（只读 settings 段），此方法反映"真实存在的预设"，
+   * 供管理页展示与应用（设为默认）。
+   * @returns {Array<{id: string, name: string, description: string, path: string, kind: 'user'|'bundled', isDefault: boolean}>}
+   */
+  async listAgentPresetDirs() {
+    const roots = [];
+    const userRoot = join(DSH_PATHS.home, '.agent-presets');
+    const bundledRoot = join(DSH_PATHS.home, 'agent-presets'); // 部署内置预设通常装于此
+    if (existsSync(userRoot)) roots.push({ root: userRoot, kind: 'user' });
+    if (existsSync(bundledRoot)) roots.push({ root: bundledRoot, kind: 'bundled' });
+
+    // 当前默认预设 id（settings.agent-presets.default）
+    const { settings } = await this.read();
+    const defaultId = (settings['agent-presets'] && typeof settings['agent-presets'] === 'object' && !Array.isArray(settings['agent-presets']))
+      ? (typeof settings['agent-presets'].default === 'string' ? settings['agent-presets'].default : '')
+      : '';
+
+    const out = [];
+    for (const { root, kind } of roots) {
+      let entries = [];
+      try { entries = readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory()); } catch { continue; }
+      for (const e of entries) {
+        const dir = join(root, e.name);
+        const comp = join(dir, 'agent.cordis.yml');
+        if (!existsSync(comp)) continue; // 仅目录不构成预设
+        let name = e.name;
+        let description = '';
+        const metaFile = join(dir, 'preset.yml');
+        if (existsSync(metaFile)) {
+          try {
+            const parsed = parseYAML(readFileSync(metaFile, 'utf-8')) || {};
+            if (typeof parsed.name === 'string' && parsed.name) name = parsed.name;
+            if (typeof parsed.description === 'string' && parsed.description) description = parsed.description;
+          } catch { /* 元数据解析失败时回退目录名 */ }
+        }
+        out.push({
+          id: e.name,
+          name,
+          description,
+          path: comp,
+          kind,
+          isDefault: e.name === defaultId,
+        });
+      }
+    }
+    return out.sort((a, b) => (b.isDefault - a.isDefault) || a.id.localeCompare(b.id));
+  }
+
+  /**
+   * 读取单个 Agent Preset 的组合文件（agent.cordis.yml）内容
+   * @param {string} id - 预设 id
+   * @returns {Promise<{id: string, content: string, path: string}>}
+   */
+  async getAgentPresetDetail(id) {
+    if (!id || !/^[a-z0-9][a-z0-9-]*$/i.test(id)) {
+      throw new DSHError(DSHErrorCodes.INVALID_PARAMS, '预设 id 不合法: ' + id);
+    }
+    const all = await this.listAgentPresetDirs();
+    const hit = all.find(p => p.id === id);
+    if (!hit) throw new DSHError(DSHErrorCodes.NOT_FOUND, '预设不存在: ' + id);
+    let content = '';
+    try { content = readFileSync(hit.path, 'utf-8'); } catch (e) {
+      throw new DSHError(DSHErrorCodes.CONFIG_PARSE_ERROR, '读取预设文件失败: ' + e.message);
+    }
+    return { id, content, path: hit.path };
+  }
+
+  /**
+   * 设置默认 Agent Preset（写 settings['agent-presets'].default）
+   * @param {string} id - 预设 id（须存在于磁盘预设目录）
+   * @returns {Promise<{success: boolean, id: string}>}
+   */
+  async setDefaultAgentPreset(id) {
+    if (!id || !/^[a-z0-9][a-z0-9-]*$/i.test(id)) {
+      throw new DSHError(DSHErrorCodes.INVALID_PARAMS, '预设 id 不合法: ' + id);
+    }
+    const all = await this.listAgentPresetDirs();
+    if (!all.some(p => p.id === id)) {
+      throw new DSHError(DSHErrorCodes.NOT_FOUND, '预设不存在（请确认目录中存在 agent.cordis.yml）: ' + id);
+    }
+    const { settings } = await this.read();
+    if (!settings['agent-presets'] || typeof settings['agent-presets'] !== 'object' || Array.isArray(settings['agent-presets'])) {
+      settings['agent-presets'] = {};
+    }
+    settings['agent-presets'].default = id;
+    await this.write(settings);
+    return { success: true, id };
+  }
+
   /** @private */
   _getNested(obj, path) {
     return path.split('.').reduce((current, key) => {

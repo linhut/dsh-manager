@@ -1564,6 +1564,33 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await manager.disable(pluginId);
   });
 
+  // 更新单个插件（真实重装覆盖；installer.update 复用 install 流程）
+  ipcMain.handle('marketplace:update-plugin', async (_, pluginId) => {
+    const { PluginInstaller } = await loadMarketplace();
+    const win = getMainWindow();
+    const installer = new PluginInstaller({
+      onProgress: (data) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('dsh:plugin-install-progress', data);
+        }
+      },
+    });
+    try {
+      return await installer.update(pluginId);
+    } catch (error) {
+      const detail = error?.stderr ? `\n${String(error.stderr).trim().slice(0, 500)}` : '';
+      throw new Error(`${error?.message || '插件更新失败'}${detail}`);
+    }
+  });
+
+  // 清理本地注册表中的幽灵条目（历史遗留的非法 id，如 "--mcp"）
+  ipcMain.handle('marketplace:cleanup-ghosts', async () => {
+    const { PluginRegistry } = await loadMarketplace();
+    const registry = new PluginRegistry();
+    const removed = registry.cleanupGhostEntries();
+    return { success: true, removed };
+  });
+
   // ====== 插件崩溃自动隔离（quarantine） ======
   // 启动文件监视（幂等）：DSH 侧 adapter 崩溃写入 plugin-quarantine.jsonl，
   // Manager 自动暂停对应插件并向 UI 广播提示
@@ -1699,6 +1726,48 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
     return await config.listAgentPresets();
+  });
+
+  // ====== 内置内容自动安装（技能/插件） ======
+  // 读取内置内容同步状态（来源/时间/各技能指纹）
+  ipcMain.handle('bundled-content:status', async () => {
+    const { getBundledContentState } = await loadCore();
+    return getBundledContentState();
+  });
+
+  // 手动触发内置技能同步（幂等：仅同步缺失或内置更新的技能）
+  ipcMain.handle('bundled-content:sync-skills', async () => {
+    const { syncBundledSkills } = await loadCore();
+    const result = syncBundledSkills();
+    return { success: !result.error, ...result };
+  });
+
+  // 手动触发内置插件安装（能力路由 + dsh-skills，幂等）
+  ipcMain.handle('bundled-content:install-plugins', async (_, profile = 'web') => {
+    const { installBundledPlugins } = await loadCore();
+    const result = await installBundledPlugins(profile);
+    return { success: true, ...result };
+  });
+
+  // 扫描磁盘真实预设目录（用户级 + 内置），含元数据与默认标记
+  ipcMain.handle('agent-presets:list-dirs', async () => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.listAgentPresetDirs();
+  });
+
+  // 读取单个预设的组合文件内容
+  ipcMain.handle('agent-presets:get-detail', async (_, id) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.getAgentPresetDetail(id);
+  });
+
+  // 设置默认预设（写 settings.agent-presets.default）
+  ipcMain.handle('agent-presets:set-default', async (_, id) => {
+    const { DSHConfig } = await loadCore();
+    const config = new DSHConfig();
+    return await config.setDefaultAgentPreset(id);
   });
 
   ipcMain.handle('config:update-llm-provider', async (_, name, providerConfig, adapter) => {
@@ -1994,6 +2063,27 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     const { SkillManager } = await loadCore();
     const mgr = new SkillManager();
     return mgr.stats();
+  });
+
+  // 从已安装插件扫描技能（如 gongwen-skill 插件自带的 SKILL.md）
+  ipcMain.handle('skills:list-plugin-skills', async () => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.listPluginSkills();
+  });
+
+  // 插件技能同步状态（与用户技能目录对比）
+  ipcMain.handle('skills:plugin-sync-status', async () => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.listPluginSkillSyncStatus();
+  });
+
+  // 从插件导入/同步技能到用户技能目录
+  ipcMain.handle('skills:import-plugin-skill', async (_, plugin, options) => {
+    const { SkillManager } = await loadCore();
+    const mgr = new SkillManager();
+    return mgr.importFromPlugin(plugin, options || {});
   });
 
   // ====== 总提示词管理 (Master Prompts) ======

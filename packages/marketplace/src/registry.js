@@ -524,12 +524,19 @@ export class PluginRegistry {
     // 分类：系统组件 / 外部插件 / 用户插件
     const category = classifyPackage(name);
 
-    // 来源判断：dependencies 的原始 spec 以 github:/git: 开头则为 GitHub 安装
+    // 来源判断：按 dependencies 原始 spec 前缀识别真实安装来源。
+    // 旧实现只认 github:/git:，导致 link:/file: 源（如本地开发插件、
+    // Documents 目录 link 安装的 gongwen-skill）被误显示为 npm:。
     const isGitSource = /^(github:|git:|https?:\/\/github\.com\/)/.test(depSpec);
-    const source = isGitSource
-      ? (depSpec.includes('#') ? depSpec.split('#')[0] : depSpec)
-      : `npm:${name}`;
+    const isLinkSource = /^link:/i.test(depSpec);
+    const isFileSource = /^file:/i.test(depSpec);
+    let source;
+    if (isGitSource) source = depSpec.includes('#') ? depSpec.split('#')[0] : depSpec;
+    else if (isLinkSource || isFileSource) source = depSpec;
+    else source = `npm:${name}`;
     if (isGitSource) type = 'github';
+    else if (isLinkSource) type = 'link';
+    else if (isFileSource) type = 'file';
 
     return {
       id: name,
@@ -551,6 +558,11 @@ export class PluginRegistry {
     }
 
     const result = [];
+    // 收集 patch 中"顶层 id-targeted override 的 disabled 状态"
+    // （setPluginDisabled 写入的 `- id: xxx` + `  disabled: true` 块）。
+    // 用于对账本地注册表 enabled 状态：patch 未禁用的插件应视为启用，
+    // 避免"注册表显示已禁用但 DSH 实际加载/未禁用"的状态分叉。
+    const disabledOverrideIds = new Set();
     const profilesDir = join(DSH_HOME(), 'profiles');
     if (!existsSync(profilesDir)) { profilePluginsCache = result; profilePluginsCacheTime = now; return result; }
 
@@ -590,6 +602,27 @@ export class PluginRegistry {
         const seenIds = new Set(result.map(p => p.id));
         for (const patchFile of patchFiles) {
           if (!existsSync(patchFile)) continue;
+
+          // 预扫描本文件：顶层 `- id: <name>` + 后续缩进块含 `disabled: true` → 记录禁用 override
+          try {
+            const preLines = readFileSync(patchFile, 'utf-8').split(/\r?\n/);
+            for (let pi = 0; pi < preLines.length; pi++) {
+              const preLine = preLines[pi];
+              const preTrimmed = preLine.trim();
+              if (!/^\s/.test(preLine) && /^-\s+id\s*:\s*/.test(preTrimmed)) {
+                const oid = preTrimmed.replace(/^-\s+id\s*:\s*/, '').replace(/['"]/g, '').trim();
+                if (!oid || this.isGhostPluginId(oid)) continue;
+                let pj = pi + 1;
+                let hasDisabled = false;
+                while (pj < preLines.length && /^\s+/.test(preLines[pj])) {
+                  if (/^\s*disabled\s*:\s*true\s*$/.test(preLines[pj].trim())) { hasDisabled = true; break; }
+                  pj++;
+                }
+                if (hasDisabled) disabledOverrideIds.add(oid);
+              }
+            }
+          } catch { /* 预扫描失败不影响主解析 */ }
+
           try {
             const patchLines = readFileSync(patchFile, 'utf-8').split(/\r?\n/);
             let inBlock = false;
@@ -599,7 +632,7 @@ export class PluginRegistry {
               if (/^-\s*(include|insert)\s*:\s*$/.test(line)) { inBlock = true; continue; }
               if (/^-\s*(?:include|insert)\s*:\s*(\S+)\s*$/.test(line)) {
                 const id = line.replace(/^-\s*(?:include|insert)\s*:\s*/, '').replace(/['"]/g, '').trim();
-                if (id && !isSystemComponent(id) && !seenIds.has(id)) {
+                if (id && !this.isGhostPluginId(id) && !isSystemComponent(id) && !seenIds.has(id)) {
                   seenIds.add(id);
                   result.push(this._buildProfilePluginEntry(profile, id, ''));
                 }
@@ -608,7 +641,7 @@ export class PluginRegistry {
               }
               if (inBlock && /^-\s*(\S+)\s*$/.test(line)) {
                 const id = line.replace(/^-\s*/, '').replace(/['"]/g, '').trim();
-                if (id && !isSystemComponent(id) && !seenIds.has(id)) {
+                if (id && !this.isGhostPluginId(id) && !isSystemComponent(id) && !seenIds.has(id)) {
                   seenIds.add(id);
                   result.push(this._buildProfilePluginEntry(profile, id, ''));
                 }
@@ -617,7 +650,7 @@ export class PluginRegistry {
               const nameMatch = /^name:\s*['"]?([^'"\n]+)['"]?\s*$/.exec(line);
               if (nameMatch) {
                 const id = nameMatch[1].trim();
-                if (id && !isSystemComponent(id) && !seenIds.has(id)) {
+                if (id && !this.isGhostPluginId(id) && !isSystemComponent(id) && !seenIds.has(id)) {
                   seenIds.add(id);
                   result.push(this._buildProfilePluginEntry(profile, id, ''));
                 }
@@ -629,13 +662,39 @@ export class PluginRegistry {
       } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
     }
 
+    // 对账 enabled 状态：patch 顶层 override 标记禁用的插件 → enabled=false；
+    // 其余显式设为 true（覆盖本地注册表悬空的 enabled:false，patch 才是 DSH 真实禁用来源）
+    for (const p of result) {
+      const tail = String(p.id).split('/').pop();
+      p.enabled = !(disabledOverrideIds.has(p.id) || disabledOverrideIds.has(tail));
+    }
+
     profilePluginsCache = result;
     profilePluginsCacheTime = now;
     return result;
   }
 
   /**
+   * 判断插件 id 是否为非法/幽灵条目（如历史误写入注册表的 "--mcp"）。
+   * 合法 id 必须是 npm 包名形态：@scope/name 或 单一 name，且不以 "-" 开头。
+   * @param {string} id
+   */
+  isGhostPluginId(id) {
+    if (typeof id !== 'string' || !id) return true;
+    if (id.startsWith('-') || id.startsWith('.') || id.includes('..')) return true;
+    // npm 包名：scoped（@scope/name）或普通名
+    const NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+    if (!NAME_RE.test(id)) return true;
+    // 空段（如 "@scope/" 或 "a//b"）视为非法
+    if (id.split('/').some(seg => !seg)) return true;
+    return false;
+  }
+
+  /**
    * 获取本地已安装的插件列表（合并本地注册表 + DSH 实际安装）
+   * 修复点：本地注册表中已存在的条目，若 profile 实际扫描出更新版本，
+   * 用 profile 数据刷新 version/source/type/description（保留 enabled 等本地状态）。
+   * 同时过滤幽灵条目（如历史遗留的 "--mcp"），避免污染管理页显示。
    * @returns {Array<object>}
    */
   getLocalPlugins(forceRefresh = false) {
@@ -649,14 +708,41 @@ export class PluginRegistry {
 
     // 合并 DSH 实际安装的插件（去重：本地注册表优先）
     const profilePlugins = this._readProfilePlugins(forceRefresh);
-    const localIds = new Set(local.map(p => p.id));
+    const localById = new Map(local.map(p => [p.id, p]));
     for (const p of profilePlugins) {
-      if (!localIds.has(p.id)) {
-        local.push(p);
-        localIds.add(p.id);
+      // 跳过幽灵条目（源扫描产生的非法 id，如 patch 解析误产生的 "--mcp"）
+      if (this.isGhostPluginId(p.id)) continue;
+      const existing = localById.get(p.id);
+      if (!existing) {
+        localById.set(p.id, p);
+        continue;
       }
+      // 已存在：用 profile 实际扫描结果刷新版本/来源/类型/描述，保留本地状态
+      const refreshed = {
+        ...existing,
+        version: p.version && p.version !== 'latest' ? p.version : existing.version,
+        type: p.type || existing.type,
+        source: p.source && !/^npm:/.test(p.source) ? p.source : existing.source,
+        profile: p.profile || existing.profile,
+      };
+      // enabled 对账：profile 扫描（基于 patch 真实禁用状态）有明确值时覆盖本地悬空状态。
+      // 修复"注册表 enabled:false 但 patch 无禁用块（DSH 实际加载）"的显示不一致。
+      if (typeof p.enabled === 'boolean') {
+        refreshed.enabled = p.enabled;
+        if (p.enabled === false) {
+          if (!refreshed.disabledAt) refreshed.disabledAt = existing.disabledAt || null;
+        } else {
+          delete refreshed.disabledAt;
+          if (!refreshed.enabledAt) refreshed.enabledAt = existing.enabledAt || null;
+        }
+      }
+      // 描述：profile 扫描到非占位描述时刷新；否则保留本地详情
+      if (p.description && p.description !== '（DSH 已安装）') refreshed.description = p.description;
+      localById.set(p.id, refreshed);
     }
-    return local;
+    // 幽灵条目过滤（本地注册表里残留的非法 id 一并隐藏，不进入展示/统计）
+    const result = [...localById.values()];
+    return result.filter(p => !this.isGhostPluginId(p.id));
   }
 
   /**
@@ -1132,6 +1218,11 @@ export class PluginRegistry {
    * @param {string} plugin.installedAt - 安装时间
    */
   registerLocalPlugin(plugin) {
+    // 源头拦截：拒绝写入幽灵/非法 id，防止历史 "--mcp" 之类的问题再次发生
+    if (!plugin || this.isGhostPluginId(plugin.id)) {
+      console.warn(`[dsh-manager] 拒绝注册非法插件 id: ${plugin && plugin.id}`);
+      return { success: false, reason: 'ghost-id', id: plugin && plugin.id };
+    }
     const plugins = this.getLocalPlugins();
     const existing = plugins.findIndex(p => p.id === plugin.id);
     
@@ -1142,6 +1233,7 @@ export class PluginRegistry {
     }
 
     this._writeRegistry(plugins);
+    return { success: true, id: plugin.id };
   }
 
   /**
@@ -1151,6 +1243,30 @@ export class PluginRegistry {
   unregisterLocalPlugin(id) {
     const plugins = this.getLocalPlugins().filter(p => p.id !== id);
     this._writeRegistry(plugins);
+  }
+
+  /**
+   * 清理本地注册表中的幽灵条目（历史遗留的非法 id，如 "--mcp"）。
+   * 幽灵条目通常来自早期版本 patch 解析误判或误操作，无法正常安装/卸载，
+   * 且会污染插件管理页显示。这里直接从 plugins.json 物理移除并返回被清理的列表。
+   * @returns {Array<{id: string}>} 被清理的幽灵条目
+   */
+  cleanupGhostEntries() {
+    if (!existsSync(REGISTRY_PATH())) return [];
+    let plugins = [];
+    try {
+      plugins = JSON.parse(readFileSync(REGISTRY_PATH(), 'utf-8'));
+      if (!Array.isArray(plugins)) return [];
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); return []; }
+
+    const ghosts = plugins.filter(p => this.isGhostPluginId(p && p.id));
+    if (ghosts.length === 0) return [];
+
+    const cleaned = plugins.filter(p => !this.isGhostPluginId(p && p.id));
+    try {
+      this._writeRegistry(cleaned);
+    } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); return []; }
+    return ghosts.map(g => ({ id: g.id }));
   }
 
   /**

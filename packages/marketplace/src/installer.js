@@ -57,6 +57,14 @@ export class PluginInstaller {
 
     // 解析来源
     const parsed = this._parseSource(source);
+
+    // 拦截 CLI flag 误当包名的输入（如 "--mcp"），防止产生幽灵注册条目
+    if (parsed.type === 'npm' && !this._isValidNpmPackageName(parsed.packageName)) {
+      throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, `非法的 npm 包名: ${parsed.packageName}（不允许以 - 开头的参数或非法名称）`);
+    }
+    if (parsed.type === 'github' && (!parsed.owner || !parsed.repo || /^-/.test(parsed.repo))) {
+      throw new DSHError(DSHErrorCodes.PLUGIN_INSTALL_FAILED, `非法的 GitHub 仓库: ${parsed.owner || ''}/${parsed.repo || ''}`);
+    }
     
     // 获取插件信息
     let pluginInfo = {};
@@ -461,6 +469,26 @@ export class PluginInstaller {
     
     // 默认 npm
     return { type: 'npm', packageName: source };
+  }
+
+  /**
+   * 校验 npm 包名是否合法（拒绝 "--mcp" 这类 CLI flag 误当包名的输入，
+   * 防止 dsh plugin add --mcp 把参数解析成选项、产生幽灵注册条目）
+   * @param {string} packageName
+   * @returns {boolean}
+   */
+  _isValidNpmPackageName(packageName) {
+    const name = String(packageName || '').trim();
+    if (!name) return false;
+    // 以 - 开头（CLI flag 形态）直接拒绝
+    if (name.startsWith('-')) return false;
+    // 含空白直接拒绝
+    if (/\s/.test(name)) return false;
+    // 路径穿越/绝对路径拒绝
+    if (name.includes('..') || name.startsWith('/') || /^[A-Za-z]:/.test(name)) return false;
+    // npm 包名正则（宽松）：@scope/name 或 name
+    const NAME_RE = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/;
+    return NAME_RE.test(name);
   }
 
   /**
