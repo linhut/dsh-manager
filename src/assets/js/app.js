@@ -145,6 +145,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     pageManager.register('settings', { render: () => renderSettingsPage() });
     pageManager.register('imagegen', { render: () => renderImageGenPage() });
     pageManager.register('prompts', { render: () => renderPromptsPage() });
+    pageManager.register('modelconfig', { render: () => renderModelConfigPage() });
     pageManager.register('about', { render: () => renderAboutPage() });
   }
 
@@ -271,6 +272,7 @@ function switchPage(page) {
   if (page === 'skills') renderSkillsPage();
   if (page === 'versions') renderVersionsPage();
   if (page === 'prompts') renderPromptsPage();
+  if (page === 'modelconfig') renderModelConfigPage();
 }
 
 // ====== 状态更新辅助函数 ======
@@ -378,7 +380,7 @@ function renderInstallPage() {
           <li>安装完成后即可启动 DSH Web 界面</li>
         </ol>
         <p style="margin-top:12px;color:var(--text-dim);">
-          💡 安装需要 Node.js 18+ 和网络连接。如果遇到问题，请使用"系统诊断"功能。
+          💡 安装需要 Node.js 22+ 和网络连接。如果遇到问题，请使用"系统诊断"功能。
         </p>
         <div style="margin-top:12px;">
           <button class="btn btn-secondary" onclick="runDoctor()">🩺 系统诊断</button>
@@ -424,7 +426,7 @@ async function renderEnvStatus() {
   const nodeVersion = (node.version || '').replace(/^v/, '');
   const nodeRow = node.installed
     ? row('✅', 'Node.js', `<strong>${nodeVersion}</strong>${node.source === 'portable' ? ' <span class="badge badge-blue">便携版</span>' : ''}`)
-    : row('❌', 'Node.js', '<span style="color:var(--error);">未安装（DSH 依赖 Node.js 18+）</span>');
+    : row('❌', 'Node.js', '<span style="color:var(--error);">未安装（DSH 依赖 Node.js 22+）</span>');
   const npmRow = npm.installed
     ? row('✅', 'npm', `<strong>${(npm.version || '').replace(/^v/, '')}</strong>${npm.source === 'portable' ? ' <span class="badge badge-blue">便携版</span>' : ''}`)
     : row('❌', 'npm', '<span style="color:var(--error);">未安装（随 Node.js 一起提供）</span>');
@@ -1866,16 +1868,57 @@ async function checkPluginUpdates() {
   }
 }
 
-async function updateSinglePlugin(pluginId, btn) {
+async function updateSinglePlugin(pluginId, btn, options = {}) {
   if (!btn) return;
+  const force = options.force === true;
   btn.disabled = true;
   const orig = btn.textContent;
-  btn.textContent = '更新中…';
+  btn.textContent = force ? '强制重装中…' : '更新中…';
   try {
-    const result = await window.dshManager.updatePlugin(pluginId);
+    const result = await window.dshManager.updatePlugin(pluginId, { force });
     const st = document.getElementById('pluginUpdateStatus');
-    if (st) st.textContent = `✅ ${result.name || pluginId}: ${result.oldVersion || '?'} → ${result.newVersion || '?'}`;
-    showToast(`插件 ${pluginId} 更新成功（重启后生效）`, 'success', 6000, {
+    // 「无法确认」：命令已执行但磁盘读不到 package.json → 不谎报成功，提示人工核对
+    if (result && result.unverified) {
+      if (st) st.textContent = `⚠️ ${result.id || pluginId}: 更新已执行，未能确认版本`;
+      showToast(result.warning || `插件 ${pluginId} 更新已执行，但无法从磁盘确认是否生效，请重启后核对版本`, 'warning', 8000, {
+        actionLabel: '强制重装',
+        action: () => updateSinglePlugin(pluginId, btn, { force: true }).catch(() => {}),
+      });
+      btn.disabled = false;
+      btn.textContent = orig;
+      window.dshManager.getLocalPlugins(true).catch(() => {});
+      return result;
+    }
+    // 「已是最新」：磁盘版本未变化 → 如实告知，不谎报成功、不提示重启
+    if (result && result.updated === false) {
+      const ver = result.newVersion || result.oldVersion || '?';
+      // 强制重装场景：同版本重新落盘，需重启加载（与「无新版」区分开）
+      if (result.reinstalled) {
+        if (st) st.textContent = `✅ ${result.id || pluginId}: 已按同版本（${ver}）重装完成`;
+        showToast(`插件 ${pluginId} 已重装完成（${ver}），重启后生效`, 'success', 6000, {
+          actionLabel: '🔄 重启 DSH',
+          action: () => {
+            window.dshManager.restartDSH().then(() => showToast('重启成功，新版本已加载', 'success'))
+              .catch(err => showToast('重启失败: ' + err.message, 'error'));
+          }
+        });
+        btn.textContent = '✅ 已重装';
+        window.dshManager.getLocalPlugins(true).catch(() => {});
+        return result;
+      }
+      if (st) st.textContent = `ℹ️ ${result.id || pluginId}: 已是最新（${ver}）`;
+      showToast(`插件 ${pluginId} 已是最新（${ver}），无需更新`, 'info', 6000, {
+        actionLabel: '强制重装',
+        action: () => updateSinglePlugin(pluginId, btn, { force: true }).catch(() => {}),
+      });
+      btn.disabled = false;
+      btn.textContent = orig;
+      window.dshManager.getLocalPlugins(true).catch(() => {});
+      return result;
+    }
+    // 真更新成功（磁盘版本已变化）
+    if (st) st.textContent = `✅ ${result.id || pluginId}: ${result.oldVersion || '?'} → ${result.newVersion || '?'}`;
+    showToast(`插件 ${pluginId} 更新成功（${result.oldVersion || '?'} → ${result.newVersion || '?'}），重启后生效`, 'success', 6000, {
       actionLabel: '🔄 重启 DSH',
       action: () => {
         window.dshManager.restartDSH().then(() => showToast('重启成功，新版本已加载', 'success'))
@@ -1909,16 +1952,22 @@ async function updateAllPlugins(btn) {
       ? cached
       : (await window.dshManager.checkPluginUpdates()).filter(u => u.hasUpdate);
     const hasUpdates = updates.filter(u => u.hasUpdate);
-    let ok = 0, fail = 0;
+    let ok = 0, fail = 0, skipped = 0, unverified = 0;
     if (st) st.textContent = `正在更新 ${hasUpdates.length} 个插件…`;
     for (const u of hasUpdates) {
       try {
-        await updateSinglePlugin(u.id, document.querySelector(`button[data-update-id="${escapeAttr(u.id)}"]`));
-        ok++;
+        const r = await updateSinglePlugin(u.id, document.querySelector(`button[data-update-id="${escapeAttr(u.id)}"]`));
+        // 顺序：无法确认 > 磁盘版本未变化（如远端版本与本地一致）> 成功
+        if (r && r.unverified) unverified++;
+        else if (r && r.updated === false) skipped++; else ok++;
       } catch { fail++; }
     }
-    if (st) st.textContent = `更新完成：成功 ${ok}，失败 ${fail}`;
-    showToast(`更新完成：成功 ${ok}，失败 ${fail}`, fail > 0 ? 'warning' : 'success');
+    const parts = [`成功 ${ok}`];
+    if (skipped > 0) parts.push(`已是最新 ${skipped}`);
+    if (unverified > 0) parts.push(`无法确认 ${unverified}`);
+    parts.push(`失败 ${fail}`);
+    if (st) st.textContent = `更新完成：${parts.join('，')}`;
+    showToast(`更新完成：${parts.join('，')}`, (fail > 0 || unverified > 0) ? 'warning' : 'success');
   } catch (err) {
     if (st) st.textContent = '更新失败: ' + err.message;
     showToast('更新失败: ' + err.message, 'error');
@@ -3956,10 +4005,29 @@ async function renderLLMProvidersTab() {
           ? (conf.models[0].id || conf.models[0])
           : '';
         const adapterName = adapter.replace(/^llm-/, '');
-        providerEntries.push([name, { provider: adapterName, model, apiKeyEnv: conf.apiKeyEnv || '', baseURL: conf.baseURL || '', _official: true, adapter: adapterName }]);
+        providerEntries.push([name, { provider: adapterName, model, apiKeyEnv: conf.apiKeyEnv || '', baseURL: conf.baseURL || '', _official: true, adapter: adapterName, _firstModel: (Array.isArray(conf.models) && conf.models[0]) || null }]);
       }
     }
   }
+
+  // 凭据文件只以「是否已配置」状态参与渲染；任何情况都不回显密钥明文/密文片段
+  const credState = config.credentials || {};
+  const isCredConfigured = (ref) => {
+    if (!ref) return false;
+    const e = (credState.refs || {})[ref] || (credState.records || {})[ref];
+    if (e) return e.configured !== false;
+    return !!credState[ref]; // 兼容旧扁平结构返回值
+  };
+  // 模型容量（上下文窗口 / 最大输出 token）摘要
+  const capHint = (m) => {
+    if (!m || typeof m !== 'object') return '';
+    const parts = [];
+    if (m.contextWindow) parts.push('上下文 ' + m.contextWindow);
+    if (m.maxTokens) parts.push('最大输出 ' + m.maxTokens);
+    return parts.length
+      ? ' <span style="color:var(--text-dim);font-size:11px;">（' + escapeHtml(parts.join(' / ')) + '）</span>'
+      : '';
+  };
 
   if (providerEntries.length === 0) {
     return `
@@ -3993,8 +4061,14 @@ async function renderLLMProvidersTab() {
                 <tr>
                   <td><strong>${escapeHtml(name)}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
                   <td><span class="badge badge-blue">${escapeHtml(conf.provider || 'unknown')}</span></td>
-                  <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return escapeHtml(m.id); }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
-                  <td>${conf.apiKey ? '••••••' + conf.apiKey.slice(-4) : (conf.apiKeyEnv ? '<span style="color:var(--text-dim);">env: ' + conf.apiKeyEnv + '</span>' : '<span style="color:var(--warning);">未设置</span>')}</td>
+                  <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${capHint(conf._firstModel || conf)}${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return escapeHtml(m.id); }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
+                  <td>${(conf.apiKeyConfigured || conf.apiKey)
+                      ? '<span style="color:var(--warning);" title="旧格式明文密钥：编辑并保存后会自动迁移到凭据文件，设置中不再保留明文">明文密钥（旧格式，待迁移）</span>'
+                      : (conf.apiKeyEnv
+                        ? (isCredConfigured(conf.apiKeyEnv)
+                          ? '<span style="color:var(--success);" title="密钥已保存在凭据文件，界面不回显">已配置（引用 ' + escapeHtml(conf.apiKeyEnv) + '）</span>'
+                          : '<span style="color:var(--text-dim);">env: ' + escapeHtml(conf.apiKeyEnv) + '</span>')
+                        : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
                     <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${escapeAttr(name)}'${conf.adapter ? `, '${escapeAttr(conf.adapter)}'` : ''})">✏️ 编辑</button>
                     <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${escapeAttr(name)}')">🗑️ 删除</button>
@@ -4441,6 +4515,7 @@ async function renderYAMLEditorTab() {
       </div>
       <div class="card-body">
         <p style="font-size:12px;color:var(--text-dim);margin-bottom:8px;">📁 ~/.dsh/settings.yaml — 编辑 YAML 配置后点击保存</p>
+        <p style="font-size:12px;color:var(--warning);margin-bottom:8px;">🔒 安全提示：历史遗留的明文密钥（llm.&lt;名称&gt;.apiKey）不会在此显示，也不会被保存动作清除；如需迁移明文密钥，请在「LLM 提供商」页编辑该条目并保存。</p>
         <textarea id="yamlEditor" class="yaml-editor" spellcheck="false">${yamlStr.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
         <div id="yamlEditorStatus" style="margin-top:8px;font-size:12px;"></div>
       </div>
@@ -4662,13 +4737,22 @@ async function setReplyLanguage(lang) {
 }
 
 async function showLLMProviderForm(editName, editAdapter) {
-  let name = '', provider = 'openai', model = '', apiKey = '', baseUrl = '', confModels = null, apiKeyEnv = '', adapter = editAdapter || '';
+  let name = '', provider = 'openai', model = '', baseUrl = '', confModels = null, apiKeyEnv = '', adapter = editAdapter || '';
+  // 安全约束：密钥明文绝不在表单中回显/预填。apiKey 恒为空，
+  // 仅通过「是否已配置」状态提示用户；用户输入新 Key 才提交覆盖。
+  let hasLegacyPlainKey = false;
+  let hasStoredKey = false;
   if (editName) {
     try {
       const config = await window.dshManager.getAllConfig();
       let conf = config.settings?.llm?.[editName];
-      if (conf) { name = editName; provider = conf.provider || 'openai'; model = conf.model || ''; apiKey = conf.apiKey || ''; baseUrl = conf.baseUrl || ''; confModels = Array.isArray(conf.models) ? conf.models : null; adapter = ''; }
-      else if (editAdapter) {
+      if (conf) {
+        // 历史格式（settings.llm.<name>）：只读取非敏感字段，apiKey 明文不回填
+        name = editName; provider = conf.provider || 'openai'; model = conf.model || '';
+        baseUrl = conf.baseUrl || ''; confModels = Array.isArray(conf.models) ? conf.models : null; adapter = '';
+        hasLegacyPlainKey = conf.apiKeyConfigured === true || (typeof conf.apiKey === 'string' && conf.apiKey.trim().length > 0);
+        apiKeyEnv = conf.apiKeyEnv || '';
+      } else if (editAdapter) {
         // 官方格式 settings.llm-<adapter>.providers.<name>
         conf = config.settings?.['llm-' + editAdapter]?.providers?.[editName];
         if (conf) {
@@ -4678,8 +4762,18 @@ async function showLLMProviderForm(editName, editAdapter) {
           model = firstModel ? (typeof firstModel === 'string' ? firstModel : firstModel.id || '') : '';
         }
       }
+      // 凭据文件只下发「是否已配置」状态（config:get-all 不再返回明文）
+      if (apiKeyEnv && config.credentials) {
+        const refs = config.credentials.refs || {};
+        const records = config.credentials.records || {};
+        const entry = refs[apiKeyEnv] || records[apiKeyEnv];
+        hasStoredKey = entry ? entry.configured !== false : !!config.credentials[apiKeyEnv];
+      }
     } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   }
+  // 供「获取模型」复用已保存密钥：密钥不回显，主进程凭此引用名从凭据文件解析
+  window.__llmFormEditName = editName || '';
+  window.__llmFormCredRef = apiKeyEnv || '';
   const modal = document.createElement('div');
   modal.className = 'modal-overlay active';
   modal.innerHTML = `
@@ -4719,11 +4813,15 @@ async function showLLMProviderForm(editName, editAdapter) {
             </div>
             <div id="llm-model-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:4px;background:var(--bg-input);"></div>
           </div>
-          <p class="form-hint" id="modelHint">不同提供商支持的模型名称不同，点击"获取模型"可自动拉取可用列表，勾选多个模型保存</p></div>
+          <p class="form-hint" id="modelHint">不同提供商支持的模型名称不同，点击"获取模型"可自动拉取可用列表，勾选多个模型保存；已勾选模型可在右侧填写「上下文窗口 / 最大输出 token」（正整数，或 128K / 1M 写法，留空使用提供商默认）</p></div>
         <div class="form-group">
           <label class="form-label">API Key</label>
-          <div style="display:flex;gap:8px;"><input class="input" id="llm-apikey" type="password" value="${apiKey}" placeholder="sk-..." style="flex:1;"><button class="btn btn-sm btn-ghost" onclick="toggleApiKeyVisibility()" title="显示/隐藏">👁</button></div>
-          ${apiKeyEnv ? '<p class="form-hint" style="color:var(--text-secondary);">当前使用环境变量 <code>env:' + apiKeyEnv + '</code>，留空保持引用；填入新 Key 将更新凭据</p>' : ''}
+          <div style="display:flex;gap:8px;"><input class="input" id="llm-apikey" type="password" value="" placeholder="${hasLegacyPlainKey || hasStoredKey ? '已保存密钥，留空保持不变' : 'sk-...'}" autocomplete="new-password" style="flex:1;"><button class="btn btn-sm btn-ghost" onclick="toggleApiKeyVisibility()" title="显示/隐藏">👁</button></div>
+          ${hasLegacyPlainKey
+            ? '<p class="form-hint" style="color:var(--warning);">检测到该提供商在设置中以明文保存过密钥。出于安全考虑不再回显；直接保存会把明文迁移进凭据文件并从设置中清除，留空则沿用原密钥。</p>'
+            : (hasStoredKey
+              ? '<p class="form-hint" style="color:var(--success);">密钥已配置（引用名 <code>' + escapeHtml(apiKeyEnv) + '</code>），明文不回显；留空保持不变，填入新 Key 保存后立即生效。</p>'
+              : (apiKeyEnv ? '<p class="form-hint" style="color:var(--text-secondary);">当前使用环境变量 <code>env:' + escapeHtml(apiKeyEnv) + '</code>，留空保持引用；填入新 Key 将写入凭据文件并更新引用</p>' : ''))}
         </div>
         <div class="form-group"><label class="form-label">API Base URL *</label><p class="form-hint" style="color:var(--warning);margin-top:4px;">必填：DSH pi-ai 适配器要求 baseURL 非空，否则会拒绝整段模型配置</p><input class="input" id="llm-baseurl" value="${baseUrl}" placeholder="例如: https://api.openai.com/v1"></div>
       </div>
@@ -4735,10 +4833,13 @@ async function showLLMProviderForm(editName, editAdapter) {
   `;
   document.body.appendChild(modal);
   // 编辑态：已有模型列表 → 渲染复选框并预勾选（与官方 models 数组一致）
+  // 同时回填每个模型的上下文窗口 / 最大输出 token（数值字段，非敏感信息，可安全回显）
   if (confModels && confModels.length > 0) {
     renderModelCheckList(confModels.map(m => ({
       id: (typeof m === 'string' ? m : m.id) || '',
       ownedBy: (typeof m === 'string' ? '' : m.ownedBy) || '',
+      contextWindow: typeof m === 'string' ? '' : (m.contextWindow != null ? m.contextWindow : ''),
+      maxTokens: typeof m === 'string' ? '' : (m.maxTokens != null ? m.maxTokens : ''),
     })), true);
   }
 }
@@ -4757,22 +4858,50 @@ async function saveLLMProvider() {
   if (apiKey) providerConfig.apiKey = apiKey;
   else if (apiKeyEnv) providerConfig.apiKeyEnv = apiKeyEnv;
   if (baseUrl) providerConfig.baseUrl = baseUrl;
+  // 容量字段（上下文窗口 / 最大输出 token）：仅收集非空值，非法输入直接拦下提示
+  const caps = readModelCapacities();
+  const applyCapacity = (target, cap) => {
+    if (!cap) return;
+    const cw = parseCapacityInput(cap.contextWindow);
+    const mt = parseCapacityInput(cap.maxTokens);
+    if (cw !== undefined) target.contextWindow = cw;
+    if (mt !== undefined) target.maxTokens = mt;
+  };
   // 保存勾选的完整模型列表（对齐 DSH 官方 models 数组格式）
   const checkedModels = updateModelCheckCount();
-  if (checkedModels && checkedModels.length > 0) {
-    const visionSet = new Set();
-    document.querySelectorAll('.llm-model-vision-cb:checked').forEach(function (cb) { visionSet.add(cb.value); });
-    providerConfig.models = checkedModels.map(cb => {
-      const out = { id: cb.value, ownedBy: cb.dataset.ownedby || '' };
-      // DSH 发送前按模型 input 检查图片支持：视觉模型声明 input:[text,image]
-      // 否则图片会被 MODEL_DOES_NOT_SUPPORT_IMAGES 拒绝（"当前模型不支持图片"）
-      if (visionSet.has(cb.value) || isVisionModelName(cb.value)) out.input = ['text', 'image'];
-      return out;
-    });
+  try {
+    if (checkedModels && checkedModels.length > 0) {
+      const visionSet = new Set();
+      document.querySelectorAll('.llm-model-vision-cb:checked').forEach(function (cb) { visionSet.add(cb.value); });
+      providerConfig.models = checkedModels.map(cb => {
+        const out = { id: cb.value, ownedBy: cb.dataset.ownedby || '' };
+        // DSH 发送前按模型 input 检查图片支持：视觉模型声明 input:[text,image]
+        // 否则图片会被 MODEL_DOES_NOT_SUPPORT_IMAGES 拒绝（"当前模型不支持图片"）
+        if (visionSet.has(cb.value) || isVisionModelName(cb.value)) out.input = ['text', 'image'];
+        applyCapacity(out, caps.get(cb.value));
+        return out;
+      });
+    } else {
+      // 单选模式（未勾选模型列表）：容量字段写在提供商层级，由后端落到该模型上
+      applyCapacity(providerConfig, caps.get(model));
+    }
+  } catch (capErr) {
+    showToast('容量字段有误: ' + capErr.message, 'error');
+    return;
   }
   try {
     await window.dshManager.updateLLMProvider(name, providerConfig, adapter || undefined);
-    showToast('✅ LLM 提供商 "' + name + '" 已保存（' + (providerConfig.models ? providerConfig.models.length + ' 个模型' : '1 个模型') + '）', 'success');
+    // 统计已写入的容量字段，便于用户确认「上下文窗口 / 最大输出 token」是否已随之保存
+    const capCount = (providerConfig.models || []).filter(m => m.contextWindow || m.maxTokens).length
+      + ((providerConfig.contextWindow || providerConfig.maxTokens) ? 1 : 0);
+    const capMsg = capCount > 0 ? '，已写入容量配置 ' + capCount + ' 项' : '';
+    showToast('✅ LLM 提供商 "' + name + '" 已保存（' + (providerConfig.models ? providerConfig.models.length + ' 个模型' : '1 个模型') + capMsg + '）', 'success', 8000, {
+      actionLabel: '🔄 重启 DSH 生效',
+      action: () => {
+        window.dshManager.restartDSH().then(() => showToast('重启成功，密钥与容量配置已生效', 'success'))
+          .catch(err => showToast('重启失败: ' + err.message, 'error'));
+      }
+    });
     document.querySelector('.modal-overlay.active')?.remove();
     openSettingsTab('llm');
   } catch (err) { showToast('保存失败: ' + err.message, 'error'); }
@@ -4794,10 +4923,13 @@ async function fetchLLMModels() {
   const provider = document.getElementById('llm-provider')?.value;
   const baseUrl = document.getElementById('llm-baseurl')?.value?.trim();
   const apiKey = document.getElementById('llm-apikey')?.value?.trim();
-  if (provider !== 'ollama' && !apiKey) { showToast('请先填写 API Key 再获取模型', 'warning'); return; }
+  // 已配置的提供商不回显密钥：输入框为空时，用「引用名」让主进程从凭据文件解析后拉取模型
+  const editingName = window.__llmFormEditName || '';
+  const credRef = editingName ? (window.__llmFormCredRef || '') : '';
+  if (provider !== 'ollama' && !apiKey && !credRef) { showToast('请先填写 API Key 再获取模型', 'warning'); return; }
   showToast('正在获取模型列表...', 'info');
   try {
-    const result = await window.dshManager.fetchLLMModels(provider, baseUrl, apiKey);
+    const result = await window.dshManager.fetchLLMModels(provider, baseUrl, apiKey, credRef);
     const results = document.getElementById('llm-model-results');
     if (!result.success) { showToast('获取失败: ' + (result.error || '未知错误'), 'error'); if (results) results.style.display = 'none'; return; }
     if (!result.models || !result.models.length) { showToast('未获取到任何模型', 'warning'); if (results) results.style.display = 'none'; return; }
@@ -4827,8 +4959,41 @@ function isVisionModelName(id) {
 }
 
 /**
- * 渲染模型复选框列表（多选 + 全选/全取消）
- * @param {Array<{id: string, ownedBy?: string}>} models - 模型列表
+ * 解析容量输入（上下文窗口 / 最大输出 token）
+ * 支持纯数字（128000）与容量字符串（'128K' / '1M'，K=1024, M=1024*1024）
+ * @returns {number|undefined} 合法正整数；空输入返回 undefined（交给 DSH 用默认值）
+ * @throws {Error} 格式非法或不为正数时抛错（交由调用方提示用户，避免写入非法值被 DSH 拒绝）
+ */
+function parseCapacityInput(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return undefined;
+  const m = s.match(/^(\d+(?:\.\d+)?)\s*([kKmM]?)$/);
+  if (!m) throw new Error('容量格式非法："' + s + '"，请填正整数或 128K / 1M 形式');
+  let n = parseFloat(m[1]);
+  const unit = (m[2] || '').toLowerCase();
+  if (unit === 'k') n *= 1024;
+  else if (unit === 'm') n *= 1024 * 1024;
+  n = Math.round(n);
+  if (!Number.isFinite(n) || n <= 0) throw new Error('容量必须为正整数："' + s + '"');
+  return n;
+}
+
+/** 读取模型列表里每行的容量输入：Map<modelId, {contextWindow, maxTokens}> */
+function readModelCapacities() {
+  const out = new Map();
+  document.querySelectorAll('#llm-model-list .llm-model-row').forEach(function (row) {
+    const id = row.dataset.model;
+    if (!id) return;
+    const cw = row.querySelector('.llm-model-cw');
+    const mt = row.querySelector('.llm-model-mt');
+    out.set(id, { contextWindow: cw ? cw.value : '', maxTokens: mt ? mt.value : '' });
+  });
+  return out;
+}
+
+/**
+ * 渲染模型复选框列表（多选 + 全选/全取消 + 每模型上下文窗口/最大输出 token）
+ * @param {Array<{id: string, ownedBy?: string, contextWindow?: number|string, maxTokens?: number|string}>} models
  * @param {boolean} precheckAll - 是否默认全部勾选（编辑态恢复时传 true）
  */
 function renderModelCheckList(models, precheckAll) {
@@ -4841,6 +5006,8 @@ function renderModelCheckList(models, precheckAll) {
   // 合并已有勾选（避免重新获取时丢失用户已勾选项）
   const prevChecked = new Set();
   listEl.querySelectorAll('input.llm-model-cb:checked').forEach(function(cb) { prevChecked.add(cb.value); });
+  // 合并已有容量输入（重新获取模型列表时不丢失用户已填值）
+  const prevCaps = readModelCapacities();
 
   listEl.innerHTML = models.map(m => {
     const id = (m.id || '').trim();
@@ -4849,11 +5016,22 @@ function renderModelCheckList(models, precheckAll) {
     const checked = precheckAll || prevChecked.has(id) ? 'checked' : '';
     const label = owned ? escapeHtml(id) + ' <span style="color:var(--text-dim);font-size:11px;">(' + escapeHtml(owned) + ')</span>' : escapeHtml(id);
     const visionChecked = isVisionModelName(id) ? 'checked' : '';
-    return '<label style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;transition:background 0.12s;" onmouseover="this.style.background=\'var(--bg-hover)\'" onmouseout="this.style.background=\'transparent\'">' +
-      '<input type="checkbox" class="llm-model-cb" value="' + escapeAttr(id) + '" data-ownedby="' + escapeAttr(owned) + '" ' + checked + ' onchange="updateModelCheckCount()" style="flex-shrink:0;">' +
-      '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
-      '<span title="支持图片输入（识图）。DSH 发送前按模型 input 检查图片支持，视觉模型需声明 input 含 image" style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="llm-model-vision-cb" value="' + escapeAttr(id) + '" ' + visionChecked + '>🖼️识图</span>' +
-      '</label>';
+    const prev = prevCaps.get(id);
+    const cwRaw = prev ? prev.contextWindow : (m.contextWindow != null ? m.contextWindow : '');
+    const mtRaw = prev ? prev.maxTokens : (m.maxTokens != null ? m.maxTokens : '');
+    return '<div class="llm-model-row" data-model="' + escapeAttr(id) + '" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;font-size:13px;transition:background 0.12s;" onmouseover="this.style.background=\'var(--bg-hover)\'" onmouseout="this.style.background=\'transparent\'">' +
+      '<label style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer;">' +
+        '<input type="checkbox" class="llm-model-cb" value="' + escapeAttr(id) + '" data-ownedby="' + escapeAttr(owned) + '" ' + checked + ' onchange="updateModelCheckCount()" style="flex-shrink:0;">' +
+        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
+        '<span title="支持图片输入（识图）。DSH 发送前按模型 input 检查图片支持，视觉模型需声明 input 含 image" style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="llm-model-vision-cb" value="' + escapeAttr(id) + '" ' + visionChecked + '>🖼️识图</span>' +
+      '</label>' +
+      '<span title="上下文窗口（tokens）：正整数，或 128K / 1M 写法；留空使用提供商默认" style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:11px;color:var(--text-dim);">上下文' +
+        '<input type="text" inputmode="numeric" class="input llm-model-cw" value="' + escapeAttr(String(cwRaw)) + '" placeholder="128K" style="width:66px;padding:2px 6px;font-size:12px;">' +
+      '</span>' +
+      '<span title="最大输出 token：正整数；DSH 要求为正整数，非法值会导致该模型配置被拒绝" style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:11px;color:var(--text-dim);">最大输出' +
+        '<input type="text" inputmode="numeric" class="input llm-model-mt" value="' + escapeAttr(String(mtRaw)) + '" placeholder="8192" style="width:66px;padding:2px 6px;font-size:12px;">' +
+      '</span>' +
+      '</div>';
     }).join('');
   results.style.display = 'block';
   updateModelCheckCount();

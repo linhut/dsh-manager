@@ -8,9 +8,38 @@
 import { execa } from 'execa';
 import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
 import { join, basename, resolve, sep } from 'node:path';
-import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand, compareDSHVersions } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
 import { githubProxyUrls } from './github-api.js';
+
+/**
+ * 组装 `dsh plugin` 转发给 pnpm 的 add 参数（纯函数，便于单测）。
+ *
+ * `dsh plugin --profile <p> <args...>` 是 pnpm 的「薄转发器」：参数原样交给
+ * profile 目录下的 pnpm add，因此这里拼出的参数即最终生效的安装参数。
+ *
+ * - 更新场景固定目标版本：pnpm 对「已满足 semver 区间」的依赖会直接跳过安装
+ *   （回报 Already up to date / downloaded 0, added 0），导致更新空转却不报错。
+ * - force=true 时追加 --force：pnpm 不再走「已满足即跳过」的短路，同版本也会
+ *   重建该依赖（用于「显示成功但模块未落盘」的兜底重装）。
+ *
+ * @param {string} profile - 目标 profile
+ * @param {string} packageName - npm 包名（含 scope）
+ * @param {object} [options]
+ * @param {string} [options.targetVersion] - 固定安装的目标版本
+ * @param {boolean} [options.force] - 强制重装
+ * @returns {string[]} 传给 dsh/pnpm 的完整参数数组
+ */
+export function buildPluginAddArgs(profile, packageName, options = {}) {
+  const targetVersion = String(options.targetVersion || '').trim();
+  const addSpec = targetVersion && targetVersion !== 'latest'
+    ? `${packageName}@${targetVersion}`
+    : packageName;
+
+  const args = ['plugin', '--profile', profile, 'add', addSpec];
+  if (options.force === true) args.push('--force');
+  return args;
+}
 
 export class PluginInstaller {
   /**
@@ -75,11 +104,11 @@ export class PluginInstaller {
 
     // 执行安装
     if (parsed.type === 'npm') {
-      return await this._installFromNpm(parsed.packageName, profile, pluginInfo);
+      return await this._installFromNpm(parsed.packageName, profile, pluginInfo, options);
     } else if (parsed.type === 'github') {
-      return await this._installFromGitHub(parsed.owner, parsed.repo, profile, pluginInfo, parsed.ref);
+      return await this._installFromGitHub(parsed.owner, parsed.repo, profile, pluginInfo, parsed.ref, options);
     } else if (parsed.type === 'git') {
-      return await this._installFromGit(parsed.url, profile, pluginInfo);
+      return await this._installFromGit(parsed.url, profile, pluginInfo, options);
     } else if (parsed.type === 'link') {
       return await this._installFromLink(parsed.path, profile);
     } else if (parsed.type === 'file') {
@@ -149,48 +178,185 @@ export class PluginInstaller {
 
   /**
    * 更新插件
+   * 流程：
+   *   ① 前置版本校验（registry.checkPluginUpdate：GitHub release / npm view 与磁盘版本比对）
+   *   ② 未检测到新版本 → 明确回报「已是最新」，不再空转重装并谎报成功
+   *   ③ 有更新 → 按目标版本精确重装（npm 源固定到具体版本号，避免 pnpm 因 semver
+   *      区间已满足而回报 "Already up to date / downloaded 0 added 0"）
+   *   ④ 重装后回读磁盘 node_modules/<pkg>/package.json，做真值断言：
+   *      版本未真正落盘则抛错，绝不把「空更新」当成功
    * @param {string} pluginId
    * @param {object} [options]
-   * @returns {Promise<{success: boolean, oldVersion: string, newVersion: string}>}
+   * @param {boolean} [options.force] - 跳过「已是最新」短路，强制重装并回读校验
+   * @returns {Promise<{success: boolean, updated: boolean, alreadyLatest: boolean, reinstalled?: boolean, unverified?: boolean, oldVersion: string, newVersion: string, targetVersion: string, needsRestart: boolean, verified: boolean}>}
+   *   - `unverified: true` 表示命令已执行但磁盘无法确认版本（不谎报成功，由 UI 提示人工核对）
    */
   async update(pluginId, options = {}) {
     this._log(`更新插件: ${pluginId}`);
 
-    const plugins = this.registry.getLocalPlugins();
+    // 强制刷新本地插件列表，避免 15s 缓存拿到陈旧版本号
+    const plugins = this.registry.getLocalPlugins(true);
     const plugin = plugins.find(p => p.id === pluginId);
-    
+
     if (!plugin) {
       throw new DSHError(DSHErrorCodes.PLUGIN_NOT_FOUND, `插件未找到: ${pluginId}`);
     }
 
-    const oldVersion = plugin.version;
+    const profile = plugin.profile || options.profile || this.profile;
+    const oldVersion = plugin.version || '';
+    const force = options.force === true;
 
-    // 重新安装（覆盖更新）
+    // ① 前置版本校验（source 感知：github 走 release tag，npm 走 npm view）
+    let check = null;
+    try {
+      check = await this.registry.checkPluginUpdate(pluginId);
+    } catch (e) {
+      this._log(`前置版本校验失败，降级为「重装 + 回读磁盘校验」: ${e.message}`, 'warn');
+    }
+    const hasUpdate = !!(check && check.hasUpdate);
+    const targetVersion = (check && check.latestVersion) || '';
+
+    // ② 版本未变 → 明确回报「已是最新」（不再误报成功，也不触发无意义重启）
+    if (check && !hasUpdate && !force) {
+      this._log(`${pluginId} 已是最新（${oldVersion}），跳过重装`, 'warn');
+      return {
+        success: true,
+        id: pluginId,
+        updated: false,
+        alreadyLatest: true,
+        oldVersion,
+        newVersion: oldVersion,
+        targetVersion,
+        needsRestart: false,
+        verified: true,
+      };
+    }
+
+    // ③ 精确重装（npm 源固定目标版本；git/link 源沿用原有安装逻辑）
     const result = await this.install(plugin.source, {
       ...options,
-      profile: plugin.profile || options.profile,
+      profile,
+      targetVersion: hasUpdate ? targetVersion : '',
     });
 
+    // ④ 回读磁盘真值（不信任 dsh plugin / pnpm 的退出码与 stdout）
+    // git/link 源登记的 id 可能与 node_modules 目录名不同 → 依次探测候选包名
+    const { version: diskVersion, from: diskFrom } = this._probeInstalledVersion(profile, [
+      pluginId,
+      result && result.id,
+      pluginId.split('/').pop(),
+    ]);
+
+    // 磁盘完全无法确认（node_modules 下找不到 package.json）→ 不得凭退出码宣称成功
+    if (!diskVersion && (hasUpdate || check === null || force)) {
+      this._log(`${pluginId} 更新后未能在磁盘确认版本，回报「无法确认」而非成功`, 'warn');
+      return {
+        success: true,
+        id: pluginId,
+        updated: false,
+        alreadyLatest: false,
+        reinstalled: false,
+        unverified: true,
+        oldVersion,
+        newVersion: oldVersion,
+        targetVersion,
+        needsRestart: false,
+        verified: false,
+        warning: `已执行更新命令，但未能在 profile "${profile}" 的 node_modules 中读取到 ${pluginId} 的 package.json，`
+          + `无法核实是否真正生效；请重启 DSH 后在插件列表核对版本，必要时使用「强制重装」`,
+      };
+    }
+
+    const changed = !!diskVersion && (!oldVersion || compareDSHVersions(diskVersion, oldVersion) > 0);
+
+    if (hasUpdate && targetVersion && diskVersion && compareDSHVersions(targetVersion, diskVersion) > 0) {
+      throw new DSHError(
+        DSHErrorCodes.PLUGIN_INSTALL_FAILED,
+        `插件更新未生效：目标版本 ${targetVersion}，磁盘 node_modules 实际版本 ${diskVersion}`
+          + `（profile "${profile}" 下未落盘新版本；请检查网络/registry 权限，或稍后重试）`
+      );
+    }
+
     return {
-      success: result.success,
+      success: true,
+      id: pluginId,
+      updated: changed,
+      alreadyLatest: !changed,
+      // 强制重装且版本未变：不是「有新版未生效」，而是同版本重新落盘，仍需重启加载
+      reinstalled: force && !changed,
       oldVersion,
-      newVersion: result.version,
+      newVersion: diskVersion,
+      targetVersion: hasUpdate ? targetVersion : diskVersion,
+      needsRestart: changed || force,
+      verified: !!diskVersion,
+      verifiedFrom: diskFrom,
     };
   }
 
   /**
+   * 依次探测候选包名对应的 node_modules 真实版本（更新是否生效的真值来源）。
+   * git/link 源在注册表中登记的 id 可能与 node_modules 目录名不一致，
+   * 因此按候选顺序探测，取首个命中；全部未命中即表示磁盘上无法确认。
+   * @param {string} profile
+   * @param {string[]} candidates - 候选包名（插件 id / 安装结果 id / 去 scope 短名）
+   * @returns {{version: string|null, from: string|null}}
    * @private
    */
-  async _installFromNpm(packageName, profile, info) {
+  _probeInstalledVersion(profile, candidates) {
+    const seen = new Set();
+    for (const name of candidates || []) {
+      const key = String(name || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const version = this._readInstalledVersion(profile, key);
+      if (version) return { version, from: key };
+    }
+    return { version: null, from: null };
+  }
+
+  /**
+   * 从 profile 的 node_modules 回读插件真实版本（更新是否生效的唯一真值来源）
+   * @param {string} profile
+   * @param {string} pluginId - 完整包名（含 scope）
+   * @returns {string|null}
+   * @private
+   */
+  _readInstalledVersion(profile, pluginId) {
+    if (!profile || !pluginId) return null;
+    const pkgJson = join(DSH_PATHS.profiles, profile, 'node_modules', pluginId, 'package.json');
+    try {
+      if (!existsSync(pkgJson)) return null;
+      const pj = JSON.parse(readFileSync(pkgJson, 'utf-8'));
+      return pj && pj.version ? String(pj.version) : null;
+    } catch (e) {
+      this._log(`回读磁盘版本失败 (${pluginId}): ${e.message}`, 'warn');
+      return null;
+    }
+  }
+
+  /**
+   * @private
+   * @param {string} packageName
+   * @param {string} profile
+   * @param {object} info
+   * @param {object} [options]
+   * @param {string} [options.targetVersion] - 固定安装的目标版本（更新场景）
+   */
+  async _installFromNpm(packageName, profile, info, options = {}) {
     this._log(`通过 npm 安装: ${packageName}`);
 
     try {
       // 检查 pnpm 是否已安装（dsh plugin 命令依赖 pnpm）
       await requirePnpm('安装插件');
 
-      const res = await execa(await this._dshCmd(), [
-        'plugin', '--profile', profile, 'add', packageName,
-      ], { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', reject: false, windowsHide: true });
+      // 更新场景固定到目标版本 + 必要时 --force（参数拼装见 buildPluginAddArgs）
+      const targetVersion = String(options.targetVersion || '').trim();
+      const addArgs = buildPluginAddArgs(profile, packageName, {
+        targetVersion,
+        force: options.force === true,
+      });
+
+      const res = await execa(await this._dshCmd(), addArgs, { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', reject: false, windowsHide: true });
       if (res.failed) {
         throw new DSHError(
           DSHErrorCodes.PLUGIN_INSTALL_FAILED,
@@ -207,11 +373,18 @@ export class PluginInstaller {
       const resolvedName = npmInfo.name || packageName;
       const pluginId = (info && info.npmPackage) ? info.npmPackage : resolvedName;
 
+      // 注册版本以「磁盘实际落盘版本」为准，而不是 npm 远端版本
+      // （否则远端已发布新版本但本地未更新时，注册表会显示错误版本）
+      const diskVersion = this._readInstalledVersion(profile, resolvedName)
+        || this._readInstalledVersion(profile, pluginId)
+        || null;
+      const version = diskVersion || npmInfo.version || 'latest';
+
       // 注册到本地列表
       this.registry.registerLocalPlugin({
         id: pluginId,
         name: info.name || npmInfo.name || packageName,
-        version: npmInfo.version || 'latest',
+        version,
         source: `npm:${packageName}`,
         profile,
         type: 'npm',
@@ -224,7 +397,8 @@ export class PluginInstaller {
         needsRestart: true,
         id: pluginId,
         name: info.name || packageName,
-        version: npmInfo.version || 'latest',
+        version,
+        targetVersion: targetVersion || '',
         path: '',
       };
     } catch (error) {
@@ -238,14 +412,14 @@ export class PluginInstaller {
   /**
    * @private
    */
-  async _installFromGitHub(owner, repo, profile, info, ref = '') {
+  async _installFromGitHub(owner, repo, profile, info, ref = '', options = {}) {
     this._log(`从 GitHub 安装: ${owner}/${repo}${ref ? '#' + ref : ''}`);
 
     // 有 npm 包名则优先走 npm（更快）；npm 失败自动降级为 git 安装
     if (info.npmPackage) {
       this._log(`发现 npm 包: ${info.npmPackage}，优先通过 npm 安装`);
       try {
-        return await this._installFromNpm(info.npmPackage, profile, info);
+        return await this._installFromNpm(info.npmPackage, profile, info, options);
       } catch (npmError) {
         this._log(`npm 安装失败（${npmError.message}），降级为 GitHub 安装`, 'warn');
         // 继续走官方 github:owner/repo#ref 形式安装
@@ -267,10 +441,15 @@ export class PluginInstaller {
       // GitHub 安装优先使用 npmPackage，其次 pkg.name/repo，避免与 profile 扫描不一致。
       const pluginId = info.npmPackage || info.id || repo;
 
+      // 版本以磁盘实际落盘为准（GitHub release tag 可能领先于实际安装内容，
+      // 直接采用远端 tag 会造成「远端版本号 ≠ 本地实际版本」的假更新）
+      const diskVersion = this._readInstalledVersion(profile, pluginId);
+      const version = diskVersion || info.latestRelease || info.version || 'main';
+
       this.registry.registerLocalPlugin({
         id: pluginId,
         name: info.name || repo,
-        version: info.latestRelease || info.version || 'main',
+        version,
         source: `github:${owner}/${repo}`,
         profile,
         type: 'github',
@@ -284,7 +463,7 @@ export class PluginInstaller {
         needsRestart: true,
         id: pluginId,
         name: info.name || repo,
-        version: info.latestRelease || info.version || 'main',
+        version,
         path: '',
       };
     } catch (error) {
@@ -591,7 +770,7 @@ export class PluginInstaller {
    * @param {string} profile
    * @param {object} [info]
    */
-  async _installFromGit(url, profile, info = {}) {
+  async _installFromGit(url, profile, info = {}, options = {}) {
     this._log(`从 Git 安装: ${url}`);
 
     // 从 URL 提取仓库名

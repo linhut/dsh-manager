@@ -17,9 +17,11 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 import { DSH_PATHS } from './dsh-utils.js';
+import { MIN_NODE_MAJOR } from './node-requirement.js';
 
-/** 能力路由插件随 DSH 解析所需的最低 Node 大版本（cordis-plugin-loader fromInternal 要求 Node >= 22） */
-export const CAPABILITY_ROUTER_MIN_NODE_MAJOR = 22;
+/** 能力路由插件随 DSH 解析所需的最低 Node 大版本（cordis-plugin-loader fromInternal 要求 Node >= 22）
+ *  数值来源统一为 node-requirement.js，避免与 env-check / install.ps1 口径不一致。 */
+export const CAPABILITY_ROUTER_MIN_NODE_MAJOR = MIN_NODE_MAJOR;
 
 /**
  * 解析 DSH 子进程实际使用的 Node 运行时版本（便携版优先，回退系统 node）。

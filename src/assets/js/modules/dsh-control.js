@@ -219,6 +219,14 @@ async function tryStartDSH() {
     // 订阅主进程推送的启动失败/自愈信息（dsh web 崩溃时展示真实 stderr；自愈成功时刷新页面）
     let startErrorHandled = false;
     window.dshManager.removeAllListeners('dsh:start-error');
+    // 官方契约：dsh web 打印带 token 的启动 URL，客户端必须用它换取会话；捕获后自动重连
+    window.dshManager.onDSHWebUrlCaptured(({ url } = {}) => {
+      if (!url || !/token=/.test(url)) return;
+      const previous = state.dshUrl;
+      const urlChanged = previous !== url || !/token=/.test(previous || '');
+      state.dshUrl = url;
+      if (urlChanged) tryConnectDSH(1, false);
+    });
     window.dshManager.onDSHStartError((data) => {
       if (startErrorHandled) return;
       startErrorHandled = true;

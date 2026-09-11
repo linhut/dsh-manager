@@ -15,8 +15,10 @@ export { DSHConfig } from './config.js';
 export { DSHUtils, getDSHInfo, getDSHDetectionDetail, DSH_PATHS, resolveDSHCommand, compareDSHVersions, buildCommandEnv, refreshSystemPath, detectRealArch, getSystemDiagnostics, getDSHPath, isDSHInstalled, getDSHVersion, listDSHVersions, isDSHInPath } from './dsh-utils.js';
 export { DSHVersionManager } from './version-manager.js';
 export { MCPServerManager } from './mcp-manager.js';
+export { DSH_WEB_URL_LINE_RE, isDSHWebAuthUrl, extractDSHWebAuthUrl, preflightDSHProfile } from './dsh-web-contract.js';
 export { checkPnpm, requirePnpm, getPnpmInstallGuide } from './pnpm-check.js';
 export { checkNode, checkNpm, checkGit, checkEnvironment, getNodeInstallGuide, getGitInstallGuide, requireNodeAndNpm, checkPortableNode, getPortableNodeBin } from './env-check.js';
+export { MIN_NODE_MAJOR, MIN_NODE_MINOR, MIN_NODE_VERSION, parseNodeVersion, meetsMinNodeVersion, getNodeUpgradeHint } from './node-requirement.js';
 export { installPortableNode, uninstallPortableNode, getPortableNodeInfo, getLatestLTSVersion, buildRuntimeEnv, getRuntimeConfig } from './portable-node.js';
 export { DSHError, DSHErrorCodes } from './errors.js';
 export { getDSHStorageInfo, cleanDSHData } from './data-manager.js';
@@ -29,6 +31,15 @@ export { installCapabilityRouter, uninstallCapabilityRouter, isCapabilityRouterI
 export { resolveBundledSkillsRoot, syncBundledSkills, installBundledPlugins, installDshSkillsPlugin, ensureBundledContent, getBundledContentState } from './bundled-content.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 export { generateImage, findProviderConfig, resolveApiKey, getImageSaveDir } from './imagegen.js';
+export {
+  ModelConfigCenter,
+  SUPPORTED_TOOLS,
+  SUPPORTED_TOOL_IDS,
+  maskKey,
+  parseTomlSections,
+  renderTomlUpserts,
+  ensureChatCompletionsUrl,
+} from './model-config-center.js';
 export {
   QUARANTINE_FILE,
   QUARANTINE_COOLDOWN_MS,

@@ -37,6 +37,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # dsh-skills 是 git 子模块；不拉取会导致打包产物 resources/dsh-skills 为空
+          submodules: recursive
       - name: Verify tag matches package.json version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
@@ -102,6 +105,23 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # 必须递归拉取子模块：dsh-skills 是 extraResources 声明的子模块，
+          # 未拉取时 electron-builder 会静默打包出空的 resources/dsh-skills，
+          # 运行时才会在「内置 dsh-skills 资源缺失」处失败（构建阶段无报错）。
+          submodules: recursive
+
+      # 子模块资源非空断言（前置快速失败）：CI 未拉起子模块时立即中断，
+      # 避免 electron-builder 静默打包出空的 resources/dsh-skills。
+      - name: Verify dsh-skills submodule is populated
+        shell: bash
+        run: |
+          if [ ! -f dsh-skills/package.json ] || [ ! -d dsh-skills/skills ]; then
+            echo "::error::dsh-skills 子模块未拉取或为空，请确认 checkout 已使用 submodules: recursive"
+            ls -la dsh-skills || true
+            exit 1
+          fi
+          echo "✅ dsh-skills 子模块已就绪：$(ls dsh-skills/skills | wc -l) 个技能目录"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -115,11 +135,66 @@ jobs:
         run: |
           npm install --no-audit --no-fund
 
+      # ===== 代码签名凭据注入（未配置 Secrets 时自动跳过签名，不阻断构建）=====
+      # Windows：CSC_LINK / CSC_KEY_PASSWORD（.pfx 文件本身或其 base64）
+      - name: Prepare Windows code-signing env
+        if: startsWith(matrix.os, 'windows')
+        shell: bash
+        env:
+          SIGN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          SIGN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -n "$SIGN_CSC_LINK" ]; then
+            {
+              echo "CSC_LINK=$SIGN_CSC_LINK"
+              echo "CSC_KEY_PASSWORD=$SIGN_CSC_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "✅ 已注入 Windows 代码签名凭据"
+          else
+            echo "::warning::未配置 WIN_CSC_LINK，本次 Windows 产物为未签名版本"
+          fi
+
+      # macOS：CSC_LINK / CSC_KEY_PASSWORD + 公证（notarize）所需 APPLE_ID 三件套
+      - name: Prepare macOS code-signing env
+        if: startsWith(matrix.os, 'macos')
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MAC_APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$MAC_CSC_LINK" ]; then
+            {
+              echo "CSC_LINK=$MAC_CSC_LINK"
+              echo "CSC_KEY_PASSWORD=$MAC_CSC_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "✅ 已注入 macOS 代码签名凭据"
+          else
+            echo "::warning::未配置 MAC_CSC_LINK，本次 macOS 产物为未签名版本"
+          fi
+          if [ -n "$MAC_APPLE_ID" ]; then
+            {
+              echo "APPLE_ID=$MAC_APPLE_ID"
+              echo "APPLE_APP_SPECIFIC_PASSWORD=$MAC_APPLE_PASSWORD"
+              echo "APPLE_TEAM_ID=$MAC_APPLE_TEAM_ID"
+            } >> "$GITHUB_ENV"
+            echo "✅ 已注入 macOS 公证（notarize）凭据"
+          else
+            echo "::warning::未配置 APPLE_ID，本次 macOS 产物不做公证（notarize 自动跳过）"
+          fi
+
       # 注：generate-icons 已内置于 build:* 脚本（npm run generate-icons && electron-builder）
       - name: Build ${{ matrix.platform }} installer
         run: ${{ matrix.build-cmd }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 产物级断言（后置兜底）：确认 dist 中真实存在 extraResources 声明的内置资源
+      - name: Assert bundled resources exist in dist
+        shell: bash
+        run: node scripts/assert-bundled-resources.mjs
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -162,8 +237,8 @@ jobs:
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
             ### Linux（常规）
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x86_64.AppImage` - Linux AppImage（x64）
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}-amd64.deb` - Debian/Ubuntu 安装包（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.AppImage` - Linux AppImage（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.deb` - Debian/Ubuntu 安装包（x64）
 
             ### Linux（信创 / 国产化）
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.AppImage` - Linux AppImage（ARM64，飞腾/鲲鹏）
@@ -186,9 +261,24 @@ jobs:
             **macOS**: 打开 `.dmg`，将 DSH Manager 拖到 Applications 文件夹
             **Linux**: 给 `.AppImage` 添加执行权限后运行；`.deb` 用 `sudo dpkg -i` 或双击安装
 
+            ### 未签名版本提示（重要）
+
+            当前 CI 若未配置签名凭据（`WIN_CSC_LINK` / `MAC_CSC_LINK` 等 Secrets），产物为**未签名版本**，系统会给出安全警告，可按下列方式绕过：
+
+            - **macOS**（提示「无法打开，因为 Apple 无法检查其是否包含恶意软件」）：
+              1. 将 App 拖入「应用程序」后执行：
+                 ```bash
+                 xattr -dr com.apple.quarantine "/Applications/DSH Manager.app"
+                 ```
+              2. 或「系统设置 → 隐私与安全性 → 仍要打开」
+            - **Windows**（SmartScreen 提示「Windows 已保护你的电脑」）：
+              点击「更多信息」→「仍要运行」
+
+            > 签名配置方法见 [RELEASE.md](https://github.com/linhut/dsh-manager/blob/main/RELEASE.md) 的「代码签名」章节。
+
             ### 信创平台安装（麒麟/UOS/OpenEuler）
 
-            - **x86_64（兆芯/海光/Intel/AMD）**：安装 `-amd64.deb` 或运行 `-x86_64.AppImage`
+            - **x64（兆芯/海光/Intel/AMD）**：安装 `-x64.deb` 或运行 `-x64.AppImage`
             - **ARM64（飞腾/鲲鹏）**：安装 `-arm64.deb` 或运行 `-arm64.AppImage`
             - **龙芯/申威**：Electron 不可用，用浏览器访问 DSH 网页（详见信创部署指南）
 

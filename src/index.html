@@ -89,6 +89,10 @@
           <span class="nav-icon">📦</span>
           <span class="nav-label">版本管理</span>
         </button>
+        <button class="nav-item" data-page="modelconfig" onclick="switchPage('modelconfig')">
+          <span class="nav-icon">🔀</span>
+          <span class="nav-label">模型配置</span>
+        </button>
         <button class="nav-item" data-page="settings" onclick="switchPage('settings')">
           <span class="nav-icon">⚙️</span>
           <span class="nav-label">设置</span>
@@ -193,6 +197,17 @@
         </div>
       </div>
 
+      <!-- ====== 页面: 模型配置 ====== -->
+      <div class="page" id="page-modelconfig">
+        <div class="page-header">
+          <h1 class="page-title">🔀 模型配置</h1>
+          <p class="page-desc">管理多套模型 / Provider 档案，一键应用到 AtomCode、Claude Code、WorkBuddy 等工具（类似 cc-switch）</p>
+        </div>
+        <div id="modelConfigContent">
+          <!-- 由 JS 动态渲染 -->
+        </div>
+      </div>
+
       <!-- ====== 页面: 设置 ====== -->
       <div class="page" id="page-settings">
         <div class="page-header">
@@ -251,6 +266,7 @@
   <script src="assets/js/modules/dsh-control.js"></script>
   <script src="assets/js/modules/page-manager.js"></script>
   <script src="assets/js/modules/shortcuts.js"></script>
+  <script src="assets/js/modules/model-config.js"></script>
   <script src="assets/js/app.js"></script>
 </body>
 </html>

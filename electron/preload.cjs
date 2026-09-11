@@ -36,6 +36,10 @@ contextBridge.exposeInMainWorld('dshManager', {
     ipcRenderer.on('dsh:start-error', (_, data) => callback(data));
     return () => ipcRenderer.removeAllListeners('dsh:start-error');
   },
+  onDSHWebUrlCaptured: (callback) => {
+    ipcRenderer.on('dsh:web-url-captured', (_, data) => callback(data));
+    return () => ipcRenderer.removeAllListeners('dsh:web-url-captured');
+  },
   stopDSH: () => ipcRenderer.invoke('dsh:stop'),
   diagnoseDSH: (port) => ipcRenderer.invoke('dsh:diagnose', port),
   checkDSHPort: (port) => ipcRenderer.invoke('dsh:check-port', port),
@@ -66,7 +70,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   diagnoseInvalidPlugins: (profile = 'web') => ipcRenderer.invoke('marketplace:diagnose-plugins', profile),
   fixInvalidPlugins: (profile = 'web') => ipcRenderer.invoke('marketplace:fix-plugins', profile),
   checkPluginUpdates: () => ipcRenderer.invoke('marketplace:check-updates'),
-  updatePlugin: (pluginId) => ipcRenderer.invoke('marketplace:update-plugin', pluginId),
+  updatePlugin: (pluginId, options) => ipcRenderer.invoke('marketplace:update-plugin', pluginId, options || {}),
   cleanupGhostPlugins: () => ipcRenderer.invoke('marketplace:cleanup-ghosts'),
   enablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:enable-plugin', pluginId),
   disablePlugin: (pluginId) => ipcRenderer.invoke('marketplace:disable-plugin', pluginId),
@@ -101,7 +105,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   installBundledPlugins: (profile) => ipcRenderer.invoke('bundled-content:install-plugins', profile),
   updateLLMProvider: (name, providerConfig, adapter) => ipcRenderer.invoke('config:update-llm-provider', name, providerConfig, adapter),
   deleteLLMProvider: (name) => ipcRenderer.invoke('config:delete-llm-provider', name),
-  fetchLLMModels: (provider, baseUrl, apiKey) => ipcRenderer.invoke('llm:fetch-models', provider, baseUrl, apiKey),
+  fetchLLMModels: (provider, baseUrl, apiKey, credRef) => ipcRenderer.invoke('llm:fetch-models', provider, baseUrl, apiKey, credRef || ''),
 
   // ====== LLM 能力路由（按能力自动切换模型） ======
   getLLMRouting: () => ipcRenderer.invoke('llm-routing:get'),
@@ -210,6 +214,18 @@ contextBridge.exposeInMainWorld('dshManager', {
   getDepsHealth: (profile) => ipcRenderer.invoke('deps:health', profile),
   classifyPackage: (name) => ipcRenderer.invoke('deps:classify', name),
   
+  // ====== 模型配置中心（Model Config Center，类似 cc-switch） ======
+  listModelProfiles: () => ipcRenderer.invoke('mcc:list-profiles'),
+  getModelProfile: (id) => ipcRenderer.invoke('mcc:get-profile', id),
+  saveModelProfile: (input) => ipcRenderer.invoke('mcc:save-profile', input),
+  deleteModelProfile: (id) => ipcRenderer.invoke('mcc:delete-profile', id),
+  listModelConfigTools: () => ipcRenderer.invoke('mcc:list-tools'),
+  applyModelProfile: (profileId, toolIds) => ipcRenderer.invoke('mcc:apply', profileId, toolIds),
+  revertModelConfigTool: (toolId) => ipcRenderer.invoke('mcc:revert', toolId),
+  listModelConfigBackups: (toolId) => ipcRenderer.invoke('mcc:list-backups', toolId),
+  exportModelProfiles: () => ipcRenderer.invoke('mcc:export'),
+  importModelProfiles: (jsonText) => ipcRenderer.invoke('mcc:import', jsonText),
+
   // ====== 剪贴板 ======
   copyToClipboard: (text) => ipcRenderer.invoke('app:copy-to-clipboard', text),
 });

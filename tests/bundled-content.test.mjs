@@ -178,6 +178,41 @@ describe('内置插件：installDshSkillsPlugin', () => {
       assert.equal(r.success, false, '非法 profile 应拒绝');
     } finally { h.cleanup(); }
   });
+
+  it('已装副本内容变化时覆盖更新（不再"永不更新"）', async () => {
+    const h = makeHome();
+    try {
+      const r1 = await installDshSkillsPlugin('web');
+      assert.equal(r1.success, true, '首次应安装成功: ' + (r1.error || ''));
+      const nmIndex = join(h.home, 'profiles', 'web', 'node_modules', 'dsh-skills', 'index.js');
+      const original = readFileSync(nmIndex, 'utf8');
+      // 模拟旧版本副本/被篡改的副本
+      writeFileSync(nmIndex, original + '\n// tampered-by-test\n', 'utf8');
+      const r2 = await installDshSkillsPlugin('web');
+      assert.equal(r2.already, false, '内容变化后不应判定为 already');
+      assert.equal(readFileSync(nmIndex, 'utf8'), original, '应覆盖回内置源内容');
+    } finally { h.cleanup(); }
+  });
+
+  it('不再写入非标准 dependencies["dsh-skills"] = "file:<绝对路径>"，并清理历史遗留', async () => {
+    const h = makeHome();
+    try {
+      // 预置历史遗留的非法依赖记录
+      const profileDir = join(h.home, 'profiles', 'web');
+      mkdirSync(profileDir, { recursive: true });
+      writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
+        name: 'dsh-profile-web',
+        private: true,
+        dependencies: { 'dsh-skills': 'file:C:/some/abs/node_modules/dsh-skills' },
+        dsh: { profile: { bundles: [] } },
+      }, null, 2), 'utf8');
+      const r = await installDshSkillsPlugin('web');
+      assert.equal(r.success, true, '应安装成功: ' + (r.error || ''));
+      const pkg = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'));
+      assert.ok(!pkg.dependencies || !('dsh-skills' in pkg.dependencies), '应清理历史 file: 依赖');
+      assert.ok((pkg.dsh?.profile?.bundles || []).includes('dsh-skills'), 'bundles 应登记');
+    } finally { h.cleanup(); }
+  });
 });
 
 // ====== 组合执行 ======

@@ -121,11 +121,13 @@ describe('T9: 核心修复回归', () => {
     assert.ok(src.includes('if (stderrVersion)'), '应从 stderr 提取版本号');
   });
 
-  // 5.2: Node 最低版本校验
-  it('env-check 校验 Node 最低版本 >= 20.1', () => {
+  // 5.2: Node 最低版本校验（门槛统一为 22，单一真源 packages/core/src/node-requirement.js）
+  it('env-check 使用统一 Node 最低版本校验（>= 22）', () => {
     const src = read('packages/core/src/env-check.js');
-    assert.ok(src.includes('nodeVer[0] < 20'), '应校验主版本');
-    assert.ok(src.includes('nodeVer[0] === 20 && nodeVer[1] < 1'), '应校验次版本');
+    assert.ok(src.includes('meetsMinNodeVersion(node.version)'), '应调用统一门槛校验函数');
+    assert.ok(src.includes('./node-requirement.js'), '应从 node-requirement.js 引入门槛');
+    const req = read('packages/core/src/node-requirement.js');
+    assert.ok(req.includes('export const MIN_NODE_MAJOR = 22'), '门槛真源应为 22');
   });
 
   // 3.3: readdirSync recursive 替代

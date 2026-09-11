@@ -46,7 +46,7 @@ Write-Host @"
 "@ -ForegroundColor Cyan
 
 Write-Host "本工具将自动完成以下步骤：" -ForegroundColor Gray
-Write-Host "  1. 检查 Node.js 环境（>= 18）" -ForegroundColor Gray
+Write-Host "  1. 检查 Node.js 环境（>= 22）" -ForegroundColor Gray
 Write-Host "  2. 启用 Windows 开发者模式（解决 npm 符号链接权限）" -ForegroundColor Gray
 Write-Host "  3. 克隆源码到 $InstallDir" -ForegroundColor Gray
 Write-Host "  4. npm install 安装依赖" -ForegroundColor Gray
@@ -62,9 +62,11 @@ try { $nodeVersion = node --version 2>$null } catch {}
 if ($nodeVersion) {
     $versionStr = $nodeVersion -replace '[^0-9.]', ''
     $major = [int]($versionStr.Split('.')[0])
-    if ($major -lt 18) {
-        Write-ErrorMsg "Node.js 版本过低: $nodeVersion，需要 >= 18"
-        Write-Host "请访问 https://nodejs.org 安装 Node.js 18+ 后重试"
+    # 最低门槛统一为 22：DSH 的 profile 插件加载器要求 Node >= 22
+    # （与 packages/core/src/node-requirement.js、env-check.js 保持一致）
+    if ($major -lt 22) {
+        Write-ErrorMsg "Node.js 版本过低: $nodeVersion，需要 >= 22"
+        Write-Host "请访问 https://nodejs.org 安装 Node.js 22+ 后重试"
         pause; exit 1
     }
     Write-Success "Node.js 已安装: $nodeVersion"

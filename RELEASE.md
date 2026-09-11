@@ -132,6 +132,7 @@ gh release view vx.y.z --repo linhut/dsh-manager --json tagName,assets,url,publi
 - [ ] 五平台产物完整且命名规范（Windows x64/arm64 `.exe` / macOS `.dmg` x2 / Linux x64/arm64 `.AppImage` + `.deb`）
 - [ ] Release 标记为 Latest
 - [ ] Release Notes 包含正确下载链接
+- [ ] 下载本地 dist 后执行 `npm run assert:resources`（校验 extraResources 声明项在打包产物中真实存在，含 `resources/dsh-skills/skills` 非空）
 
 ### 6. 同步到其他镜像仓库
 
@@ -172,8 +173,11 @@ git push atomgit vx.y.z
 | Windows ARM64（信创 ARM） | `DSH-Manager-{version}-arm64.exe` | `DSH-Manager-1.3.4-arm64.exe` |
 | macOS Intel | `DSH-Manager-{version}-x64.dmg` | `DSH-Manager-1.3.4-x64.dmg` |
 | macOS Apple Silicon | `DSH-Manager-{version}-arm64.dmg` | `DSH-Manager-1.3.4-arm64.dmg` |
-| Linux x64 | `DSH-Manager-{version}-x86_64.AppImage` / `-amd64.deb` | `DSH-Manager-1.3.4-x86_64.AppImage` |
-| Linux ARM64（飞腾/鲲鹏） | `DSH-Manager-{version}-arm64.AppImage` / `.deb` | `DSH-Manager-1.3.4-arm64.AppImage` |
+| Linux x64 | `DSH-Manager-{version}-x64.AppImage` / `-x64.deb` | `DSH-Manager-1.4.0-x64.AppImage` |
+| Linux ARM64（飞腾/鲲鹏） | `DSH-Manager-{version}-arm64.AppImage` / `-arm64.deb` | `DSH-Manager-1.4.0-arm64.AppImage` |
+
+> 命名统一由 `package.json` 的 `build.{win,mac,linux}.artifactName = DSH-Manager-${version}-${arch}.${ext}` 生成，`${arch}` 取 electron-builder 的 `x64` / `arm64`。
+> 因此 Linux 产物为 `-x64.*` / `-arm64.*`，与官网与 Release 文案完全一致；历史上的 `-x86_64` / `-amd64` 写法已废弃。
 
 > 信创环境安装指引见 [docs/信创部署指南.md](docs/信创部署指南.md)；龙芯/申威无 Electron 包，用浏览器访问 DSH 网页（纯 Web 模式）。
 
@@ -189,6 +193,67 @@ git push atomgit vx.y.z
 | 4 | `packages/core/src/version-manager.js` | User-Agent `dsh-manager/X.Y.Z` |
 | 5 | `packages/marketplace/src/github-api.js` | User-Agent `dsh-manager/X.Y.Z` |
 | 6 | `electron/ipc-handlers.js` | `app:get-version`：优先 `app.getVersion()`，开发环境回退读 package.json |
+
+## 🔐 代码签名（Windows / macOS）
+
+### 当前策略
+
+- CI 构建时通过 GitHub Secrets 注入签名凭据；**未配置凭据时自动跳过签名并继续构建**（不中断发布，日志打印 warning）。
+- 未签名产物在用户侧的绕过方式（与 Release 文案一致）：
+  - macOS：`xattr -dr com.apple.quarantine /Applications/DSH\ Manager.app`
+  - Windows：SmartScreen 提示「Windows 已保护你的电脑」→「更多信息」→「仍要运行」
+
+### Secrets 配置
+
+| Secret | 平台 | 说明 |
+|--------|------|------|
+| `WIN_CSC_LINK` | Windows | 代码签名证书（.pfx）的 Base64 内容，构建时注入为环境变量 `CSC_LINK` |
+| `WIN_CSC_KEY_PASSWORD` | Windows | .pfx 私钥口令，构建时注入为 `CSC_KEY_PASSWORD` |
+| `MAC_CSC_LINK` | macOS | Developer ID 证书（.p12）的 Base64 内容，构建时注入为 `CSC_LINK` |
+| `MAC_CSC_KEY_PASSWORD` | macOS | .p12 私钥口令，构建时注入为 `CSC_KEY_PASSWORD` |
+| `APPLE_ID` | macOS 公证 | Apple 账号邮箱 |
+| `APPLE_APP_SPECIFIC_PASSWORD` | macOS 公证 | App 专用密码（在 appleid.apple.com 生成） |
+| `APPLE_TEAM_ID` | macOS 公证 | 10 位团队 ID |
+
+`package.json` 的 `build.mac` 已开启 `hardenedRuntime: true` 与 `notarize: true`，macOS 侧需同时提供上述 `APPLE_*` 三项才会执行公证；缺失时 electron-builder 会跳过公证步骤（构建不失败）。
+
+### 把证书转成 Base64 填入 Secrets
+
+```powershell
+# Windows PowerShell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('Y:\path\to\cert.pfx')) | Set-Clipboard
+# 粘贴到 GitHub → Settings → Secrets and variables → Actions → New repository secret
+```
+
+```bash
+# macOS / Linux
+base64 -i cert.p12 | pbcopy     # macOS
+base64 -w0 cert.p12             # Linux
+```
+
+> `CSC_LINK` 除 Base64 外也接受文件路径或 https 直链；CI 场景推荐 Base64（凭据不落盘）。
+> electron-builder 无需在 `package.json` 里显式引用 CSC_LINK，它自动读取同名环境变量；CI 中只需保证 secrets 已注入（见 `.github/workflows/build.yml` 的 Signing 步骤）。
+
+### 自签名证书的局限（务必知悉）
+
+| 场景 | 自签名证书的实际效果 |
+|------|---------------------|
+| Windows SmartScreen | **仍然告警**：证书不在受信任根、且无声誉积累，用户仍需手动「更多信息 → 仍要运行」 |
+| Windows 内网/自用 | 把 `.crt` 导入「受信任的根证书颁发机构」+「受信任的发布者」后，**该机器**不再告警 |
+| macOS Gatekeeper | **仍然拦截**：自签名非 Developer ID，且无法通过 Apple 公证（notarytool 只接受 Developer ID 签名），用户需 `xattr -dr com.apple.quarantine` 或右键「打开」 |
+| macOS 内网/自用 | 在「钥匙串访问」把 `.crt` 导入「系统」钥匙串并设为「始终信任」，该机器可通过校验 |
+
+**正式证书获取路径：**
+
+- Windows：向 CA（DigiCert / Sectigo / GlobalSign / SSL.com 等）购买 **OV 或 EV 代码签名证书**（需组织实名；EV 需硬件令牌，可较快建立 SmartScreen 信誉）。
+- macOS：加入 **Apple Developer Program**（99 USD/年）→ 创建 **Developer ID Application** 证书 → 由 electron-builder 的 `notarize: true` 自动完成公证。
+
+### 本地自签名证书（仅供测试，严禁入库）
+
+- 位置：`secrets/signing/`（已被 `.gitignore` 排除）
+- `dsh-manager-win-selfsigned.pfx` / `dsh-manager-mac-selfsigned.p12`：含私钥，口令见同目录 `PASSWORDS.local.txt`
+- `dsh-manager-win-selfsigned.crt` / `dsh-manager-mac-selfsigned.crt`：公钥证书，可安全分发给测试机导入信任
+- 有效期 3 年（1095 天），到期后重新生成即可
 
 ## 🧯 常见问题
 

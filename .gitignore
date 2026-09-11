@@ -84,6 +84,7 @@ _recovered-*.js
 _verify-*.cjs
 .playwright-cli/
 dist-test/
+dist-check/
 scripts/build-*.cjs
 !scripts/build-test.cjs
 scripts/check-*.mjs
@@ -91,3 +92,13 @@ scripts/models-settings-*.png
 
 # CodeGraph local index
 .codegraph/
+
+# AtomCode local memory (not synced)
+.atomcode/
+
+# Code signing certificates & private keys (NEVER commit)
+secrets/
+*.p12
+*.pfx
+*.key
+*.pem

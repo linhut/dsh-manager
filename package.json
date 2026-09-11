@@ -25,6 +25,7 @@
       "electron/**/*",
       "src/**/*",
       "packages/**/*",
+      "build/icon.png",
       "package.json"
     ],
     "win": {
@@ -55,7 +56,9 @@
       ],
       "icon": "build/icon.png",
       "category": "public.app-category.developer-tools",
-      "artifactName": "DSH-Manager-${version}-${arch}.${ext}"
+      "artifactName": "DSH-Manager-${version}-${arch}.${ext}",
+      "hardenedRuntime": true,
+      "notarize": true
     },
     "linux": {
       "target": [
@@ -68,8 +71,8 @@
     },
     "extraResources": [
       {
-        "from": "packages",
-        "to": "packages",
+        "from": "packages/plugins",
+        "to": "packages/plugins",
         "filter": [
           "**/*"
         ]
@@ -111,6 +114,7 @@
     "generate-icons": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));process.exit(h.runNode('scripts/generate-icons.js'))\"",
     "postinstall": "echo 'Skipping electron-builder install-app-deps'",
     "verify": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));process.exit(h.runNode('scripts/verify.mjs'))\"",
+    "assert:resources": "node scripts/assert-bundled-resources.mjs",
     "settings:backup": "node scripts/settings-tool.mjs backup",
     "settings:list": "node scripts/settings-tool.mjs list",
     "settings:restore": "node scripts/settings-tool.mjs restore",

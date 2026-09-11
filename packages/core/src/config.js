@@ -49,19 +49,20 @@ export class DSHConfig {
    * @returns {Promise<object>}
    */
   async read() {
-    if (!existsSync(this.configPath)) {
-      return { settings: {}, credentials: {} };
-    }
-
+    // 注意：settings.yaml 与 .credentials.yaml 各自独立存在（DSH 首次启动可能只写出
+    // 凭据文件），因此不能因 settings 缺失就短路返回空凭据 —— 否则后续「读改写」凭据时
+    // 会把磁盘上已有的 refs / records 段整段写空。
     let settings = {};
-    try {
-      const content = readFileSync(this.configPath, 'utf-8');
-      settings = this._parseYAML(content);
-    } catch (error) {
-      throw new DSHError(
-        DSHErrorCodes.CONFIG_PARSE_ERROR,
-        'settings 文件解析失败 (' + this.configPath + '): ' + error.message
-      );
+    if (existsSync(this.configPath)) {
+      try {
+        const content = readFileSync(this.configPath, 'utf-8');
+        settings = this._parseYAML(content);
+      } catch (error) {
+        throw new DSHError(
+          DSHErrorCodes.CONFIG_PARSE_ERROR,
+          'settings 文件解析失败 (' + this.configPath + '): ' + error.message
+        );
+      }
     }
 
     let credentials = {};
@@ -98,6 +99,8 @@ export class DSHConfig {
     }
 
     if (type === 'settings') {
+      config = this._stripRendererOnlyFields(config);
+      config = this._preserveLegacyPlainKeysOnWrite(config);
       config = this._normalizeModels(config);
       const v = this.validateSettings(config);
       if (!v.ok) {
@@ -425,14 +428,22 @@ export class DSHConfig {
     // 版本化布局：提取 refs（+ records 中的普通字符串值）
     if ('version' in parsed) {
       const flat = {};
+      const refKeys = [];
+      const recordKeys = [];
       const refs = parsed.refs && typeof parsed.refs === 'object' ? parsed.refs : {};
       for (const [k, v] of Object.entries(refs)) {
-        if (typeof v === 'string' && v.length > 0) flat[k] = v;
+        if (typeof v === 'string' && v.length > 0) { flat[k] = v; refKeys.push(k); }
       }
       const records = parsed.records && typeof parsed.records === 'object' ? parsed.records : {};
       for (const [k, v] of Object.entries(records)) {
-        if (typeof v === 'string' && v.length > 0) flat[k] = v;
+        if (typeof v === 'string' && v.length > 0) { flat[k] = v; recordKeys.push(k); }
       }
+      // 记录每个键的原始归属段（refs / records），供写回时还原布局。
+      // 定义为不可枚举属性：JSON 序列化、Object.entries 遍历均不可见，
+      // 不会污染调用方拿到的扁平凭据对象（imagegen 等内部消费方无感知）。
+      Object.defineProperty(flat, '__refKeys', { value: refKeys, enumerable: false, configurable: true });
+      Object.defineProperty(flat, '__recordKeys', { value: recordKeys, enumerable: false, configurable: true });
+      Object.defineProperty(flat, '__rawRecords', { value: records, enumerable: false, configurable: true });
       return flat;
     }
     // 旧扁平布局：原样返回
@@ -449,11 +460,26 @@ export class DSHConfig {
    */
   _wrapCredentialsVersioned(flat) {
     const refs = {};
+    // 键的原始归属段：来自 _parseCredentials 的非枚举标记（读改写同一对象时保留布局）
+    const recordKeys = new Set(Array.isArray(flat && flat.__recordKeys) ? flat.__recordKeys : []);
+    const rawRecords = (flat && typeof flat.__rawRecords === 'object' && flat.__rawRecords) || {};
+    const records = {};
+    // 先保留原始 records 中的非字符串条目（对象等），避免写回时丢失布局内容
+    for (const [k, v] of Object.entries(rawRecords)) {
+      if (typeof v !== 'string') records[k] = v;
+    }
     for (const [k, v] of Object.entries(flat || {})) {
       if (k.startsWith('_comment') || k === '_order') continue;
-      if (typeof v === 'string' && v.length > 0) refs[k] = v;
+      if (k.startsWith('__')) continue; // 内部标记不落盘
+      if (typeof v !== 'string' || v.length === 0) continue;
+      // 原本位于 records 段的键写回 records 段，其余写 refs 段；
+      // 已从扁平对象中删除的 records 键不会再写入，等价于删除
+      if (recordKeys.has(k)) records[k] = v;
+      else refs[k] = v;
     }
-    return { version: 1, refs };
+    const out = { version: 1, refs };
+    if (Object.keys(records).length > 0) out.records = records;
+    return out;
   }
 
   /**
@@ -774,11 +800,191 @@ export class DSHConfig {
    * @param {string} [adapter] - LLM 适配器名称，默认取 provider
    * @returns {Promise<object>}
    */
+  /**
+   * 归一化「上下文窗口 / 最大输出 token」数值。
+   * dsh-llm-pi-ai 的 modelProfile 只接受正整数（或 undefined 用 provider 默认），
+   * 非法值会让该 model 直接报错，因此这里统一转换并拦截非法输入。
+   * 支持容量字符串：'128000' / '256K' / '1M' / '1.5m'（大小写不敏感）。
+   * @param {any} value
+   * @returns {number|null} 正整数，非法/空值返回 null
+   */
+  static normalizeModelCapacity(value) {
+    if (value === undefined || value === null || value === '') return null;
+    if (typeof value === 'number') {
+      return Number.isSafeInteger(value) && value > 0 ? value : null;
+    }
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const m = /^(\d+(?:\.\d+)?)\s*([kKmM])?$/.exec(raw);
+    if (!m) return null;
+    const num = Number(m[1]);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    const unit = (m[2] || '').toLowerCase();
+    const scale = unit === 'k' ? 1024 : unit === 'm' ? 1024 * 1024 : 1;
+    const scaled = Math.round(num * scale);
+    if (!Number.isSafeInteger(scaled) || scaled <= 0) return null;
+    return scaled;
+  }
+
+  /**
+   * 从模型配置对象中提取容量字段（contextWindow / maxTokens）。
+   * 兼容用户手写 settings.yaml 时的字符串容量写法。
+   * @param {object} m - 模型项
+   * @returns {{contextWindow?: number, maxTokens?: number}}
+   * @private
+   */
+  _extractModelCapacity(m) {
+    const out = {};
+    if (!m || typeof m !== 'object') return out;
+    const ctx = DSHConfig.normalizeModelCapacity(m.contextWindow);
+    const maxTok = DSHConfig.normalizeModelCapacity(m.maxTokens);
+    if (ctx) out.contextWindow = ctx;
+    if (maxTok) out.maxTokens = maxTok;
+    return out;
+  }
+
+  /**
+   * 写回 settings 时保护历史明文密钥不被「静默删除」。
+   *
+   * 渲染层拿到的 settings 已脱敏（不含 apiKey 明文），若用户仅做其他修改后保存，
+   * 原本存在于磁盘的 `settings.llm.<name>.apiKey` 会因不在入参中而被抹除。
+   * 此处对「入参存在该 provider、既无 apiKey 也无 apiKeyEnv」的条目，从磁盘回填
+   * 原明文，保证不丢密钥；已迁移（有 apiKeyEnv）或用户填了新 key 的条目不受影响。
+   * @param {object} config - 待写入的 settings
+   * @returns {object}
+   * @private
+   */
+  _preserveLegacyPlainKeysOnWrite(config) {
+    try {
+      if (!config || typeof config !== 'object') return config;
+      if (!existsSync(this.configPath)) return config;
+      const disk = this._parseYAML(readFileSync(this.configPath, 'utf-8'));
+      if (!disk || typeof disk !== 'object') return config;
+
+      // 通用回填：same path 下磁盘有明文 apiKey、入参既无 apiKey 也无 apiKeyEnv → 回填
+      const restore = (incoming, diskMap, label) => {
+        if (!incoming || typeof incoming !== 'object' || !diskMap || typeof diskMap !== 'object') return;
+        for (const [name, conf] of Object.entries(incoming)) {
+          const diskConf = diskMap[name];
+          if (!conf || typeof conf !== 'object' || !diskConf || typeof diskConf !== 'object') continue;
+          const diskKey = typeof diskConf.apiKey === 'string' ? diskConf.apiKey.trim() : '';
+          const hasKey = typeof conf.apiKey === 'string' && conf.apiKey.trim();
+          const hasEnv = typeof conf.apiKeyEnv === 'string' && conf.apiKeyEnv.trim();
+          if (diskKey && !hasKey && !hasEnv) {
+            conf.apiKey = diskKey;
+            console.warn('[dsh-manager] 已从磁盘回填历史明文密钥（' + label + '.' + name + '），避免保存时丢失');
+          }
+        }
+      };
+
+      // 历史格式：settings.llm.<name>.apiKey
+      restore(config.llm, disk.llm, 'llm');
+
+      // 官方格式：settings.llm-<adapter>.providers.<name>.apiKey
+      for (const [key, value] of Object.entries(config)) {
+        if (!/^llm-/.test(key) || !value || typeof value !== 'object') continue;
+        const diskSection = disk[key];
+        restore(value.providers, diskSection && diskSection.providers, key + '.providers');
+      }
+    } catch (e) {
+      console.warn('[dsh-manager] _preserveLegacyPlainKeysOnWrite:', e?.message);
+    }
+    return config;
+  }
+
+  /**
+   * 剥离「仅供渲染层展示」的状态位（如 sanitizeSettingsForRenderer 注入的
+   * apiKeyConfigured），避免 UI 把状态标记回写进 settings.yaml 污染配置。
+   * @param {any} node
+   * @returns {any}
+   * @private
+   */
+  _stripRendererOnlyFields(node) {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) {
+      node.forEach((item) => this._stripRendererOnlyFields(item));
+      return node;
+    }
+    if (typeof node.apiKeyConfigured !== 'undefined') delete node.apiKeyConfigured;
+    for (const value of Object.values(node)) {
+      if (value && typeof value === 'object') this._stripRendererOnlyFields(value);
+    }
+    return node;
+  }
+
+  /**
+   * 生成「可安全下发到渲染进程」的 settings 副本：把历史遗留的明文密钥字段
+   * （`settings.llm.<name>.apiKey`、`llm-*.providers.<name>.apiKey`）替换为布尔
+   * 状态位 `apiKeyConfigured`，明文一律不出主进程。
+   * 不修改入参，返回深拷贝。
+   * @param {object} settings - settings.yaml 解析结果
+   * @returns {object} 脱敏后的副本
+   */
+  static sanitizeSettingsForRenderer(settings) {
+    if (!settings || typeof settings !== 'object') return settings;
+    const clone = JSON.parse(JSON.stringify(settings));
+    const scrub = (container) => {
+      if (!container || typeof container !== 'object') return;
+      for (const conf of Object.values(container)) {
+        if (conf && typeof conf === 'object' && typeof conf.apiKey === 'string' && conf.apiKey.trim()) {
+          conf.apiKeyConfigured = true;
+          delete conf.apiKey;
+        }
+      }
+    };
+    scrub(clone.llm);
+    for (const [key, value] of Object.entries(clone)) {
+      if (/^llm-/.test(key) && value && typeof value === 'object') {
+        scrub(value.providers);
+      }
+    }
+    return clone;
+  }
+
+  /**
+   * 描述凭据文件状态（只暴露「引用名 + 是否已配置」，绝不返回明文值）。
+   * 供 IPC `config:get-all` 使用，避免把明文密钥下发到渲染进程。
+   * @returns {Promise<{refs: object, records: object, count: number}>}
+   */
+  async describeCredentials() {
+    const refs = {};
+    const records = {};
+    if (!existsSync(this.credPath)) return { refs, records, count: 0 };
+    let flat = {};
+    try {
+      flat = this._parseCredentials(readFileSync(this.credPath, 'utf-8'));
+    } catch (e) {
+      return { refs, records, count: 0 };
+    }
+    const recordKeys = new Set(Array.isArray(flat.__recordKeys) ? flat.__recordKeys : []);
+    for (const k of Object.keys(flat)) {
+      const entry = { configured: true };
+      if (recordKeys.has(k)) records[k] = entry;
+      else refs[k] = entry;
+    }
+    return { refs, records, count: Object.keys(flat).length };
+  }
+
   async saveLLMProvider(name, config, adapter) {
     if (!name || !config) throw new DSHError(DSHErrorCodes.INVALID_PARAMS, "名称和配置不能为空");
     // 先迁移历史错误命名空间（llm-openai-compatible 等 DSH 不读的段）到 llm-pi-ai
     try { await this.migrateLLMProviders(); } catch (migErr) { console.warn('[dsh-manager] migrateLLMProviders:', migErr?.message); }
     const { settings, credentials } = await this.read();
+
+    // —— 历史格式清理：settings.llm.<name> = { provider, model, apiKey(明文), baseUrl } ——
+    // 该段是 Manager 旧格式：DSH alpha4 不读取，且其中 apiKey 为明文密钥（长期落盘有泄露风险）。
+    // 保存同名提供商时，把明文密钥迁移进凭据文件（生成引用名）并删除该条目，
+    // 保证「保存即生效」且磁盘上不再残留明文；若本次已显式提交新 key/引用名，则以新值为准。
+    let legacyPlainKey = '';
+    let legacyRef = '';
+    if (settings.llm && typeof settings.llm === 'object' && settings.llm[name] && typeof settings.llm[name] === 'object') {
+      const legacy = settings.llm[name];
+      if (typeof legacy.apiKey === 'string' && legacy.apiKey.trim()) legacyPlainKey = legacy.apiKey.trim();
+      if (typeof legacy.apiKeyEnv === 'string' && legacy.apiKeyEnv.trim()) legacyRef = legacy.apiKeyEnv.trim();
+      delete settings.llm[name];
+      if (Object.keys(settings.llm).length === 0) delete settings.llm;
+    }
+
     // DSH alpha4 只有 llm-pi-ai（通用多 provider）/ llm-deepseek（平铺单段）两个真 adapter；
     // Manager 的「提供商类型」全部归一化为 pi-ai，避免写出 DSH 永不读取的命名空间
     const providerType = String(adapter || config.provider || 'pi-ai').toLowerCase();
@@ -788,21 +994,29 @@ export class DSHConfig {
     if (!settings[llmKey].providers) settings[llmKey].providers = {};
 
     // —— 密钥解析：只允许「引用名」进入 settings，明文一律进凭据文件 ——
+    // 优先级：显式提交的新明文 key > env: 引用 > apiKeyEnv 引用 > 历史明文迁移 > 历史引用。
+    // 注意：编辑态表单会带回旧引用名（apiKeyEnv），若用户同时输入了新 key，
+    // 必须让新 key 覆盖旧引用，否则「重输新 key 保存即生效」会失效。
     let apiKeyEnv = "";
-    if (config.apiKeyEnv) {
-      // 显式环境变量引用：env:XXX 或裸 XXX
-      apiKeyEnv = String(config.apiKeyEnv).replace(/^env:\s*/i, '').trim();
-    } else if (config.apiKey) {
-      const rawKey = String(config.apiKey).trim();
-      if (rawKey.startsWith('env:')) {
-        // 前端以 env:XXX 形式提交 → 环境变量引用
-        apiKeyEnv = rawKey.slice(4).trim();
-      } else if (rawKey) {
-        // 明文密钥 → 生成稳定引用名并写入凭据文件
-        apiKeyEnv = this._credentialKeyFor(name);
-        credentials[apiKeyEnv] = rawKey;
-        await this.write(credentials, 'credentials');
-      }
+    const rawApiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
+    const normRef = (v) => String(v == null ? '' : v).replace(/^env:\s*/i, '').trim();
+    if (rawApiKey && /^env:/i.test(rawApiKey)) {
+      // 前端以 env:XXX 形式提交 → 环境变量引用
+      apiKeyEnv = normRef(rawApiKey);
+    } else if (rawApiKey) {
+      // 明文密钥 → 复用既有引用名（编辑覆盖）或生成稳定引用名，写入凭据文件
+      apiKeyEnv = normRef(config.apiKeyEnv) || this._credentialKeyFor(name);
+      credentials[apiKeyEnv] = rawApiKey;
+      await this.write(credentials, 'credentials');
+    } else if (config.apiKeyEnv) {
+      apiKeyEnv = normRef(config.apiKeyEnv);
+    } else if (legacyPlainKey) {
+      // 本次未提交新密钥，但历史条目存有明文 → 迁移到凭据文件，避免明文继续落盘
+      apiKeyEnv = legacyRef || this._credentialKeyFor(name);
+      credentials[apiKeyEnv] = legacyPlainKey;
+      await this.write(credentials, 'credentials');
+    } else if (legacyRef) {
+      apiKeyEnv = legacyRef;
     }
     if (!apiKeyEnv && !config.apiKey) {
       // 无密钥提供商（如本地 ollama）允许 apiKeyEnv 为空
@@ -830,10 +1044,12 @@ export class DSHConfig {
               const valid = input.map(x => String(x).trim()).filter(x => x === 'text' || x === 'image');
               if (valid.length > 0) out.input = valid;
             }
+            // 上下文窗口 / 最大输出 token（正整数；非法值不写入，避免 DSH 拒绝该模型）
+            Object.assign(out, this._extractModelCapacity(m));
           }
           return out;
         }).filter(Boolean)
-      : [{ id: String(config.model || 'gpt-4o').trim() }];
+      : [{ id: String(config.model || 'gpt-4o').trim(), ...this._extractModelCapacity(config) }];
     const providerConfig = {
       api: LLM_API_MAP[providerType] || "openai-completions",
       baseURL,
@@ -908,6 +1124,9 @@ export class DSHConfig {
             const declared = Array.isArray(m.input) ? m.input.map(x => String(x).trim()).filter(x => x === 'text' || x === 'image') : [];
             if (declared.length > 0) out.input = declared;
             else if (DSHConfig.isVisionModelName(id)) out.input = ['text', 'image'];
+            // 保留上下文窗口 / 最大输出 token（归一化为正整数；非法值剔除，
+            // 否则 dsh-llm-pi-ai 会因非法 modelProfile 字段拒绝该模型）
+            Object.assign(out, this._extractModelCapacity(m));
           }
           return out;
         }).filter(Boolean);
@@ -974,6 +1193,8 @@ export class DSHConfig {
           if (!id) return null;
           const out = { id };
           if (m && typeof m === 'object' && m.name) out.name = String(m.name);
+          // 同步保留容量字段（用户可能在官方 llm-deepseek 段配置）
+          if (m && typeof m === 'object') Object.assign(out, this._extractModelCapacity(m));
           return out;
         }).filter(Boolean);
         ds.models = cleanedModels;

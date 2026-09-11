@@ -225,11 +225,16 @@ function captureDSHWebUrl(child, port) {
       if (m) {
         const url = m[1].trim().replace(/[)\]]+$/, '');
         // 只接受本机回环地址（带 token），防止误取 LAN URL
-        if (/^https?:\/\/127\.0\.0\.1(?:\:\d+)?\//.test(url) && url.includes('token=')) {
+        if (/^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\//.test(url) && url.includes('token=')) {
           lastWebTokenUrl = url;
           // 持久化到 ~/.dsh/manager/dsh-web-url.json：Manager 重启后 DSH 仍在运行时，
           // 能恢复带 token 的 URL 并连接已运行实例（否则裸 URL 401，只能网页访问）
           persistWebUrlState(port, url);
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            // 官方契约：客户端必须使用打印的带 token URL，捕获到后立即推送渲染进程刷新 webview
+            win.webContents.send('dsh:web-url-captured', { url, port });
+          }
           writeLog('info', '捕获 DSH web 鉴权 URL: ' + url.replace(/token=\S+/, 'token=***'));
         }
       }
@@ -1564,8 +1569,11 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await manager.disable(pluginId);
   });
 
-  // 更新单个插件（真实重装覆盖；installer.update 复用 install 流程）
-  ipcMain.handle('marketplace:update-plugin', async (_, pluginId) => {
+  // 更新单个插件
+  // installer.update 内部流程 = ① 前置版本校验（checkPluginUpdate）② 版本未变直接回报
+  // 「已是最新」③ 有更新按目标版本精确重装 ④ 回读磁盘 node_modules 版本做真值断言。
+  // options.force = true 可跳过「已是最新」短路，强制重装（供 UI 强制更新入口使用）。
+  ipcMain.handle('marketplace:update-plugin', async (_, pluginId, options = {}) => {
     const { PluginInstaller } = await loadMarketplace();
     const win = getMainWindow();
     const installer = new PluginInstaller({
@@ -1576,7 +1584,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       },
     });
     try {
-      return await installer.update(pluginId);
+      return await installer.update(pluginId, options || {});
     } catch (error) {
       const detail = error?.stderr ? `\n${String(error.stderr).trim().slice(0, 500)}` : '';
       throw new Error(`${error?.message || '插件更新失败'}${detail}`);
@@ -1629,10 +1637,22 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   });
 
   // ====== 配置 ======
+  // 安全约束：凭据文件中的明文密钥【绝不下发】到渲染进程。
+  // 渲染层只需要知道「某引用名是否已配置」，真实值一律由主进程内部按引用名读取。
   ipcMain.handle('config:get-all', async () => {
     const { DSHConfig } = await loadCore();
     const config = new DSHConfig();
-    return await config.read();
+    const { settings } = await config.read();
+    let credentials = { refs: {}, records: {}, count: 0 };
+    try {
+      credentials = await config.describeCredentials();
+    } catch (e) {
+      console.warn('[dsh-manager] describeCredentials:', e?.message);
+    }
+    // 二次防护：settings 内若残留 legacy 明文密钥（settings.llm.<name>.apiKey、
+    // llm-*.providers.<name>.apiKey），一律替换为布尔状态位后再下发，明文不出主进程。
+    const safeSettings = DSHConfig.sanitizeSettingsForRenderer(settings);
+    return { settings: safeSettings, credentials };
   });
 
   ipcMain.handle('config:get', async (_, key) => {
@@ -1856,7 +1876,20 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   });
 
   // ====== LLM 模型获取 ======
-  ipcMain.handle('llm:fetch-models', async (_, provider, baseUrl, apiKey) => {
+  ipcMain.handle('llm:fetch-models', async (_, provider, baseUrl, apiKey, credRef) => {
+    // 密钥不回显：编辑已配置提供商时前端不再回填明文，此处按引用名从凭据文件解析（仅主进程内使用，不回传渲染层）
+    let effectiveKey = typeof apiKey === 'string' ? apiKey.trim() : '';
+    if (!effectiveKey && credRef) {
+      try {
+        const { getConfig } = await loadCore();
+        const cfg = getConfig();
+        const { credentials } = await cfg.read();
+        const ref = String(credRef).replace(/^env:\s*/i, '').trim();
+        const stored = credentials && credentials[ref];
+        if (typeof stored === 'string' && stored) effectiveKey = stored;
+      } catch (e) { /* 解析失败则按无密钥处理，由下方逻辑给出提示 */ }
+    }
+    const apiKeyResolved = effectiveKey;
     const defaults = {
       openai: 'https://api.openai.com/v1',
       deepseek: 'https://api.deepseek.com/v1',
@@ -1894,7 +1927,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     for (const url of candidates) {
       try {
         const resp = await fetch(url, {
-          headers: { 'Authorization': 'Bearer ' + (apiKey || ''), 'Accept': 'application/json' },
+          headers: { 'Authorization': 'Bearer ' + (apiKeyResolved || ''), 'Accept': 'application/json' },
           signal: AbortSignal.timeout(15000),
         });
         if (!resp.ok) { lastErr = 'HTTP ' + resp.status + ' ' + resp.statusText + '（' + url + '）'; continue; }
@@ -2637,5 +2670,56 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       external: isExternalPlugin(name),
       category: classifyPackage(name),
     };
+  });
+
+  // ====== 模型配置中心（Model Config Center，类似 cc-switch） ======
+  ipcMain.handle('mcc:list-profiles', async () => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().listProfiles();
+  });
+
+  ipcMain.handle('mcc:get-profile', async (_, id) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().getProfile(id);
+  });
+
+  ipcMain.handle('mcc:save-profile', async (_, input) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().saveProfile(input || {});
+  });
+
+  ipcMain.handle('mcc:delete-profile', async (_, id) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().deleteProfile(id);
+  });
+
+  ipcMain.handle('mcc:list-tools', async () => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().listTools();
+  });
+
+  ipcMain.handle('mcc:apply', async (_, profileId, toolIds) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().apply(profileId, toolIds || []);
+  });
+
+  ipcMain.handle('mcc:revert', async (_, toolId) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().revert(toolId);
+  });
+
+  ipcMain.handle('mcc:list-backups', async (_, toolId) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().listBackups(toolId);
+  });
+
+  ipcMain.handle('mcc:export', async () => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().exportProfiles();
+  });
+
+  ipcMain.handle('mcc:import', async (_, jsonText) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().importProfiles(jsonText);
   });
 }

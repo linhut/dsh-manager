@@ -16,12 +16,15 @@
  * 6. CSS integrity (no broken comments)
  * 7. Renderer page contracts (all pages exist)
  * 8. Module files exist and are syntax-valid
+ * 9. Bundled resource integrity (extraResources 源码侧存在性 + dist 产物侧真实存在，
+ *    含 dsh-skills 子模块非空校验，避免「53 项全绿却漏掉 dsh-skills 缺失」)
  */
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { collectExtraResourceChecks } from './lib/packaged-resources.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -162,18 +165,18 @@ if (css.ok) {
 console.log('\n--- 7. Renderer Page Contracts ---');
 const html = readFile('src/index.html');
 if (html.ok) {
-  for (const page of ['dashboard', 'install', 'plugins', 'skills', 'versions', 'settings', 'prompts', 'about']) {
+  for (const page of ['dashboard', 'install', 'plugins', 'skills', 'versions', 'settings', 'modelconfig', 'prompts', 'about']) {
     check(`Page div exists: ${page}`, html.content.includes(`id="page-${page}"`));
   }
   // Check all module scripts are loaded
-  for (const mod of ['state.js', 'utils.js', 'debug.js', 'theme.js', 'dsh-status.js', 'dsh-control.js']) {
+  for (const mod of ['state.js', 'utils.js', 'debug.js', 'theme.js', 'dsh-status.js', 'dsh-control.js', 'model-config.js']) {
     check(`Module loaded: ${mod}`, html.content.includes(`modules/${mod}`));
   }
 }
 
 // 8) Module files
 console.log('\n--- 8. Module Files ---');
-const modules = ['state.js', 'utils.js', 'debug.js', 'theme.js', 'dsh-status.js', 'dsh-control.js'];
+const modules = ['state.js', 'utils.js', 'debug.js', 'theme.js', 'dsh-status.js', 'dsh-control.js', 'model-config.js'];
 for (const m of modules) {
   const path = `src/assets/js/modules/${m}`;
   if (existsSync(req(path))) {
@@ -182,6 +185,20 @@ for (const m of modules) {
   } else {
     check(`Module exists: ${m}`, false, 'file not found');
   }
+}
+
+// 9) Bundled Resource Integrity（extraResources：源码侧 + dist 产物侧）
+console.log('\n--- 9. Bundled Resource Integrity ---');
+try {
+  const resourceReport = collectExtraResourceChecks(root);
+  for (const p of resourceReport.passes) check(p, true);
+  for (const f of resourceReport.failures) check(f, false);
+  for (const n of resourceReport.notes) console.log(`ℹ️  ${n}`);
+  if (resourceReport.failures.length > 0 && resourceReport.packagedDirs.length > 0) {
+    console.log('ℹ️  产物侧缺失的修复方式：先 git submodule update --init --recursive，再重新构建（npm run build:win / build:linux / build:mac）');
+  }
+} catch (e) {
+  check('Bundled resource integrity', false, e.message || String(e));
 }
 
 // Summary

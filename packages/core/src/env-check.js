@@ -9,6 +9,7 @@ import { execa } from 'execa';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { DSH_PATHS, buildCommandEnv } from './dsh-utils.js';
+import { MIN_NODE_VERSION, meetsMinNodeVersion, getNodeUpgradeHint } from './node-requirement.js';
 
 /**
  * 内部：检测命令是否可用（checkNode/checkNpm 共用）
@@ -168,11 +169,11 @@ export async function requireNodeAndNpm(operation = '执行此操作') {
       '未检测到 Node.js，请先安装 Node.js（含 npm）后再' + operation + '\n\n安装命令: ' + guide + '\n\n安装完成后重启 DSH Manager 即可。'
     );
   }
-  // 校验最低版本（readdirSync recursive 需要 Node 20.1+）
-  const nodeVer = (node.version || '').replace(/^v/, '').split('.').map(Number);
-  if (nodeVer[0] < 20 || (nodeVer[0] === 20 && nodeVer[1] < 1)) {
+  // 校验最低版本：与 capability-router / install.ps1 统一，门槛单一真源见 node-requirement.js
+  // （DSH 的 profile 插件加载器要求 Node >= 22，便携版 Node 亦为 v22.x）
+  if (!meetsMinNodeVersion(node.version)) {
     throw new Error(
-      'Node.js 版本过低（' + node.version + '），需要 >= 20.1。请升级 Node.js 后再' + operation + '\n\n升级命令: 前往 https://nodejs.org 下载 LTS 版本'
+      'Node.js 版本过低（' + node.version + '），需要 >= ' + MIN_NODE_VERSION + '。' + getNodeUpgradeHint() + ' 后再' + operation
     );
   }
   if (!npm.installed) {

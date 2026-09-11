@@ -27,7 +27,7 @@
 //   - 状态记录：~/.dsh/manager/bundled-content.json 保存上次同步结果
 //     （时间戳 + 各技能指纹），供启动校验与 UI 展示。
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, cpSync, rmSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +100,35 @@ function fileFingerprint(p) {
     const buf = readFileSync(p);
     return createHash('md5').update(buf).digest('hex');
   } catch { return null; }
+}
+
+/**
+ * 计算整个目录树的内容指纹（相对路径 + 各文件内容 MD5，排序后聚合）。
+ * 用于判断「内置插件源」与「已安装副本」的内容是否一致：
+ * 内容变化即需要覆盖更新，与文件 mtime 无关。目录为空返回 null。
+ * @param {string} root
+ * @returns {string|null}
+ */
+function treeFingerprint(root) {
+  const entries = [];
+  const walk = (dir, rel) => {
+    let items;
+    try { items = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of items) {
+      if (IGNORE_DIRS.has(e.name)) continue;
+      const abs = join(dir, e.name);
+      const r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) walk(abs, r);
+      else if (e.isFile()) {
+        const fp = fileFingerprint(abs);
+        if (fp) entries.push(r + ':' + fp);
+      }
+    }
+  };
+  walk(root, '');
+  if (!entries.length) return null;
+  entries.sort();
+  return createHash('md5').update(entries.join('\n') + '\n').digest('hex');
 }
 
 /** 读取同步状态 */
@@ -302,32 +331,64 @@ export async function installDshSkillsPlugin(profile) {
 
   const profileDir = join(DSH_PATHS.profiles, profile);
   const pkgFile = join(profileDir, 'package.json');
-  const nmTarget = join(profileDir, 'node_modules', 'dsh-skills');
+  const nmDir = join(profileDir, 'node_modules');
+  const nmTarget = join(nmDir, 'dsh-skills');
 
-  // 已安装判定：node_modules 有包 且 bundles 已登记
-  let already = existsSync(join(nmTarget, 'package.json')) && existsSync(join(nmTarget, 'index.js'));
-  if (already && existsSync(pkgFile)) {
+  // 内置源的内容指纹（与文件 mtime 无关）
+  const sourceFp = treeFingerprint(pluginRoot);
+  const state = readState();
+
+  // 已安装判定 ①：node_modules 有包 且 bundles 已登记
+  const installedOk = existsSync(join(nmTarget, 'package.json')) && existsSync(join(nmTarget, 'index.js'));
+  let bundlesOk = false;
+  if (installedOk && existsSync(pkgFile)) {
     try {
       const manifest = JSON.parse(readFileSync(pkgFile, 'utf-8'));
       const bundles = manifest && manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
-      already = bundles.includes('dsh-skills');
-    } catch { already = false; }
-  }
-  if (already) return { success: true, already: true, method: 'already-installed' };
-
-  // 复制插件本体（排除 .git）
-  try {
-    mkdirSync(profileDir, { recursive: true });
-    mkdirSync(dirname(nmTarget), { recursive: true });
-    if (existsSync(nmTarget)) rmSync(nmTarget, { recursive: true, force: true });
-    copyTree(pluginRoot, nmTarget);
-  } catch (e) {
-    return { success: false, error: '复制 dsh-skills 插件失败: ' + (e.message || e) };
+      bundlesOk = bundles.includes('dsh-skills');
+    } catch { bundlesOk = false; }
   }
 
-  // 登记 bundles（读改写 profile package.json，带备份）
+  // 已安装判定 ②：内容指纹比对 —— 内置源与已装副本内容一致才视为已安装。
+  // 必须实算「已装副本」的树指纹再与内置源比对：副本被改动/损坏、或内置源升级（内容变化）
+  // 都会判定为需要覆盖更新；不可只依据 state 记录的上次源指纹，否则副本被改也会被误判为 already。
+  let contentSame = false;
+  if (installedOk && bundlesOk && sourceFp) {
+    contentSame = treeFingerprint(nmTarget) === sourceFp;
+  }
+  if (installedOk && bundlesOk && contentSame) {
+    return { success: true, already: true, method: 'already-installed' };
+  }
+
+  // 复制插件本体（排除 .git）：先复制到暂存目录，再整体切换（tmp → rename），
+  // 避免中途失败/进程被杀留下半成品副本；失败时回滚旧副本。
+  if (!installedOk || !contentSame) {
+    const stamp = Date.now();
+    const staging = join(nmDir, '.dsh-skills.staging-' + stamp);
+    const backup = join(nmDir, '.dsh-skills.backup-' + stamp);
+    try {
+      mkdirSync(nmDir, { recursive: true });
+      if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });
+      copyTree(pluginRoot, staging);
+      if (existsSync(nmTarget)) renameSync(nmTarget, backup);
+      try {
+        renameSync(staging, nmTarget);
+      } catch (swapErr) {
+        // 切换失败：回滚旧副本，保证不出现「新没装上、旧也没了」
+        try { if (existsSync(backup) && !existsSync(nmTarget)) renameSync(backup, nmTarget); } catch { /* 忽略 */ }
+        throw swapErr;
+      }
+      if (existsSync(backup)) rmSync(backup, { recursive: true, force: true });
+    } catch (e) {
+      try { if (existsSync(staging)) rmSync(staging, { recursive: true, force: true }); } catch { /* 忽略 */ }
+      return { success: false, error: '复制 dsh-skills 插件失败: ' + (e.message || e) };
+    }
+  }
+
+  // 登记 bundles（读改写 profile package.json，带备份 + 原子替换）
   try {
     if (!existsSync(pkgFile)) {
+      mkdirSync(profileDir, { recursive: true });
       writeFileSync(pkgFile, JSON.stringify({ name: 'dsh-profile-' + profile, private: true, dependencies: {}, dsh: { profile: { bundles: [] } } }, null, 2) + '\n', 'utf-8');
     }
     const manifest = JSON.parse(readFileSync(pkgFile, 'utf-8'));
@@ -337,24 +398,38 @@ export async function installDshSkillsPlugin(profile) {
     if (!manifest.dsh.profile.bundles.includes('dsh-skills')) {
       manifest.dsh.profile.bundles.push('dsh-skills');
     }
-    // dependencies 记录（link 到 node_modules 内副本）
-    if (!manifest.dependencies) manifest.dependencies = {};
-    if (!manifest.dependencies['dsh-skills']) {
-      manifest.dependencies['dsh-skills'] = 'file:' + nmTarget.replace(/\\/g, '/');
+    // 清理历史遗留的非标准依赖记录：早期版本写入 dependencies['dsh-skills'] = 'file:<绝对路径>'，
+    // 绝对路径不可移植（换机/换目录即失效），且非 npm 规范写法，属于错误来源。
+    // 插件由 node_modules 副本 + dsh.profile.bundles 登记共同生效，无需该条依赖。
+    if (manifest.dependencies && typeof manifest.dependencies['dsh-skills'] === 'string') {
+      const dep = manifest.dependencies['dsh-skills'];
+      if (dep.startsWith('file:') || dep.includes('node_modules/dsh-skills')) {
+        delete manifest.dependencies['dsh-skills'];
+      }
     }
-    // 备份后原子写
+    // 备份后原子写（tmp → rename，避免写一半导致 profile manifest 损坏）
     const bk = pkgFile + '.bak-' + Date.now();
     try { cpSync(pkgFile, bk); } catch { /* 备份失败不阻断 */ }
     const tmp = pkgFile + '.tmp-' + Date.now();
     writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
-    rmSync(pkgFile, { force: true });
-    writeFileSync(pkgFile, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
-    try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
+    try {
+      renameSync(tmp, pkgFile);
+    } catch (renameErr) {
+      // rename 失败（如目标被其他进程占用）→ 退回直接写入，保证登记不丢
+      console.warn('[dsh-manager] profile manifest 原子替换失败，退回直接写入:', renameErr?.message || renameErr);
+      writeFileSync(pkgFile, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+      try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
+    }
   } catch (e) {
     return { success: false, error: '登记 dsh-skills bundle 失败: ' + (e.message || e) };
   }
 
-  return { success: true, already: false, method: 'copied+bundles' };
+  // 记录本次安装的内容指纹（下次启动走快速路径，内容未变即跳过）
+  if (!state.plugins) state.plugins = {};
+  state.plugins['dsh-skills'] = { fingerprint: sourceFp, syncedAt: new Date().toISOString() };
+  writeState(state);
+
+  return { success: true, already: false, method: (installedOk ? 'updated' : 'copied') + '+bundles' };
 }
 
 /**
