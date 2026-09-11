@@ -30,6 +30,20 @@ initDebugLog(isDebug);
 let mainWindow = null;
 let dshWebView = null;
 
+// 单实例锁：防止多开实例互相占用 userData/GPUCache（"Unable to move the cache 0x5" 的诱因之一），
+// 重复启动时聚焦已有窗口而非新建实例
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 /**
  * 获取当前主题对应的窗口背景色
  */
@@ -181,6 +195,21 @@ process.on('uncaughtException', (error) => {
 process.on('unhandledRejection', (reason) => {
   writeLog('error', '主进程未处理 Promise 拒绝: ' + (reason?.stack || reason?.message || reason));
 });
+
+// ====== GPU 启动失败自动回退：无 GPU / 远程会话语境下自动以 --disable-gpu 重启一次 ======
+function relaunchedWithoutGpu() { return process.argv.includes('--disable-gpu'); }
+app.on('child-process-gone', (event, details) => {
+  if (!details || details.type !== 'GPU') return;
+  writeLog('warn', '[GPU 回退] GPU 进程异常: reason=' + (details.reason || 'unknown') + ' exitCode=' + (details.exitCode ?? '-'));
+  if (relaunchedWithoutGpu()) {
+    writeLog('warn', '[GPU 回退] 已处于 --disable-gpu 模式，不再重启；若仍失败说明该环境不支持硬件加速');
+    return;
+  }
+  writeLog('info', '[GPU 回退] 检测到 GPU 进程不可用，自动以 --disable-gpu 重启应用（一次，防重入）');
+  app.relaunch({ args: process.argv.slice(1).concat('--disable-gpu') });
+  app.exit(0);
+});
+
 app.on('web-contents-created', (event, contents) => {
   contents.on('console-message', (event, level, message, line, sourceId) => {
     const levelNames = ['verbose', 'info', 'warning', 'error'];
