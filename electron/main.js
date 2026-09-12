@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { initDebugLog, writeLog, isDebugEnabled } from './debug-logger.js';
-import { autoUpdater } from 'electron-updater';
+import electronUpdaterPkg from 'electron-updater';
+const { autoUpdater } = electronUpdaterPkg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
