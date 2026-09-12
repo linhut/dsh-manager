@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { registerIpcHandlers } from './ipc-handlers.js';
 import { initDebugLog, writeLog, isDebugEnabled } from './debug-logger.js';
+import { autoUpdater } from 'electron-updater';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -231,10 +232,45 @@ app.on('web-contents-created', (event, contents) => {
   });
 });
 
+// ====== 自动更新（打包运行时启用：静默下载 + 完成后提示重启安装） ======
+function initAutoUpdater() {
+  if (isDev) return; // 开发模式不检查更新
+  try {
+    // 后台静默下载，完成后提示用户重启安装
+    autoUpdater.autoDownload = true;
+    autoUpdater.on('update-downloaded', (info) => {
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+      dialog
+        .showMessageBox(win, {
+          type: 'info',
+          title: '发现新版本',
+          message: `DSH Manager ${info.version} 已下载完成`,
+          detail: '是否立即重启并安装更新？',
+          buttons: ['立即重启', '稍后'],
+          defaultId: 0,
+          cancelId: 1,
+        })
+        .then(({ response }) => {
+          if (response === 0) autoUpdater.quitAndInstall(false, true);
+        })
+        .catch(() => {});
+    });
+    // 检查失败静默：无网络 / 无 app-update.yml（dev 构建）等场景不打扰用户
+    autoUpdater.on('error', () => {});
+    // 启动 10s 后首次检查，此后每 4 小时检查一次
+    const check = () => autoUpdater.checkForUpdates().catch(() => {});
+    setTimeout(check, 10_000);
+    setInterval(check, 4 * 60 * 60 * 1000);
+  } catch {
+    // 非打包 / 未配置自动更新时静默跳过
+  }
+}
+
 // ====== 应用生命周期 ======
 
 app.whenReady().then(async () => {
   createAppMenu();
+  initAutoUpdater();
   // 全局 IPC 日志：拦截 ipcMain.handle 包装所有处理器
   const origHandle = ipcMain.handle.bind(ipcMain);
   ipcMain.handle = (channel, handler) => {
