@@ -251,3 +251,86 @@ export async function stopProcessByPort(port = DSH_WEB_PORT) {
     return { success: false, pid: info.pid, message: `结束进程失败: ${error.message}` };
   }
 }
+
+/**
+ * 判定进程名是否属于 DSH（Windows tasklist 进程名 / Unix lsof COMMAND 列）。
+ * @param {string|null} name
+ * @returns {boolean}
+ */
+export function isDSHProcessName(name) {
+  if (!name) return false;
+  const n = String(name).trim();
+  if (!n) return false;
+  return /^dsh([._-]?cli|[-_.]?web)?(\.exe)?$/i.test(n) || /(^|[\\/])dsh([._-]?cli)?([\\/.]|$)/i.test(n);
+}
+
+/**
+ * 枚举当前所有正在运行的 DSH 实例（跨平台，多实例检测 / 防双开 / 实例管理用）。
+ * 扫描范围：默认端口 3080 + preferredPort + extraPorts + 随机端口区间 [3100, 3999]
+ * （与 findAvailablePort 的随机探测范围一致，能发现历史遗留/手动启动的实例）。
+ * 判定：端口被监听即候选；健康可达、进程名匹配或属于管理器记录端口 → 视为 DSH 实例。
+ * @param {number} [preferredPort=3080] 管理器记录的上次实际端口
+ * @param {number[]} [extraPorts] 附加端口
+ * @returns {Promise<Array<{port:number,pid:number,processName:string,reachable:boolean,isDSH:boolean,url:string}>>}
+ */
+export async function listDSHInstances(preferredPort = DSH_WEB_PORT, extraPorts = []) {
+  const managed = new Set([DSH_WEB_PORT, preferredPort, ...(Array.isArray(extraPorts) ? extraPorts : [])].filter(p => Number.isInteger(p) && p > 0));
+  const candidates = []; // { port, pid, processName }
+  try {
+    if (process.platform === 'win32') {
+      const stdout = await getNetstatLines();
+      if (stdout) {
+        // tasklist 一次全量 → PID 映射进程名（避免逐 PID 查询）
+        const pidName = new Map();
+        try {
+          const { stdout: tl } = await execa('tasklist', ['/FO', 'CSV', '/NH'], { timeout: 15_000, reject: false, windowsHide: true });
+          for (const line of tl.split(/\r?\n/)) {
+            const m = line.match(/^"([^"]+)","(\d+)"/);
+            if (m) pidName.set(Number(m[2]), m[1]);
+          }
+        } catch { /* tasklist 失败时进程名为空，靠健康检查判定 */ }
+        for (const line of stdout.split(/\r?\n/)) {
+          if (!line.trim().toUpperCase().includes('LISTENING')) continue;
+          const parts = line.trim().split(/\s+/);
+          const addr = parts.find(x => x.includes(':'));
+          const pid = parts.length ? Number(parts[parts.length - 1]) : NaN;
+          if (!addr || !Number.isInteger(pid) || pid <= 0) continue;
+          const port = addr.includes(']') ? Number(addr.slice(addr.lastIndexOf(':') + 1)) : Number(addr.split(':').pop());
+          if (!Number.isInteger(port) || port <= 0) continue;
+          if (managed.has(port) || (port >= 3100 && port <= 3999)) {
+            candidates.push({ port, pid, processName: pidName.get(pid) || '' });
+          }
+        }
+      }
+    } else {
+      // Unix：lsof -i -P -n 一次全量（COMMAND PID ... TCP *:PORT (LISTEN)）
+      try {
+        const { stdout } = await execa('lsof', ['-i', '-P', '-n'], { timeout: 15_000, reject: false, windowsHide: true });
+        for (const line of stdout.split(/\r?\n/).slice(1)) {
+          if (!line.includes('(LISTEN)')) continue;
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[1] && /^\d+$/.test(parts[1]) ? Number(parts[1]) : NaN;
+          const name = parts[0] || '';
+          const pm = line.match(/:(\d+).*\(LISTEN\)/);
+          if (!Number.isInteger(pid) || !pm) continue;
+          const port = Number(pm[1]);
+          if (managed.has(port) || (port >= 3100 && port <= 3999)) {
+            candidates.push({ port, pid, processName: name });
+          }
+        }
+      } catch { /* lsof 缺失时返回空列表 */ }
+    }
+  } catch { /* 探测失败返回空列表 */ }
+  const instances = [];
+  for (const c of candidates) {
+    let reachable = false;
+    try {
+      const h = await testDSHHealth(c.port);
+      reachable = !!(h && h.reachable);
+    } catch { /* 占用但健康检查失败 */ }
+    const isDSH = reachable || isDSHProcessName(c.processName) || managed.has(c.port);
+    instances.push({ port: c.port, pid: c.pid, processName: c.processName, reachable, isDSH, url: `http://127.0.0.1:${c.port}` });
+  }
+  instances.sort((a, b) => a.port - b.port);
+  return instances;
+}

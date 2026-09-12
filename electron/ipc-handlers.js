@@ -522,6 +522,26 @@ async function spawnDSHWeb() {
     } catch (reuseErr) {
       writeLog('warn', '检测已运行 DSH 实例异常（继续按双开处理）: ' + (reuseErr?.message || reuseErr));
     }
+    // —— 首选端口占用但健康检查失败：全局扫描其他端口的健康 DSH 实例，有则复用，避免多实例同时运行 ——
+    try {
+      const { listDSHInstances } = await loadCore();
+      const instances = await listDSHInstances(preferredPort, []);
+      const healthy = instances.find(x => x.reachable && x.port !== preferredPort);
+      if (healthy) {
+        const webUrl = resolveWebUrl(healthy.port);
+        writeLog('info', '端口 ' + preferredPort + ' 不可达，但检测到 DSH 已在端口 ' + healthy.port + ' 健康运行，直接复用（避免多实例）');
+        if (!/token=/.test(webUrl)) {
+          const persisted = await loadPersistedWebUrlState();
+          if (persisted && persisted.port === healthy.port) {
+            __restoredWebUrl = persisted.url;
+            lastWebTokenUrl = persisted.url;
+          }
+        }
+        return { reuse: true, actualPort: healthy.port, preferredPort, portResult, webUrl };
+      }
+    } catch (scanErr) {
+      writeLog('warn', '全局扫描已运行 DSH 实例异常（继续启动新实例）: ' + (scanErr?.message || scanErr));
+    }
   }
 
   const startArgs = ['web'];
@@ -761,6 +781,25 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:process-info', async () => {
     const { getDSHProcessInfo } = await loadCore();
     return await getDSHProcessInfo(lastActivePort);
+  });
+
+  // ====== DSH 实例管理（多实例检测 / 列表 / 停止，跨平台） ======
+  ipcMain.handle('dsh:list-instances', async () => {
+    const { listDSHInstances } = await loadCore();
+    try {
+      const instances = await listDSHInstances(lastActivePort, []);
+      return { success: true, instances, count: instances.length, activePort: lastActivePort };
+    } catch (err) {
+      return { success: false, error: err.message, instances: [], activePort: lastActivePort };
+    }
+  });
+
+  ipcMain.handle('dsh:stop-instance', async (_e, port) => {
+    const { stopProcessByPort } = await loadCore();
+    const p = Number(port) || 3080;
+    const r = await stopProcessByPort(p);
+    if (r.success && p === lastActivePort) lastActivePort = 3080; // 停止的是管理器记录端口，重置
+    return r;
   });
 
   // ====== Profile 管理 ======
@@ -1932,11 +1971,35 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         });
         if (!resp.ok) { lastErr = 'HTTP ' + resp.status + ' ' + resp.statusText + '（' + url + '）'; continue; }
         const data = await resp.json();
-        const models = (data.data || []).map(m => ({
-          id: m.id,
-          ownedBy: m.owned_by || '',
-          created: m.created ? new Date(m.created * 1000).toISOString() : '',
-        })).sort((a, b) => a.id.localeCompare(b.id));
+        const { DSHConfig } = await loadCore();
+        const models = (data.data || []).map(m => {
+          const meta = (m && typeof m === 'object') ? m : {};
+          // —— 能力类型 + 上下文能力识别：API 元数据字段优先，内置知名规格表兜底 ——
+          const num = (...keys) => {
+            for (const k of keys) {
+              const raw = meta[k];
+              if (raw === undefined || raw === null || raw === '') continue;
+              const val = Number(String(raw).replace(/[, ]/g, ''));
+              if (Number.isFinite(val) && val > 0) return Math.round(val);
+            }
+            return undefined;
+          };
+          const apiCtx = num('context_window', 'contextWindow', 'max_input_tokens', 'max_input', 'context_length');
+          const apiMax = num('max_output_tokens', 'max_tokens', 'max_output');
+          const spec = DSHConfig.lookupModelSpec(meta.id);
+          const caps = DSHConfig.detectModelCapabilities(meta.id, meta);
+          const contextWindow = apiCtx || (spec ? spec.contextWindow : undefined) || undefined;
+          const maxTokens = apiMax || (spec ? spec.maxTokens : undefined) || undefined;
+          return {
+            id: meta.id,
+            ownedBy: meta.owned_by || '',
+            created: meta.created ? new Date(meta.created * 1000).toISOString() : '',
+            capabilities: caps,
+            contextWindow,
+            maxTokens,
+            specSource: (apiCtx || apiMax) ? 'api' : (spec ? 'builtin' : ''),
+          };
+        }).sort((a, b) => a.id.localeCompare(b.id));
         return { success: true, models, count: models.length, sourceUrl: url };
       } catch (e) {
         lastErr = e.message + '（' + url + '）';

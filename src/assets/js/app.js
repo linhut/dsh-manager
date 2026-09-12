@@ -4824,6 +4824,18 @@ async function showLLMProviderForm(editName, editAdapter) {
               : (apiKeyEnv ? '<p class="form-hint" style="color:var(--text-secondary);">当前使用环境变量 <code>env:' + escapeHtml(apiKeyEnv) + '</code>，留空保持引用；填入新 Key 将写入凭据文件并更新引用</p>' : ''))}
         </div>
         <div class="form-group"><label class="form-label">API Base URL *</label><p class="form-hint" style="color:var(--warning);margin-top:4px;">必填：DSH pi-ai 适配器要求 baseURL 非空，否则会拒绝整段模型配置</p><input class="input" id="llm-baseurl" value="${baseUrl}" placeholder="例如: https://api.openai.com/v1"></div>
+        <div class="form-group" style="border-top:1px solid var(--border);padding-top:10px;">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="llm-sync-mcc" onchange="toggleMccSyncTools(this.checked)" style="width:14px;height:14px;"> 保存后同步为「模型配置中心」档案，一键应用到：
+          </label>
+          <div id="llm-sync-tools" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;opacity:.55;pointer-events:none;">
+            <label style="font-size:12px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="mcc-sync-tool" value="atomcode" disabled> AtomCode</label>
+            <label style="font-size:12px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="mcc-sync-tool" value="claude-code" disabled> Claude Code</label>
+            <label style="font-size:12px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="mcc-sync-tool" value="codex" disabled> Codex CLI</label>
+            <label style="font-size:12px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="mcc-sync-tool" value="workbuddy" disabled> WorkBuddy</label>
+          </div>
+          <p class="form-hint" style="margin-top:4px;">勾选后保存会同时把模型配置写入所选软件（不勾选任何工具则仅存为档案，可稍后在「模型配置中心」页应用）</p>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
@@ -4891,6 +4903,31 @@ async function saveLLMProvider() {
   }
   try {
     await window.dshManager.updateLLMProvider(name, providerConfig, adapter || undefined);
+    // —— 类似 cc-switch：同步为「模型配置中心」档案并一键应用到所选软件 ——
+    const syncEl = document.getElementById('llm-sync-mcc');
+    if (syncEl && syncEl.checked) {
+      try {
+        const tools = Array.from(document.querySelectorAll('.mcc-sync-tool:checked')).map(x => x.value);
+        const firstModel = (providerConfig.models && providerConfig.models[0]) || providerConfig;
+        const prof = await window.dshManager.saveModelProfile({
+          name,
+          baseUrl: providerConfig.baseUrl || '',
+          model,
+          apiKey: providerConfig.apiKey || '',
+          apiKeyEnv: providerConfig.apiKeyEnv || '',
+          contextWindow: firstModel.contextWindow || undefined,
+          maxTokens: firstModel.maxTokens || undefined,
+          supportsVision: (providerConfig.models || []).some(m => m.input && m.input.includes('image')) || isVisionModelName(model),
+          supportsToolCall: true,
+          vendor: provider,
+        });
+        if (prof && prof.id && tools.length > 0) {
+          await window.dshManager.applyModelProfile(prof.id, tools);
+        }
+      } catch (syncErr) {
+        showToast('LLM 提供商已保存，但同步到模型配置中心失败: ' + syncErr.message, 'error');
+      }
+    }
     // 统计已写入的容量字段，便于用户确认「上下文窗口 / 最大输出 token」是否已随之保存
     const capCount = (providerConfig.models || []).filter(m => m.contextWindow || m.maxTokens).length
       + ((providerConfig.contextWindow || providerConfig.maxTokens) ? 1 : 0);
@@ -4918,6 +4955,15 @@ function toggleApiKeyVisibility() {
   if (input) input.type = input.type === 'password' ? 'text' : 'password';
 }
 
+/** 「同步到模型配置中心」勾选时启用/禁用工具多选 */
+function toggleMccSyncTools(checked) {
+  const box = document.getElementById('llm-sync-tools');
+  if (!box) return;
+  box.style.opacity = checked ? '' : '.55';
+  box.style.pointerEvents = checked ? '' : 'none';
+  box.querySelectorAll('input.mcc-sync-tool').forEach(i => { i.disabled = !checked; });
+}
+
 // ====== LLM 模型获取 ======
 async function fetchLLMModels() {
   const provider = document.getElementById('llm-provider')?.value;
@@ -4935,9 +4981,13 @@ async function fetchLLMModels() {
     if (!result.models || !result.models.length) { showToast('未获取到任何模型', 'warning'); if (results) results.style.display = 'none'; return; }
     // 渲染复选框列表（默认不勾选，由用户多选；已选中的模型保持选中）
     renderModelCheckList(result.models, false);
-    showToast('获取到 ' + result.count + ' 个模型，勾选需要的模型后保存', 'success');
+    showToast('获取到 ' + result.count + ' 个模型（已识别能力类型与上下文，勾选需要的模型后保存）', 'success');
   } catch (e) { showToast('获取失败: ' + e.message, 'error'); }
 }
+
+/** 能力类型 → 中文标签（renderModelCheckList 能力徽章共用） */
+const CAP_LABELS = { semantic: '💬语义', vision: '🖼️识图', multimodal: '🌐多模态', code: '👨‍💻代码', image: '🎨生图', embedding: '🔗嵌入' };
+function capLabel(c) { return CAP_LABELS[c] || c; }
 
 /**
  * 判断模型名是否为视觉模型（支持图片输入）。
@@ -5015,20 +5065,25 @@ function renderModelCheckList(models, precheckAll) {
     const owned = m.ownedBy || '';
     const checked = precheckAll || prevChecked.has(id) ? 'checked' : '';
     const label = owned ? escapeHtml(id) + ' <span style="color:var(--text-dim);font-size:11px;">(' + escapeHtml(owned) + ')</span>' : escapeHtml(id);
-    const visionChecked = isVisionModelName(id) ? 'checked' : '';
+    const capsArr = Array.isArray(m.capabilities) ? m.capabilities : [];
+    const visionChecked = (capsArr.includes('vision') || isVisionModelName(id)) ? 'checked' : '';
+    const capSource = m.specSource === 'api' ? '识别自模型列表 API 元数据' : (m.specSource === 'builtin' ? '内置知名模型规格（近似值，以官方为准）' : '');
+    const cwDefault = m.contextWindow != null ? String(m.contextWindow) : '';
+    const mtDefault = m.maxTokens != null ? String(m.maxTokens) : '';
     const prev = prevCaps.get(id);
-    const cwRaw = prev ? prev.contextWindow : (m.contextWindow != null ? m.contextWindow : '');
-    const mtRaw = prev ? prev.maxTokens : (m.maxTokens != null ? m.maxTokens : '');
+    const cwRaw = prev ? prev.contextWindow : cwDefault;
+    const mtRaw = prev ? prev.maxTokens : mtDefault;
     return '<div class="llm-model-row" data-model="' + escapeAttr(id) + '" style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;font-size:13px;transition:background 0.12s;" onmouseover="this.style.background=\'var(--bg-hover)\'" onmouseout="this.style.background=\'transparent\'">' +
       '<label style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer;">' +
         '<input type="checkbox" class="llm-model-cb" value="' + escapeAttr(id) + '" data-ownedby="' + escapeAttr(owned) + '" ' + checked + ' onchange="updateModelCheckCount()" style="flex-shrink:0;">' +
         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
+        '<span title="能力类型：' + (capsArr.length ? capsArr.map(capLabel).join('、') : '未知') + '" style="display:block;font-size:11px;color:var(--text-dim);margin-top:1px;">能力：' + (capsArr.length ? capsArr.map(capLabel).join(' · ') : '待识别') + '</span>' +
         '<span title="支持图片输入（识图）。DSH 发送前按模型 input 检查图片支持，视觉模型需声明 input 含 image" style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text-secondary);cursor:pointer;"><input type="checkbox" class="llm-model-vision-cb" value="' + escapeAttr(id) + '" ' + visionChecked + '>🖼️识图</span>' +
       '</label>' +
-      '<span title="上下文窗口（tokens）：正整数，或 128K / 1M 写法；留空使用提供商默认" style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:11px;color:var(--text-dim);">上下文' +
+      '<span title="上下文窗口（tokens）：' + (capSource ? capSource + '；' : '') + '正整数或 128K / 1M 写法，留空使用提供商默认" style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:11px;color:var(--text-dim);">上下文' +
         '<input type="text" inputmode="numeric" class="input llm-model-cw" value="' + escapeAttr(String(cwRaw)) + '" placeholder="128K" style="width:66px;padding:2px 6px;font-size:12px;">' +
       '</span>' +
-      '<span title="最大输出 token：正整数；DSH 要求为正整数，非法值会导致该模型配置被拒绝" style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:11px;color:var(--text-dim);">最大输出' +
+      '<span title="最大输出 token：' + (capSource ? capSource + '；' : '') + '正整数，DSH 要求为正整数，非法值会导致该模型配置被拒绝" style="display:flex;align-items:center;gap:3px;flex-shrink:0;font-size:11px;color:var(--text-dim);">最大输出' +
         '<input type="text" inputmode="numeric" class="input llm-model-mt" value="' + escapeAttr(String(mtRaw)) + '" placeholder="8192" style="width:66px;padding:2px 6px;font-size:12px;">' +
       '</span>' +
       '</div>';

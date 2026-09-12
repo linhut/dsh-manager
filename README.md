@@ -100,6 +100,18 @@ Licensed under the MIT License. See the LICENSE file for details.
 
 > 📖 DSH 新版本 API 大改的适配范围声明见 [docs/适配范围-DSH-API大改.md](docs/适配范围-DSH-API大改.md)。
 
+### 🗑️ 卸载与重装（保留配置）
+卸载/重装**默认保留全部配置**（LLM 提供商、MCP、Profile、内置技能状态等），再次安装后自动复用，无需重新配置：
+
+| 平台 | 卸载方式 | 配置保留位置 |
+|:---|:---|:---|
+| Windows | 控制面板 / 设置 → 卸载 DSH Manager | `%APPDATA%\DSH Manager`、`%USERPROFILE%\.dsh`（卸载器不删除用户数据） |
+| macOS | 将 DSH Manager.app 拖入废纸篓 | `~/Library/Application Support/DSH Manager`、`~/.dsh` |
+| Linux | `dpkg -r dsh-manager` 或删除 AppImage 文件 | `~/.config/DSH Manager`、`~/.dsh` |
+
+- 覆盖安装/升级时若应用正在运行，安装器会自动关闭旧实例（Windows 由 NSIS 钩子处理；macOS 请先 Cmd+Q 退出）。
+- **彻底清除**（含配置）：卸载后手动删除上表对应目录（Windows 另可执行 `rmdir /s /q "%APPDATA%\DSH Manager"`、`rmdir /s /q "%USERPROFILE%\.dsh"`）。
+
 ---
 
 

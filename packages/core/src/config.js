@@ -1090,6 +1090,96 @@ export class DSHConfig {
     return false;
   }
 
+  /**
+   * 识别模型的能力类型（识图 / 多模态 / 语义 / 代码 / 生图 / 嵌入）。
+   * 输入：模型名 + API 返回的模型元数据（input / input_types / modalities / capabilities 字段）。
+   * 输出：能力数组（semantic 恒有），与能力路由的五类能力（semantic/vision/code/image/embedding）
+   * 对齐，并补充 multimodal（视听多模态）。
+   * API 显式声明优先，名称启发式仅做补充。
+   * @param {string} id 模型名
+   * @param {object} [meta] API 返回的模型元数据
+   * @returns {string[]} 能力数组：subset of semantic/vision/multimodal/code/image/embedding
+   */
+  static detectModelCapabilities(id, meta = {}) {
+    const caps = new Set(['semantic']);
+    const n = String(id || '').toLowerCase();
+    // ① API 元数据（兼容商返回 input_types/input/modalities/capabilities 时直接采用）
+    if (meta && typeof meta === 'object') {
+      const inputs = [];
+      if (Array.isArray(meta.input_types)) inputs.push(...meta.input_types.map(x => String(x).toLowerCase()));
+      if (Array.isArray(meta.input)) inputs.push(...meta.input.map(x => String(x).toLowerCase()));
+      if (Array.isArray(meta.modalities)) caps.add('multimodal'); // 显式声明多模态
+      if (Array.isArray(meta.capabilities)) {
+        for (const c of meta.capabilities) {
+          const s = String(c).toLowerCase();
+          if (s.includes('vision') || s.includes('photo') || s.includes('image')) caps.add('vision');
+          if (s.includes('audio') || s.includes('video') || s.includes('multimodal')) caps.add('multimodal');
+          if (s.includes('embed')) caps.add('embedding');
+          if (s.includes('code') || s.includes('coding')) caps.add('code');
+          if (s.includes('gen') || s.includes('draw') || s.includes('paint')) caps.add('image');
+        }
+      }
+      if (inputs.includes('image')) caps.add('vision');
+      if (inputs.includes('audio') || inputs.includes('video')) caps.add('multimodal');
+    }
+    // ② 名称启发式（补充元数据缺失的常见命名）
+    if (DSHConfig.isVisionModelName(id)) caps.add('vision');
+    if (n.includes('audio') || n.includes('voice') || n.includes('omni')) caps.add('multimodal');
+    if (n.includes('-coder') || n.includes('codex') || n.includes('deepseek-coder') || n.includes('qwen2.5-coder')) caps.add('code');
+    if (n.includes('dall-e') || n.includes('dalle') || n.includes('flux') || n.includes('sdxl') || n.includes('stable-diffusion') || n.includes('draw') || n.includes('t2i')) caps.add('image');
+    if (n.includes('embedding') || n.includes('-embed') || n.startsWith('bge') || n.startsWith('m3e')) caps.add('embedding');
+    return [...caps];
+  }
+
+  /**
+   * 知名模型官方/公开规格查询（context_window / max_tokens 上限参考）。
+   * 仅收录公开确认的主流模型；近似值以各厂商官方文档为准；未收录返回 null。
+   * 匹配规则：精确 id 优先，其次最长前缀（边界须为 - _ . 或数字），避免误匹配。
+   * @param {string} id 模型名
+   * @returns {{contextWindow?: number, maxTokens?: number}|null}
+   */
+  static lookupModelSpec(id) {
+    const KNOWN = [
+      // [匹配键, contextWindow, maxTokens]
+      ['deepseek-v4-flash', 1048576, 393216],      // 输入 1M / 输出 384K（公开规格）
+      ['deepseek-chat', 128000, 8192],
+      ['deepseek-reasoner', 128000, 8192],
+      ['gpt-4o-mini', 128000, 16384],
+      ['gpt-4o', 128000, 16384],
+      ['gpt-4-turbo', 128000, 4096],
+      ['o1', 200000, 100000],
+      ['o3', 200000, 100000],
+      ['claude-opus-4', 200000, 32000],
+      ['claude-sonnet-4', 200000, 64000],
+      ['claude-3-5-sonnet', 200000, 8192],
+      ['claude-3-5-haiku', 200000, 8192],
+      ['claude-3-opus', 200000, 4096],
+      ['claude-3-sonnet', 200000, 4096],
+      ['claude-3-haiku', 200000, 4096],
+      ['gemini-2.5', 1048576, 65536],
+      ['gemini-2.0', 1048576, 8192],
+      ['gemini-1.5', 1048576, 8192],
+      ['qwen-max', 32768, 8192],
+      ['qwen-plus', 131072, 8192],
+      ['qwen-turbo', 131072, 8192],
+      ['glm-4', 128000, 4096],
+      ['llama3.1', 131072, 8192],
+      ['llama3', 8192, 4096],
+      ['mistral-large', 131072, 8192],
+      ['command-r', 131072, 4096],
+    ];
+    const t = String(id || '').toLowerCase();
+    if (!t) return null;
+    let best = null; // { key, spec } 取最长匹配前缀
+    for (const [key, contextWindow, maxTokens] of KNOWN) {
+      if (t === key) return { contextWindow, maxTokens };
+      if (t.startsWith(key) && t.length > key.length && /[-._\d]/.test(t[key.length])) {
+        if (!best || key.length > best.key.length) best = { key, spec: { contextWindow, maxTokens } };
+      }
+    }
+    return best ? best.spec : null;
+  }
+
   async migrateLLMProviders() {
     const { settings } = await this.read();
     const INVALID_PREFIXES = ['llm-openai', 'llm-openai-compatible', 'llm-azure', 'llm-ollama', 'llm-google', 'llm-anthropic', 'llm-custom', 'llm-openai-responses', 'llm-claude'];

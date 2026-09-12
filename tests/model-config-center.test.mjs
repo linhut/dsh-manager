@@ -23,6 +23,7 @@ function makeCenter() {
     atomcode: join(root, 'atomcode', 'config.toml'),
     'claude-code': join(root, 'claude', 'settings.json'),
     workbuddy: join(root, 'codebuddy', 'models.json'),
+    codex: join(root, 'codex', 'config.toml'),
   };
   return { root, center: new ModelConfigCenter({ dataDir, toolPaths }), toolPaths };
 }
@@ -223,6 +224,56 @@ describe('模型配置中心（ModelConfigCenter）', () => {
     assert.deepEqual(out.availableModels, [BASE.model]);
   });
 
+  // ====== Codex CLI 适配器 ======
+
+  it('apply→codex：写入 model/model_provider/[model_providers] 段 + auth.json 密钥，保留无关段落', () => {
+    const { center, toolPaths } = ctx;
+    mkdirSync(join(toolPaths.codex, '..'), { recursive: true });
+    writeFileSync(toolPaths.codex, '[lsp]\nenabled = true\n');
+    const p = center.saveProfile({ ...BASE });
+    const r = center.apply(p.id, ['codex']);
+    assert.equal(r.results[0].ok, true);
+    const out = readFileSync(toolPaths.codex, 'utf-8');
+    assert.ok(out.includes('[lsp]') && out.includes('enabled = true'), '无关段落保留');
+    assert.ok(out.includes(`model = "${BASE.model}"`));
+    assert.ok(out.includes(`model_provider = "${p.id}"`));
+    assert.ok(out.includes(`[model_providers.${p.id}]`));
+    assert.ok(out.includes(`name = "${BASE.name}"`));
+    assert.ok(out.includes(`base_url = "${BASE.baseUrl}"`));
+    assert.ok(out.includes('env_key = "OPENAI_API_KEY"'));
+    assert.ok(out.includes('wire_api = "chat"'));
+    const auth = JSON.parse(readFileSync(join(toolPaths.codex, '..', 'auth.json'), 'utf-8'));
+    assert.equal(auth.OPENAI_API_KEY, BASE.apiKey);
+  });
+
+  it('apply→codex：baseUrl 末尾 /chat/completions 去除', () => {
+    const { center, toolPaths } = ctx;
+    const p = center.saveProfile({ ...BASE, baseUrl: 'https://gw.example.com/v1/chat/completions' });
+    center.apply(p.id, ['codex']);
+    const out = readFileSync(toolPaths.codex, 'utf-8');
+    assert.ok(out.includes('base_url = "https://gw.example.com/v1"'));
+  });
+
+  it('apply→codex：无明文 apiKey 时不写 auth.json（保留既有认证）', () => {
+    const { center, toolPaths } = ctx;
+    const p = center.saveProfile({ ...BASE, apiKey: '', apiKeyEnv: 'CODE_KEY' });
+    center.apply(p.id, ['codex']);
+    assert.equal(existsSync(join(toolPaths.codex, '..', 'auth.json')), false, '不应创建 auth.json');
+    const out = readFileSync(toolPaths.codex, 'utf-8');
+    assert.ok(out.includes('env_key = "OPENAI_API_KEY"'));
+  });
+
+  it('revert codex 还原 config.toml 到应用前内容', () => {
+    const { center, toolPaths } = ctx;
+    mkdirSync(join(toolPaths.codex, '..'), { recursive: true });
+    const original = '[lsp]\nenabled = true\n';
+    writeFileSync(toolPaths.codex, original);
+    const p = center.saveProfile({ ...BASE });
+    center.apply(p.id, ['codex']);
+    center.revert('codex');
+    assert.equal(readFileSync(toolPaths.codex, 'utf-8'), original);
+  });
+
   // ====== 备份 / 还原 ======
 
   it('apply 前自动备份，revert 还原到应用前内容', () => {
@@ -254,7 +305,7 @@ describe('模型配置中心（ModelConfigCenter）', () => {
   it('listTools 能识别当前应用了哪个档案', () => {
     const { center, toolPaths } = ctx;
     const p = center.saveProfile({ ...BASE });
-    center.apply(p.id, ['atomcode', 'claude-code', 'workbuddy']);
+    center.apply(p.id, ['atomcode', 'claude-code', 'workbuddy', 'codex']);
     const tools = center.listTools();
     for (const t of tools) {
       assert.equal(t.exists, true, t.id + ' 配置文件应已生成');

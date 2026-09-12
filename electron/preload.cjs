@@ -45,6 +45,8 @@ contextBridge.exposeInMainWorld('dshManager', {
   checkDSHPort: (port) => ipcRenderer.invoke('dsh:check-port', port),
   getDSHActualPort: () => ipcRenderer.invoke('dsh:get-actual-port'),
   getDSHWebUrl: () => ipcRenderer.invoke('dsh:get-web-url'),
+  listDSHInstances: () => ipcRenderer.invoke('dsh:list-instances'),
+  stopDSHInstance: (port) => ipcRenderer.invoke('dsh:stop-instance', port),
   fixAndRestartDSH: (moduleIds) => ipcRenderer.invoke('dsh:fix-and-restart', moduleIds),
   searchGitHubSkills: (query, page) => ipcRenderer.invoke('skills:search-github', query, page),
 

@@ -7,7 +7,7 @@
 
 /**
  * 模型配置中心前端模块（类似 cc-switch）
- * 档案 CRUD + 一键应用到 AtomCode / Claude Code / WorkBuddy + 备份还原 + 导入导出。
+ * 档案 CRUD + 一键应用到 AtomCode / Claude Code / Codex CLI / WorkBuddy + 备份还原 + 导入导出。
  * 由 app.js 通过页面管理器调用 renderModelConfigPage()（普通脚本，非 ES Module）。
  */
 

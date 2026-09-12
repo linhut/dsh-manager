@@ -45,6 +45,12 @@ export const SUPPORTED_TOOLS = {
     desc: '~/.codebuddy/models.json',
     file: () => join(homedir(), '.codebuddy', 'models.json'),
   },
+  codex: {
+    id: 'codex',
+    name: 'Codex CLI',
+    desc: '~/.codex/config.toml + auth.json',
+    file: () => join(homedir(), '.codex', 'config.toml'),
+  },
 };
 
 export const SUPPORTED_TOOL_IDS = Object.keys(SUPPORTED_TOOLS);
@@ -429,6 +435,7 @@ export class ModelConfigCenter {
         if (toolId === 'atomcode') this._applyAtomCode(profile, target);
         else if (toolId === 'claude-code') this._applyClaudeCode(profile, target);
         else if (toolId === 'workbuddy') this._applyWorkBuddy(profile, target);
+        else if (toolId === 'codex') this._applyCodex(profile, target);
         results.push({ tool: toolId, ok: true, file: target });
       } catch (e) {
         results.push({ tool: toolId, ok: false, error: (e && e.message) || String(e) });
@@ -526,12 +533,45 @@ export class ModelConfigCenter {
     writeFileSync(file, JSON.stringify(data, null, 2) + '\n', 'utf-8');
   }
 
+  /** Codex CLI：~/.codex/auth.json（OPENAI_API_KEY 合并，保留其他键）+ config.toml（model / model_provider / [model_providers.<id>] 段落 upsert） */
+  _applyCodex(profile, file) {
+    const dir = dirname(file);
+    mkdirSync(dir, { recursive: true });
+    // ① auth.json：OpenAI 兼容认证（Codex 官方格式；有明文 key 才写，否则跳过不破坏既有认证）
+    if (profile.apiKey) {
+      const authFile = join(dir, 'auth.json');
+      let auth = safeReadJson(authFile, {});
+      if (!auth || typeof auth !== 'object' || Array.isArray(auth)) auth = {};
+      auth['OPENAI_API_KEY'] = profile.apiKey;
+      if (existsSync(authFile)) this._backupFile(authFile, 'codex-auth');
+      writeFileSync(authFile, JSON.stringify(auth, null, 2) + '\n', 'utf-8');
+    }
+    // ② config.toml：OpenAI 兼容 provider 段落（env_key 指向 auth.json 的 OPENAI_API_KEY）
+    const base = stripTrailingSlash(profile.baseUrl).replace(/\/chat\/completions$/i, '');
+    const upserts = [
+      { topLevel: true, header: 'model', value: `"${tomlEscape(profile.model)}"` },
+      { topLevel: true, header: 'model_provider', value: `"${tomlEscape(profile.id)}"` },
+      {
+        header: `model_providers.${profile.id}`,
+        text: [
+          `name = "${tomlEscape(profile.name || profile.id)}"`,
+          `base_url = "${tomlEscape(base)}"`,
+          'env_key = "OPENAI_API_KEY"',
+          'wire_api = "chat"',
+        ].join('\n'),
+      },
+    ];
+    const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
+    writeFileSync(file, renderTomlUpserts(existing, upserts), 'utf-8');
+  }
+
   // ====== 工具适配器：当前状态检测 ======
 
   _detectTool(toolId, file, profiles) {
     if (toolId === 'atomcode') return this._detectAtomCode(file, profiles);
     if (toolId === 'claude-code') return this._detectClaudeCode(file, profiles);
     if (toolId === 'workbuddy') return this._detectWorkBuddy(file, profiles);
+    if (toolId === 'codex') return this._detectCodex(file, profiles);
     return null;
   }
 
@@ -607,5 +647,50 @@ export class ModelConfigCenter {
       baseUrl: baseUrl || null,
       hasApiKey: !!first.apiKey,
     };
+  }
+
+  /** Codex CLI：读取 config.toml 的 model / model_provider / [model_providers.<id>] 段，反查匹配档案 */
+  _detectCodex(file, profiles) {
+    let content = '';
+    try {
+      content = readFileSync(file, 'utf-8');
+    } catch {
+      return null;
+    }
+    const { sections, lines } = parseTomlSections(content);
+    const entries = (body) => {
+      const out = {};
+      for (const line of body || []) {
+        const m = line.match(/^\s*([\w.-]+)\s*=\s*"([^"]*)"\s*$/);
+        if (m) out[m[1]] = m[2];
+      }
+      return out;
+    };
+    let model = '';
+    for (const line of lines) {
+      const lm = line.match(/^\s*model\s*=\s*"([^"]+)"\s*(?:#.*)?$/);
+      if (lm) {
+        model = lm[1];
+        break;
+      }
+    }
+    for (const s of sections) {
+      if (!s.header.startsWith('model_providers.')) continue;
+      const id = s.header.slice('model_providers.'.length).trim();
+      const e = entries(s.body);
+      const baseUrl = String(e.base_url || '').replace(/\/chat\/completions$/i, '');
+      if (!baseUrl) continue;
+      const matched = this._matchProfile(baseUrl, model || id, profiles);
+      if (matched) {
+        return {
+          appliedProfileId: matched.id,
+          appliedName: matched.name,
+          model: model || null,
+          baseUrl: baseUrl || null,
+          hasApiKey: e.env_key === 'OPENAI_API_KEY' ? null : !!e.env_key,
+        };
+      }
+    }
+    return { appliedProfileId: null, model: model || null, baseUrl: null, hasApiKey: false };
   }
 }
