@@ -65,14 +65,19 @@ jobs:
             arch: x64
             build-cmd: npm run build:win:x64
             artifact-name: DSH-Manager-Windows-x64
-            artifact-path: dist/*.exe
+            artifact-path: |
+              dist/*.exe
+              dist/*.exe.blockmap
+              dist/latest.yml
           # Windows ARM64（信创 Windows ARM 平台）
           - os: windows-latest
             platform: windows-arm64
             arch: arm64
             build-cmd: npm run build:win:arm64
             artifact-name: DSH-Manager-Windows-arm64
-            artifact-path: dist/*.exe
+            artifact-path: |
+              dist/*.exe
+              dist/*.exe.blockmap
           # macOS（x64 + arm64 由单个 job 构建）
           - os: macos-latest
             platform: macos
@@ -237,8 +242,8 @@ jobs:
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.dmg` - macOS 磁盘映像（Apple Silicon）
 
             ### Linux（常规）
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.AppImage` - Linux AppImage（x64）
-            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x64.deb` - Debian/Ubuntu 安装包（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-x86_64.AppImage` - Linux AppImage（x64）
+            - `DSH-Manager-${{ steps.get_version.outputs.version }}-amd64.deb` - Debian/Ubuntu 安装包（x64）
 
             ### Linux（信创 / 国产化）
             - `DSH-Manager-${{ steps.get_version.outputs.version }}-arm64.AppImage` - Linux AppImage（ARM64，飞腾/鲲鹏）
@@ -250,9 +255,10 @@ jobs:
             ---
             ### ⚡ 本版本亮点
 
-            - **适配 DSH 新版本 API 大改（0.1.2-rc.1）**：插件安装迁移到官方 `dsh.profile.bundles` 机制、能力路由按 advisory 语义校验、契约漂移（import 已移除导出）自动检测、插件崩溃自动隔离、link 插件宿主依赖自动补齐
-            - **内置技能同步升级**：`linhut/dsh-skills` 现内置 **9 个技能**，含 web-search（联网搜索）、gongwen-skill（公文全流程）、ppt-studio（PPT 全能工坊）
-            - 完整适配范围声明见 [docs/适配范围-DSH-API大改.md](https://github.com/linhut/dsh-manager/blob/main/docs/适配范围-DSH-API大改.md)
+            - **模型能力智能识别**：按官方/公开规格展示能力徽章（视觉/工具调用），自动预填「上下文窗口 / 最大输出 token」容量配置
+            - **模型配置中心升级（类似 cc-switch）**：新增 **Codex CLI** 适配器（auth.json + config.toml）；设置页 LLM 提供商保存时勾选即可一键同步为档案并应用到 AtomCode / Claude Code / Codex CLI / WorkBuddy
+            - **卸载/覆盖安装体验**：卸载保留用户配置（重新安装即复用）；覆盖安装前自动清理旧实例进程树
+            - **DSH 多实例管理**：全局实例枚举 + 启动防双开（端口健康检查失败自动换新端口并记录）
 
             ---
             ### 安装说明
