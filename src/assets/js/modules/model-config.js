@@ -31,18 +31,20 @@ function mccChecked(id) { const el = document.getElementById(id); return !!el &&
 
 // ====== 页面入口 ======
 async function renderModelConfigPage() {
-  const el = document.getElementById('modelConfigContent');
+  const el = document.getElementById('modelconfigContent');
   if (!el) return;
   el.innerHTML = '<div style="padding:24px;color:var(--text-muted);">加载中…</div>';
   try {
-    const [profiles, tools, llmHtml] = await Promise.all([
+    const [profiles, tools, llmHtml, llmProviders] = await Promise.all([
       window.dshManager.listModelProfiles(),
       window.dshManager.listModelConfigTools(),
       // LLM 提供商管理（原设置页「LLM 提供商」tab 同源复用，合并到本页）
       typeof renderLLMProvidersTab === 'function' ? renderLLMProvidersTab() : Promise.resolve(''),
+      window.dshManager.getLLMProviders().catch(() => []),
     ]);
     mccState.profiles = profiles || [];
     mccState.tools = tools || [];
+    mccState.llmProviders = llmProviders || [];
     el.innerHTML = `
       <div style="max-width:1100px;margin:0 auto;padding:0 8px 24px;">
         <div id="mccLlmSection" style="margin-bottom:24px;">${llmHtml}</div>
@@ -85,7 +87,10 @@ function renderMccProfiles() {
   if (!ps.length) {
     return '<div class="card" style="padding:24px;text-align:center;color:var(--text-muted);">还没有档案，点击「➕ 新建档案」创建第一套模型配置</div>';
   }
-  return '<div class="mcc-profile-grid">' + ps.map((p) => `
+  return '<div class="mcc-profile-grid">' + ps.map((p) => {
+    // 双向联动：按 name 匹配 DSH LLM 提供商，展示注册状态
+    const dshMatch = (mccState.llmProviders || []).find((lp) => lp.name === p.name);
+    return `
     <div class="card mcc-profile-card">
       <div class="mcc-profile-head">
         <div style="min-width:0;">
@@ -101,13 +106,16 @@ function renderMccProfiles() {
           ? mccEsc(p.apiKeyMasked)
           : (p.apiKeyEnv ? '环境变量 $' + mccEsc(p.apiKeyEnv) : '<span class="mcc-warn-text">未设置密钥</span>')}</div>
         <div>📏 ${p.contextWindow ? '上下文 ' + Number(p.contextWindow).toLocaleString() : '上下文 -'}${p.maxTokens ? ' / 输出 ' + Number(p.maxTokens).toLocaleString() : ''}</div>
+        <div>🐳 DSH：${dshMatch ? '已注册（' + mccEsc(dshMatch.provider) + '）' : '<span class="mcc-warn-text">未注册</span>'}</div>
       </div>
       <div class="mcc-profile-actions">
         <button class="btn btn-sm btn-primary" onclick="mccApplyProfile('${mccEsc(p.id)}')">⚡ 应用</button>
+        ${dshMatch ? '' : '<button class="btn btn-sm" onclick="mccRegisterToDSH(\'' + mccEsc(p.id) + '\')" title="把档案写为 DSH LLM 提供商（pi-ai），供 DSH 对话/能力路由使用">🔗 注册到 DSH</button>'}
         <button class="btn btn-sm" onclick="mccOpenProfileForm('${mccEsc(p.id)}')">✏️ 编辑</button>
         <button class="btn btn-sm btn-danger" onclick="mccDeleteProfile('${mccEsc(p.id)}')">🗑 删除</button>
       </div>
-    </div>`).join('') + '</div>';
+    </div>`;
+  }).join('') + '</div>';
 }
 
 // ====== 工具列表 ======
@@ -161,21 +169,24 @@ function mccCloseModal() {
 }
 
 // ====== 档案表单（新建 / 编辑） ======
-function mccOpenProfileForm(id) {
+function mccOpenProfileForm(id, prefill) {
   const p = id ? mccState.profiles.find((x) => x.id === id) : null;
-  mccOpenModal(p ? '✏️ 编辑档案：' + mccEsc(p.name) : '➕ 新建配置档案', `
+  // 双向联动：从 LLM 提供商「建档案」时预填连接字段（密钥不回填，沿用 env 或留空）
+  const pf = prefill || {};
+  const title = p ? '✏️ 编辑档案：' + mccEsc(p.name) : (pf.name ? '➕ 新建档案（来自提供商：' + mccEsc(pf.name) + '）' : '➕ 新建配置档案');
+  mccOpenModal(title, `
     <div class="mcc-form">
-      <label>档案名称 *<input id="mccf-name" value="${mccEsc(p ? p.name : '')}" placeholder="如：Y 网关（DeepSeek）"></label>
-      <label>API 地址（Base URL）*<input id="mccf-base" value="${mccEsc(p ? p.baseUrl : '')}" placeholder="http://192.168.1.9:65002/v1"></label>
+      <label>档案名称 *<input id="mccf-name" value="${mccEsc(p ? p.name : (pf.name || ''))}" placeholder="如：Y 网关（DeepSeek）"></label>
+      <label>API 地址（Base URL）*<input id="mccf-base" value="${mccEsc(p ? p.baseUrl : (pf.baseUrl || ''))}" placeholder="http://192.168.1.9:65002/v1"></label>
       <label>API Key（留空保留原值）<input id="mccf-key" type="password" value="" placeholder="${mccEsc(p && p.apiKeyMasked ? p.apiKeyMasked : '输入明文密钥，或使用下方环境变量')}" autocomplete="off"></label>
-      <label>或环境变量名（优先于密钥，AtomCode 写入为 $VAR）<input id="mccf-env" value="${mccEsc(p ? p.apiKeyEnv : '')}" placeholder="如：MY_API_KEY"></label>
-      <label>模型名称 *<input id="mccf-model" value="${mccEsc(p ? p.model : '')}" placeholder="如：deepseek-v4-flash"></label>
+      <label>或环境变量名（优先于密钥，AtomCode 写入为 $VAR）<input id="mccf-env" value="${mccEsc(p ? p.apiKeyEnv : (pf.apiKeyEnv || ''))}" placeholder="如：MY_API_KEY"></label>
+      <label>模型名称 *<input id="mccf-model" value="${mccEsc(p ? p.model : (pf.model || ''))}" placeholder="如：deepseek-v4-flash"></label>
       <div class="mcc-form-row">
         <label>上下文窗口（tokens）<input id="mccf-ctx" type="number" value="${p && p.contextWindow ? p.contextWindow : ''}" placeholder="1048576"></label>
         <label>最大输出（tokens）<input id="mccf-max" type="number" value="${p && p.maxTokens ? p.maxTokens : ''}" placeholder="393216"></label>
       </div>
       <div class="mcc-form-row">
-        <label>供应商<input id="mccf-vendor" value="${mccEsc(p ? p.vendor : '')}" placeholder="如：DeepSeek / Zhipu"></label>
+        <label>供应商<input id="mccf-vendor" value="${mccEsc(p ? p.vendor : (pf.vendor || ''))}" placeholder="如：DeepSeek / Zhipu"></label>
         <label>快速模型（Claude Code 用）<input id="mccf-small" value="${mccEsc(p ? p.smallModel : '')}" placeholder="可选"></label>
       </div>
       <label>温度（可选）<input id="mccf-temp" type="number" step="0.1" min="0" max="2" value="${p && p.temperature ? p.temperature : ''}" placeholder="留空则不写入"></label>
@@ -213,8 +224,9 @@ async function mccTestConnection() {
       const ms = res.latencyMs != null ? `，延迟 ${res.latencyMs}ms` : '';
       let html = '✅ 连接成功' + ms;
       if (res.models && res.models.length) {
-        const shown = res.models.slice(0, 5).map((m) => '<code>' + mccEsc(m) + '</code>').join('、');
-        html += `<br>发现 ${res.models.length} 个可用模型：${shown}${res.models.length > 5 ? '…' : ''}`;
+        // 全部模型可滚动展示（不再截断前 5 个），「自动填首个」保留
+        const items = res.models.map((m) => '<code>' + mccEsc(m) + '</code>').join('、');
+        html += `<br>发现 ${res.models.length} 个可用模型：<div style="max-height:140px;overflow-y:auto;margin-top:6px;padding:6px 8px;border:1px solid var(--border-light);border-radius:6px;font-size:12px;line-height:1.9;">${items}</div>`;
         const modelEl = document.getElementById('mccf-model');
         if (modelEl && !modelEl.value) {
           modelEl.value = res.models[0];
@@ -280,15 +292,54 @@ async function mccDoDeleteProfile(id) {
   }
 }
 
+// ====== 双向联动：档案 → DSH LLM 提供商 ======
+/** 把档案写入 DSH LLM 提供商（pi-ai 适配器）；纯写入，提示/刷新由调用方负责 */
+async function mccWriteProviderToDSH(p) {
+  if (!p) throw new Error('档案不存在');
+  await window.dshManager.updateLLMProvider(p.name, {
+    provider: 'pi-ai',
+    model: p.model,
+    baseUrl: p.baseUrl,
+    ...(p.apiKey && !p.apiKey.includes('****') ? { apiKey: p.apiKey } : {}),
+    ...(p.apiKeyEnv ? { apiKeyEnv: p.apiKeyEnv } : {}),
+    models: [{
+      id: p.model,
+      ...(p.contextWindow ? { contextWindow: p.contextWindow } : {}),
+      ...(p.maxTokens ? { maxTokens: p.maxTokens } : {}),
+      ...(p.supportsVision ? { input: ['text', 'image'] } : {}),
+    }],
+  }, 'pi-ai');
+}
+
+async function mccRegisterToDSH(id) {
+  const p = mccState.profiles.find((x) => x.id === id);
+  if (!p) return;
+  try {
+    await mccWriteProviderToDSH(p);
+    showToast('✅ 已注册 "' + p.name + '" 为 DSH LLM 提供商（pi-ai），重启 DSH 生效', 'success', 8000, {
+      actionLabel: '🔄 重启 DSH 生效',
+      action: () => window.dshManager.restartDSH().then(() => showToast('重启成功', 'success')).catch((err) => showToast('重启失败: ' + err.message, 'error')),
+    });
+    await mccRefresh();
+  } catch (e) {
+    showToast('注册失败：' + (e && e.message ? e.message : e), 'error', 6000);
+  }
+}
+
 // ====== 应用档案 ======
 function mccApplyProfile(profileId) {
   const p = mccState.profiles.find((x) => x.id === profileId);
   if (!p) return;
+  const dshMatch = (mccState.llmProviders || []).find((lp) => lp.name === p.name);
   mccOpenModal('⚡ 应用档案：' + mccEsc(p.name), `
     <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6;">
-      将 <strong>${mccEsc(p.name)}</strong>（模型 ${mccEsc(p.model)}）写入以下工具的本地配置文件：
-      <br>⚠️ 写入前自动备份原配置，可在工具行点击「↩ 还原」恢复。
+      将 <strong>${mccEsc(p.name)}</strong>（模型 ${mccEsc(p.model)}）应用到以下目标：
+      <br>⚠️ 工具写入前自动备份原配置，可在工具行点击「↩ 还原」恢复；DSH 应用后需重启 DSH 生效。
     </div>
+    <label class="mcc-check" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:8px;cursor:pointer;background:var(--bg-input,#f8fafc);">
+      <input type="checkbox" class="mcc-apply-dsh" value="dsh">
+      <span style="min-width:0;"><strong>🐳 DSH（LLM 提供商）</strong><br><span style="font-size:12px;color:var(--text-muted);">写入 settings.llm-pi-ai.providers.${mccEsc(p.name)}，供 DSH 对话/能力路由使用，应用后重启 DSH 生效${dshMatch ? '（同名提供商已存在，将覆盖）' : ''}</span></span>
+    </label>
     ${mccState.tools.map((t) => `
       <label class="mcc-check" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:8px;cursor:pointer;">
         <input type="checkbox" class="mcc-apply-tool" value="${mccEsc(t.id)}" checked>
@@ -301,18 +352,30 @@ function mccApplyProfile(profileId) {
 }
 
 async function mccDoApply(profileId) {
+  const p = mccState.profiles.find((x) => x.id === profileId);
   const tools = Array.from(document.querySelectorAll('.mcc-apply-tool:checked')).map((c) => c.value);
-  if (!tools.length) { showToast('请至少选择一个工具', 'warning'); return; }
+  const toDSH = document.querySelector('.mcc-apply-dsh')?.checked === true;
+  if (!tools.length && !toDSH) { showToast('请至少选择一个应用目标', 'warning'); return; }
+  if (toDSH && p && !p.apiKey && !p.apiKeyEnv) {
+    showToast('⚠️ 档案未设置密钥，写入 DSH 后调用会失败', 'warning', 6000);
+  }
   try {
-    const r = await window.dshManager.applyModelProfile(profileId, tools);
-    mccCloseModal();
-    const ok = r.results.filter((x) => x.ok).length;
-    const bad = r.results.filter((x) => !x.ok);
-    if (bad.length) {
-      showToast('应用完成：成功 ' + ok + ' 个，失败 ' + bad.length + ' 个（' + bad.map((b) => b.error).join('；') + '）', 'warning', 8000);
-    } else {
-      showToast('已应用到 ' + ok + ' 个工具', 'success');
+    let dshOk = true, dshErr = '';
+    if (toDSH && p) {
+      try { await mccWriteProviderToDSH(p); } catch (e) { dshOk = false; dshErr = e && e.message ? e.message : e; }
     }
+    let r = null, msg = '';
+    if (tools.length) {
+      r = await window.dshManager.applyModelProfile(profileId, tools);
+      const ok = r.results.filter((x) => x.ok).length;
+      const bad = r.results.filter((x) => !x.ok);
+      msg = '工具成功 ' + ok + ' 个' + (bad.length ? '，失败 ' + bad.length + ' 个（' + bad.map((b) => b.error).join('；') + '）' : '');
+    }
+    mccCloseModal();
+    const dshMsg = toDSH ? (dshOk ? '，DSH 已写入（重启 DSH 生效）' : '，DSH 写入失败：' + dshErr) : '';
+    const isWarn = (toDSH && !dshOk) || (r && r.results.some((x) => !x.ok));
+    if (isWarn) showToast('应用完成：' + msg + dshMsg, 'warning', 8000);
+    else showToast('已应用：' + msg + dshMsg, 'success');
     await mccRefresh();
   } catch (e) {
     showToast('应用失败：' + (e && e.message ? e.message : e), 'error', 6000);

@@ -3985,8 +3985,11 @@ async function setRuntimeConfig(key, value) {
 async function renderLLMProvidersTab() {
   let providers = [];
   let config = { settings: {}, credentials: {} };
+  let mccProfiles = [];
   try { providers = await window.dshManager.getLLMProviders(); } catch (e) { console.warn('getLLMProviders failed:', e); }
   try { config = await window.dshManager.getAllConfig(); } catch (e) { console.warn('getAllConfig failed:', e); }
+  // 双向联动：档案存在同名时标记关联；提供商支持一键建档
+  try { mccProfiles = await window.dshManager.listModelProfiles(); } catch (e) { mccProfiles = []; }
 
   // 收集 LLM 提供商，兼容两种配置形态：
   //   旧格式: settings.llm.<name> = { provider, model, apiKey, baseUrl }
@@ -4057,9 +4060,11 @@ async function renderLLMProvidersTab() {
               <tr><th>名称</th><th>提供商</th><th>模型</th><th>API Key</th><th>操作</th></tr>
             </thead>
             <tbody>
-              ${providerEntries.map(([name, conf]) => `
+              ${providerEntries.map(([name, conf]) => {
+                const hasProfile = mccProfiles.some((mp) => mp.name === name);
+                return `
                 <tr>
-                  <td><strong>${escapeHtml(name)}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}</td>
+                  <td><strong>${escapeHtml(name)}</strong>${conf._official ? ' <span class="badge badge-blue">官方格式</span>' : ''}${hasProfile ? ' <span class="badge badge-info" title="模型配置中心已有同名档案">已关联档案</span>' : ''}</td>
                   <td><span class="badge badge-blue">${escapeHtml(conf.provider || 'unknown')}</span></td>
                   <td><code>${escapeHtml(conf.model || (Array.isArray(conf.models) && conf.models.length > 0 ? conf.models[0].id : '-'))}</code>${capHint(conf._firstModel || conf)}${Array.isArray(conf.models) && conf.models.length > 1 ? ' <span class="badge badge-info" title="' + conf.models.map(function(m) { return escapeHtml(m.id); }).join('\n') + '">+' + (conf.models.length - 1) + '</span>' : ''}</td>
                   <td>${(conf.apiKeyConfigured || conf.apiKey)
@@ -4071,10 +4076,11 @@ async function renderLLMProvidersTab() {
                         : '<span style="color:var(--warning);">未设置</span>')}</td>
                   <td>
                     <button class="btn btn-sm btn-ghost" onclick="showLLMProviderForm('${escapeAttr(name)}'${conf.adapter ? `, '${escapeAttr(conf.adapter)}'` : ''})">✏️ 编辑</button>
+                    <button class="btn btn-sm btn-ghost" onclick="mccOpenProfileForm('', { name: '${escapeAttr(name)}', baseUrl: '${escapeAttr(conf.baseURL || conf.baseUrl || '')}', apiKeyEnv: '${escapeAttr(conf.apiKeyEnv || '')}', model: '${escapeAttr(conf.model || (Array.isArray(conf.models) && conf.models.length ? (conf.models[0].id || '') : ''))}', vendor: '${escapeAttr(conf.provider || '')}' })" title="${hasProfile ? '同名档案已存在，仍可新建覆盖' : '预填同连接信息，创建配置档案'}">📄 建档案</button>
                     <button class="btn btn-sm btn-ghost" onclick="deleteLLMProvider('${escapeAttr(name)}')">🗑️ 删除</button>
                   </td>
-                </tr>
-              `).join('')}
+                </tr>`;
+              }).join('')}
             </tbody>
           </table>
         </div>
@@ -4980,9 +4986,9 @@ async function fetchLLMModels() {
     const results = document.getElementById('llm-model-results');
     if (!result.success) { showToast('获取失败: ' + (result.error || '未知错误'), 'error'); if (results) results.style.display = 'none'; return; }
     if (!result.models || !result.models.length) { showToast('未获取到任何模型', 'warning'); if (results) results.style.display = 'none'; return; }
-    // 渲染复选框列表（默认不勾选，由用户多选；已选中的模型保持选中）
-    renderModelCheckList(result.models, false);
-    showToast('获取到 ' + result.count + ' 个模型（已识别能力类型与上下文，勾选需要的模型后保存）', 'success');
+    // 渲染复选框列表（默认全选：获取即全选，用户可取消不需要的模型后再保存）
+    renderModelCheckList(result.models, true);
+    showToast('获取到 ' + result.count + ' 个模型（已全部勾选，可取消不需要的模型后保存）', 'success');
   } catch (e) { showToast('获取失败: ' + e.message, 'error'); }
 }
 
