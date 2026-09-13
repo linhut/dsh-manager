@@ -6,9 +6,10 @@
  */
 
 import { execa } from 'execa';
-import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, cpSync, readFileSync, rmSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { join, basename, resolve, sep } from 'node:path';
-import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand, compareDSHVersions } from '../../core/src/index.js';
+import { DSHError, DSHErrorCodes, requirePnpm, DSH_PATHS, resolveDSHCommand, compareDSHVersions, repairLinkPluginHostDeps } from '../../core/src/index.js';
 import { PluginRegistry } from './registry.js';
 import { githubProxyUrls } from './github-api.js';
 
@@ -39,6 +40,72 @@ export function buildPluginAddArgs(profile, packageName, options = {}) {
   const args = ['plugin', '--profile', profile, 'add', addSpec];
   if (options.force === true) args.push('--force');
   return args;
+}
+
+/**
+ * 从 pnpm 错误输出中提取 allowBuilds 白名单 key（纯函数，便于单测）。
+ *
+ * pnpm 11+ 供应链安全策略会拦截 git-hosted 插件的 prepare/build 脚本，报错形如：
+ *   [ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package fetched
+ *   from "<url>": The git-hosted package "dsh-stock-terminal@1.7.0" needs to execute
+ *   build scripts but is not in the "allowBuilds" allowlist.
+ * 提取到的 key（`name@version`）可直接写进 pnpm-workspace.yaml 的 allowBuilds 段。
+ * 无法识别（非 allowBuilds 类错误）时返回 null，调用方保持原失败行为。
+ *
+ * @param {string} text - pnpm/stderr 输出
+ * @returns {string|null}
+ */
+export function extractAllowBuildsKey(text) {
+  if (!text) return null;
+  // 主模式：git-hosted 包（prepare 脚本被拦）
+  const gitMatch = text.match(/The git-hosted package "([^"]+)" needs to execute build scripts/);
+  if (gitMatch && gitMatch[1]) return normalizeAllowKey(gitMatch[1]);
+  // 备选：普通依赖的 build 脚本被拦（旧版 pnpm 报 "must be built" / 新版带引号包名）
+  const plainMatch = text.match(/(?:needs|required) to be (?:built|executed)[^"]*?packages? "([^"]+)"/i)
+    || text.match(/"([^"]+)"[^]*?not in the "allowBuilds" allowlist/i);
+  if (plainMatch && plainMatch[1]) return normalizeAllowKey(plainMatch[1]);
+  return null;
+}
+
+/** 规范化 allowBuilds key：去掉前导/尾随空白与可能的版本前缀噪音 */
+function normalizeAllowKey(key) {
+  const k = String(key || '').trim();
+  // pnpm 可能打印 "name@version" 或 "name@git+url"；保持原样即可，仅去掉明显的垃圾
+  return k && !/^[\n\r]+$/.test(k) ? k : null;
+}
+
+/**
+ * 把 key 写入 pnpm-workspace.yaml 的 allowBuilds 段（纯函数，便于单测）。
+ * allowBuilds 段已存在则复用，不存在则追加到文件末尾。
+ *
+ * @param {string} content - 当前 pnpm-workspace.yaml 内容（可为空字符串）
+ * @param {string} key - 如 dsh-stock-terminal@1.7.0
+ * @returns {string} 写入后的完整内容（key 已存在时原样返回）
+ */
+export function appendAllowBuildsEntry(content, key) {
+  if (!key) return content;
+  const line = '  ' + key + ': true';
+  // 已存在则幂等跳过（用 includes 匹配二级缩进项，避免误伤注释里的同名文本）
+  if (content.includes('\n' + line) || content.startsWith(line)) return content;
+  const idx = content.indexOf('allowBuilds:');
+  if (idx !== -1) {
+    const afterIdx = idx + 'allowBuilds:'.length;
+    return content.slice(0, afterIdx) + '\n' + line + content.slice(afterIdx);
+  }
+  const base = content.trimEnd();
+  return base ? base + '\n\nallowBuilds:\n' + line + '\n' : 'allowBuilds:\n' + line + '\n';
+}
+
+/** 把 key 持久化到 profile 的 pnpm-workspace.yaml（写盘，无键值时创建） */
+function writeAllowBuildsToProfile(profile, key) {
+  const yamlPath = join(DSH_PATHS.profiles, profile, 'pnpm-workspace.yaml');
+  const existed = existsSync(yamlPath);
+  const content = existed ? readFileSync(yamlPath, 'utf-8') : '';
+  const next = appendAllowBuildsEntry(content, key);
+  if (next === content) return { path: yamlPath, written: false };
+  if (!existed) mkdirSync(dirname(yamlPath), { recursive: true });
+  writeFileSync(yamlPath, next, 'utf-8');
+  return { path: yamlPath, written: true };
 }
 
 export class PluginInstaller {
@@ -358,6 +425,30 @@ export class PluginInstaller {
 
       const res = await execa(await this._dshCmd(), addArgs, { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', reject: false, windowsHide: true });
       if (res.failed) {
+        // pnpm 11+ 供应链安全策略拦截 git-hosted 插件的构建脚本（allowBuilds 白名单）时，
+        // 自动把 pnpm 报出的 key 写入 profile 的 pnpm-workspace.yaml 并重试一次，
+        // 避免整体降级到 git clone/link 路径（该路径不安装插件依赖，会导致 plugin tree failed to load）。
+        const combined = ((res.stderr || '') + '\n' + (res.stdout || '')).trim();
+        const allowKey = extractAllowBuildsKey(combined);
+        if (allowKey) {
+          try {
+            const { written } = writeAllowBuildsToProfile(profile, allowKey);
+            this._log(`检测到 pnpm allowBuilds 拦截，已${written ? '写入' : '复用'}白名单 ${allowKey}，重试安装`, 'warn');
+            const retry = await execa(await this._dshCmd(), addArgs, { timeout: 120_000, stdio: this.verbose ? 'inherit' : 'pipe', reject: false, windowsHide: true });
+            if (!retry.failed) {
+              res.stdout = retry.stdout;
+              res.stderr = retry.stderr;
+              res.exitCode = retry.exitCode;
+              res.failed = false;
+            } else {
+              res.stderr = ((res.stderr || '') + '\n[allowBuilds 重试仍失败] ' + (retry.stderr || '')).trim();
+            }
+          } catch (writeErr) {
+            this._log('写入 allowBuilds 白名单失败: ' + (writeErr?.message || writeErr), 'warn');
+          }
+        }
+      }
+      if (res.failed) {
         throw new DSHError(
           DSHErrorCodes.PLUGIN_INSTALL_FAILED,
           'npm 安装失败: ' + ((res.stderr || res.stdout || '').trim() || ('dsh plugin add 命令失败（退出码 ' + res.exitCode + '）'))
@@ -507,6 +598,9 @@ export class PluginInstaller {
       ], { timeout: 60_000, stdio: this.verbose ? 'inherit' : 'pipe', windowsHide: true });
       this._log(stdout || '');
       if (stderr) this._log(stderr, 'warn');
+
+      // link 注册成功即补齐宿主依赖，避免 DSH 启动时 plugin tree failed to load
+      await this._repairLinkHostDeps(profile);
 
       // 官方规范：插件身份 = 完整包名。读取克隆产物 package.json 的真实包名，
       // 与 dsh plugin add 实际注册进 profile bundles 的名字保持一致。
@@ -834,6 +928,9 @@ export class PluginInstaller {
         this._log(stdout || '');
         if (stderr) this._log(stderr, 'warn');
         this._log(`已通过 dsh plugin 注册到 profile ${profile}`);
+
+        // link 注册成功即补齐宿主依赖，避免 DSH 启动时 plugin tree failed to load
+        await this._repairLinkHostDeps(profile);
       } catch (regError) {
         this._log(`dsh plugin add 注册失败: ${regError.message}`, 'warn');
       }
@@ -1084,6 +1181,23 @@ export class PluginInstaller {
   /**
    * @private
    */
+  /**
+   * link 注册成功后立即补齐宿主依赖，避免 DSH 启动时 plugin tree failed to load。
+   * 复用 core 的 repairLinkPluginHostDeps（幂等：已满足的依赖自动跳过，不重复注入）。
+   */
+  async _repairLinkHostDeps(profile) {
+    try {
+      const fix = await repairLinkPluginHostDeps(profile);
+      if (fix?.injected?.length) {
+        this._log(`link 插件宿主依赖补齐 ${fix.injected.length} 项: ${fix.injected.join('、')}`);
+      } else if (fix?.failed?.length) {
+        this._log(`link 宿主依赖补齐部分失败: ${fix.failed.map((f) => f.id + (f.error ? ': ' + f.error : '')).join('、')}`, 'warn');
+      }
+    } catch (e) {
+      this._log('link 宿主依赖补齐异常: ' + (e?.message || e), 'warn');
+    }
+  }
+
   _log(message, level = 'info') {
     this.logs.push({ level, message, timestamp: new Date().toISOString() });
     // 通过 console.log 输出（主进程会拦截并写入调试日志文件）
