@@ -220,6 +220,7 @@ contextBridge.exposeInMainWorld('dshManager', {
   listModelProfiles: () => ipcRenderer.invoke('mcc:list-profiles'),
   getModelProfile: (id) => ipcRenderer.invoke('mcc:get-profile', id),
   saveModelProfile: (input) => ipcRenderer.invoke('mcc:save-profile', input),
+  testModelConnection: (input) => ipcRenderer.invoke('mcc:test-connection', input),
   deleteModelProfile: (id) => ipcRenderer.invoke('mcc:delete-profile', id),
   listModelConfigTools: () => ipcRenderer.invoke('mcc:list-tools'),
   applyModelProfile: (profileId, toolIds) => ipcRenderer.invoke('mcc:apply', profileId, toolIds),

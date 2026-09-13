@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
 import { ModelConfigCenter, renderTomlUpserts } from '../packages/core/src/model-config-center.js';
 
 /** 构造一个使用临时目录的实例（档案目录 + 三个工具配置文件全部落在临时目录） */
@@ -333,5 +334,54 @@ describe('模型配置中心（ModelConfigCenter）', () => {
     assert.ok(out.startsWith('default_model = "new"'));
     assert.ok(out.includes('[z]') && out.includes('w = 2'));
     assert.ok(out.includes('[x]') && out.includes('y = 1'));
+  });
+
+  // ====== 连通性检测（testConnection，本地 HTTP 端点模拟 OpenAI 兼容 /models） ======
+
+  it('testConnection 成功：请求 /v1/models 返回延迟与模型列表', async () => {
+    const server = createServer((req, res) => {
+      assert.equal(req.url, '/v1/models', '应请求 /v1/models 端点');
+      assert.equal(req.headers.authorization, 'Bearer sk-test-key', '应携带 Bearer 鉴权头');
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ data: [{ id: 'm1' }, { id: 'm2' }, { object: 'other' }] }));
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = server.address().port;
+      const { center } = ctx;
+      const res = await center.testConnection({ baseUrl: `http://127.0.0.1:${port}/v1`, apiKey: 'sk-test-key' });
+      assert.equal(res.ok, true);
+      assert.deepEqual(res.models, ['m1', 'm2']);
+      assert.ok(res.latencyMs != null && res.latencyMs >= 0);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('testConnection 失败：HTTP 错误返回状态码', async () => {
+    const server = createServer((req, res) => {
+      res.statusCode = 404;
+      res.end('not found');
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const port = server.address().port;
+      const { center } = ctx;
+      const res = await center.testConnection({ baseUrl: `http://127.0.0.1:${port}`, apiKey: 'bad-key' });
+      assert.equal(res.ok, false);
+      assert.ok(res.error.includes('HTTP 404'), 'error 应包含 HTTP 404，实际: ' + res.error);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('testConnection 校验：空地址/非法协议不发请求', async () => {
+    const { center } = ctx;
+    const empty = await center.testConnection({});
+    assert.equal(empty.ok, false);
+    assert.ok(empty.error.includes('API 地址为空'));
+    const bad = await center.testConnection({ baseUrl: 'ftp://x' });
+    assert.equal(bad.ok, false);
+    assert.ok(bad.error.includes('http(s)'));
   });
 });

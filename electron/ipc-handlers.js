@@ -2751,6 +2751,11 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return new ModelConfigCenter().saveProfile(input || {});
   });
 
+  ipcMain.handle('mcc:test-connection', async (_, input) => {
+    const { ModelConfigCenter } = await loadCore();
+    return new ModelConfigCenter().testConnection(input || {});
+  });
+
   ipcMain.handle('mcc:delete-profile', async (_, id) => {
     const { ModelConfigCenter } = await loadCore();
     return new ModelConfigCenter().deleteProfile(id);

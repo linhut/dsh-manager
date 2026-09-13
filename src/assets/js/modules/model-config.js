@@ -35,13 +35,21 @@ async function renderModelConfigPage() {
   if (!el) return;
   el.innerHTML = '<div style="padding:24px;color:var(--text-muted);">加载中…</div>';
   try {
-    const [profiles, tools] = await Promise.all([
+    const [profiles, tools, llmHtml] = await Promise.all([
       window.dshManager.listModelProfiles(),
       window.dshManager.listModelConfigTools(),
+      // LLM 提供商管理（原设置页「LLM 提供商」tab 同源复用，合并到本页）
+      typeof renderLLMProvidersTab === 'function' ? renderLLMProvidersTab() : Promise.resolve(''),
     ]);
     mccState.profiles = profiles || [];
     mccState.tools = tools || [];
-    renderMccLayout(el);
+    el.innerHTML = `
+      <div style="max-width:1100px;margin:0 auto;padding:0 8px 24px;">
+        <div id="mccLlmSection" style="margin-bottom:24px;">${llmHtml}</div>
+        <div id="mccArchiveSection">${renderMccLayout()}</div>
+      </div>`;
+    // 初始化 LLM 能力路由 UI（与设置页原「LLM 提供商」tab 同源）
+    if (typeof loadLLMRoutingUI === 'function') loadLLMRoutingUI();
   } catch (e) {
     el.innerHTML = '<div class="card" style="margin:24px;padding:16px;color:var(--danger);">加载失败：' + mccEsc(e && e.message ? e.message : e) + '</div>';
   }
@@ -52,25 +60,23 @@ async function mccRefresh() {
   await renderModelConfigPage();
 }
 
-function renderMccLayout(el) {
-  el.innerHTML = `
-    <div style="max-width:1100px;margin:0 auto;padding:0 8px 24px;">
-      <!-- 顶部操作栏 -->
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-primary" onclick="mccOpenProfileForm()">➕ 新建档案</button>
-          <button class="btn" onclick="mccExportProfiles()">📤 导出</button>
-          <button class="btn" onclick="mccImportProfiles()">📥 导入</button>
-        </div>
-        <div style="font-size:12px;color:var(--text-muted);">密钥仅保存在本机（~/.dsh/manager），应用时自动写入各工具配置并备份原文件</div>
+function renderMccLayout() {
+  return `
+    <!-- 顶部操作栏 -->
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="mccOpenProfileForm()">➕ 新建档案</button>
+        <button class="btn" onclick="mccExportProfiles()">📤 导出</button>
+        <button class="btn" onclick="mccImportProfiles()">📥 导入</button>
       </div>
+      <div style="font-size:12px;color:var(--text-muted);">密钥仅保存在本机（~/.dsh/manager），应用时自动写入各工具配置并备份原文件</div>
+    </div>
 
-      <div class="mcc-section-title">📦 配置档案</div>
-      <div id="mccProfileGrid">${renderMccProfiles()}</div>
+    <div class="mcc-section-title">📦 配置档案</div>
+    <div id="mccProfileGrid">${renderMccProfiles()}</div>
 
-      <div class="mcc-section-title" style="margin-top:28px;">🎯 应用目标工具</div>
-      <div id="mccToolTable">${renderMccTools()}</div>
-    </div>`;
+    <div class="mcc-section-title" style="margin-top:28px;">🎯 应用目标工具</div>
+    <div id="mccToolTable">${renderMccTools()}</div>`;
 }
 
 // ====== 档案列表 ======
@@ -179,10 +185,49 @@ function mccOpenProfileForm(id) {
         <label class="mcc-check"><input type="checkbox" id="mccf-default" ${p && p.setDefault ? 'checked' : ''}> 应用时设为默认</label>
       </div>
     </div>
+    <div id="mcc-test-result" style="font-size:12px;line-height:1.6;margin-top:10px;word-break:break-all;"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+      <button class="btn" onclick="mccTestConnection()">🔍 检测</button>
       <button class="btn" onclick="mccCloseModal()">取消</button>
       <button class="btn btn-primary" onclick="mccSubmitProfile('${mccEsc(id || '')}')">💾 保存</button>
     </div>`);
+}
+
+// ====== 连通性检测（借鉴 Cherry Studio Check / cc-switch 速度检测） ======
+async function mccTestConnection() {
+  const resultEl = document.getElementById('mcc-test-result');
+  if (!resultEl) return;
+  const input = {
+    baseUrl: mccVal('mccf-base'),
+    apiKey: mccVal('mccf-key') || undefined,
+    model: mccVal('mccf-model'),
+  };
+  if (!input.baseUrl) {
+    resultEl.innerHTML = '⚠️ 请先填写 API 地址';
+    return;
+  }
+  resultEl.innerHTML = '⏳ 检测中…（请求 /models 端点，超时 8s）';
+  try {
+    const res = await window.dshManager.testModelConnection(input);
+    if (res && res.ok) {
+      const ms = res.latencyMs != null ? `，延迟 ${res.latencyMs}ms` : '';
+      let html = '✅ 连接成功' + ms;
+      if (res.models && res.models.length) {
+        const shown = res.models.slice(0, 5).map((m) => '<code>' + mccEsc(m) + '</code>').join('、');
+        html += `<br>发现 ${res.models.length} 个可用模型：${shown}${res.models.length > 5 ? '…' : ''}`;
+        const modelEl = document.getElementById('mccf-model');
+        if (modelEl && !modelEl.value) {
+          modelEl.value = res.models[0];
+          html += `<br>已自动填入首个模型：<code>${mccEsc(res.models[0])}</code>`;
+        }
+      }
+      resultEl.innerHTML = html;
+    } else {
+      resultEl.innerHTML = '❌ 检测失败：' + mccEsc((res && res.error) || '未知错误');
+    }
+  } catch (e) {
+    resultEl.innerHTML = '❌ 检测异常：' + mccEsc(e && e.message ? e.message : String(e));
+  }
 }
 
 async function mccSubmitProfile(id) {

@@ -316,6 +316,41 @@ export class ModelConfigCenter {
     return this.serializeProfile(rec);
   }
 
+  /** 连通性检测：请求 OpenAI 兼容 /models 端点，验证 baseUrl/apiKey 并返回延迟与可用模型（借鉴 Cherry Studio 的 Check） */
+  async testConnection(input = {}) {
+    const baseUrl = String(input.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!baseUrl) return { ok: false, latencyMs: null, error: 'API 地址为空' };
+    if (!/^https?:\/\//i.test(baseUrl)) return { ok: false, latencyMs: null, error: 'API 地址必须以 http(s):// 开头' };
+    const url = /\/v\d+$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+    const headers = { 'Content-Type': 'application/json' };
+    const key = String(input.apiKey || '').trim();
+    if (key && !key.includes('****')) headers.Authorization = `Bearer ${key}`;
+    const started = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(url, { headers, signal: ctrl.signal });
+      clearTimeout(timer);
+      const latencyMs = Date.now() - started;
+      if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.text()).slice(0, 120); } catch { /* 非文本响应忽略 */ }
+        return { ok: false, latencyMs, error: `HTTP ${res.status}${detail ? `：${detail}` : ''}` };
+      }
+      let models = [];
+      try {
+        const data = await res.json();
+        if (Array.isArray(data) || Array.isArray(data?.data)) {
+          const list = Array.isArray(data) ? data : data.data;
+          models = list.map((m) => (typeof m === 'string' ? m : m?.id)).filter(Boolean).slice(0, 200);
+        }
+      } catch { /* 非 JSON 响应也算连通成功 */ }
+      return { ok: true, latencyMs, models };
+    } catch (e) {
+      return { ok: false, latencyMs: Date.now() - started, error: e?.name === 'AbortError' ? '请求超时（>8s，请检查地址与网络）' : (e?.message || String(e)) };
+    }
+  }
+
   /** 删除档案，返回是否删除成功 */
   deleteProfile(id) {
     const profiles = this._readProfiles();

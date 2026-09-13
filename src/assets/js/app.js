@@ -2766,7 +2766,7 @@ async function renderSettingsPage() {
   el.innerHTML = `
     <div class="settings-tab-bar">
       <button class="btn btn-primary" onclick="openSettingsTab('manager')">⚙️ Manager 设置</button>
-      <button class="btn btn-secondary" onclick="openSettingsTab('llm')">🤖 LLM 提供商</button>
+      <button class="btn btn-secondary" onclick="switchPage('modelconfig')" title="LLM 提供商管理已合并到「模型配置」页面">🤖 LLM 提供商</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('yaml')">📝 YAML 编辑器</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('presets')">🧠 Agent Presets</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('bundled')">📦 内置内容</button>
@@ -3827,7 +3827,7 @@ function openSettingsTab(tab) {
       });
       break;
     case 'llm':
-      renderLLMProvidersTab().then(html => { tabEl.innerHTML = html; loadLLMRoutingUI(); });
+      tabEl.innerHTML = '<div class="card"><div class="card-header"><span class="card-title">🤖 LLM 提供商</span></div><div class="card-body" style="padding:16px;font-size:13px;">LLM 提供商管理已合并到 <strong>模型配置</strong> 页面（左侧导航「🔀 模型配置」）。<div style="margin-top:12px;"><button class="btn btn-primary" onclick="switchPage(\'modelconfig\')">→ 前往模型配置页</button></div></div></div>';
       break;
     case 'yaml':
       renderYAMLEditorTab().then(html => { tabEl.innerHTML = html; });
@@ -4940,13 +4940,14 @@ async function saveLLMProvider() {
       }
     });
     document.querySelector('.modal-overlay.active')?.remove();
-    openSettingsTab('llm');
+    // LLM 提供商已合并到模型配置页：保存后刷新该页的提供商区块
+    if (typeof mccRefresh === 'function') mccRefresh(); else openSettingsTab('llm');
   } catch (err) { showToast('保存失败: ' + err.message, 'error'); }
 }
 
 async function deleteLLMProvider(name) {
   if (!(await showConfirm('删除 LLM 提供商', `确定删除 LLM 提供商 "${name}"？`, { confirmText: '删除', confirmVariant: 'danger' }))) return;
-  try { await window.dshManager.deleteLLMProvider(name); showToast(`🗑️ 已删除 "${name}"`, 'success'); openSettingsTab('llm'); }
+  try { await window.dshManager.deleteLLMProvider(name); showToast(`🗑️ 已删除 "${name}"`, 'success'); if (typeof mccRefresh === 'function') mccRefresh(); else openSettingsTab('llm'); }
   catch (err) { showToast('删除失败: ' + err.message, 'error'); }
 }
 
