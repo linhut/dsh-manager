@@ -216,8 +216,9 @@ const DSH_WEB_URL_RE = /dsh web:\s*(https?:\/\/\S+)/i;
  * 监听 DSH 子进程 stdout/stderr，提取带 token 的 web URL。
  * @param {import('execa').ResultPromise} child
  * @param {number} port
+ * @param {() => import('electron').BrowserWindow} getMainWindow - 主窗口获取函数（由 registerIpcHandlers 注入）
  */
-function captureDSHWebUrl(child, port) {
+function captureDSHWebUrl(child, port, getMainWindow) {
   const handle = (chunk) => {
     try {
       const text = String(chunk || '');
@@ -430,9 +431,10 @@ function startQuarantineWatcher(getMainWindow) {
 
 /**
  * 构建并启动 DSH web 子进程（供 dsh:start 与启动失败自愈重启复用）
+ * @param {() => import('electron').BrowserWindow} getMainWindow - 主窗口获取函数（由 registerIpcHandlers 注入）
  * @returns {Promise<{error?: string, child?: import('execa').ResultPromise, actualPort?: number, preferredPort?: number, portResult?: object}>}
  */
-async function spawnDSHWeb() {
+async function spawnDSHWeb(getMainWindow) {
   const { execa } = await import('execa');
   const { DSHConfig, DSHUtils, buildRuntimeEnv, getRuntimeConfig, findAvailablePort } = await loadCore();
   // 预检并迁移旧版扁平布局的凭据文件 → 新版版本化布局
@@ -568,7 +570,7 @@ async function spawnDSHWeb() {
   // —— DSH 0.1.2-alpha.4 起 web 需要 token 鉴权 ——
   // 解析 DSH 启动时打印的 "dsh web: http://127.0.0.1:<port>/?token=XXX" 行，
   // 把带 token 的完整 URL 保存下来，供 webview 使用（裸 URL 访问会 401 白屏）。
-  captureDSHWebUrl(child, actualPort);
+  captureDSHWebUrl(child, actualPort, getMainWindow);
   return { child, actualPort, preferredPort, portResult };
 }
 
@@ -731,7 +733,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       // 再启动
-      const sp = await spawnDSHWeb();
+      const sp = await spawnDSHWeb(getMainWindow);
       if (sp.error) {
         return { success: false, error: sp.error };
       }
@@ -821,7 +823,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:start', async () => {
     try {
       const { testDSHHealth } = await loadCore();
-      const sp = await spawnDSHWeb();
+      const sp = await spawnDSHWeb(getMainWindow);
       if (sp.error) {
         return { success: false, error: sp.error };
       }
@@ -893,6 +895,22 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
                 invalidPlugins.push({ id: pkg, reason: '模块缺失（stderr 指示）', kind: 'module' });
               }
             }
+          }
+
+          // 技能注册失败（dsh-skills 等技能插件与 DSH 核心 skills 服务注入契约不兼容）：
+          // 该错误是插件内部 catch 的 warn（stderr 含 "技能注册失败 ... without inject"），
+          // 兜底正则匹配不到，需单独识别并归入契约漂移分流——包体完好、协议不兼容，
+          // 正确处置是停用该插件或升级 DSH，而非移除/修复。
+          // 限定 stderr 必须提到 dsh-skills：该措辞描述的是 DSH 核心 skills 注入契约，
+          // 其他技能插件（第三方/用户安装）命中同一错误时不应误归责到 dsh-skills。
+          if (stderr && /技能注册失败|without inject/.test(stderr) && /dsh-skills/i.test(stderr) && !invalidPlugins.some(function(p) { return p.id === 'dsh-skills'; })) {
+            invalidPlugins.push({
+              id: 'dsh-skills',
+              kind: 'plugin',
+              action: 'adapt',
+              reason: '技能注册失败（dsh-skills 与 DSH 核心 skills 服务注入契约不兼容）',
+              detail: '技能插件访问 ctx.skills 时未获注入（cannot get property "skills" without inject）。可在插件管理中停用 dsh-skills 恢复 DSH 启动；技能文件仍保留在 ~/.dsh/skills，升级 DSH 或 dsh-skills 后可重新启用。',
+            });
           }
 
           // 契约漂移项（插件 import 了宿主已移除的导出，如 ui-skin-stock 用旧 installSettingsSection API）
@@ -988,7 +1006,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
             if (repaired.length > 0) {
               writeLog('info', '自愈修复完成，自动重启 DSH...');
               try {
-                const sp2 = await spawnDSHWeb();
+                const sp2 = await spawnDSHWeb(getMainWindow);
                 if (sp2.error) {
                   sendError({ afterFix: true, repaired, failed, restartError: sp2.error });
                   return;

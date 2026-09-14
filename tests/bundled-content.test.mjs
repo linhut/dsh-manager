@@ -7,11 +7,13 @@
 
 // 内置内容自动安装回归测试
 // 覆盖用户诉求"安装 dsh-manager 时自动安装内置技能/插件"：
-// - resolveBundledSkillsRoot 解析内置技能源（开发/打包/已装插件多布局）
+// - resolveBundledSkillsRoot 解析内置技能源（在线克隆缓存/开发/打包/已装多布局）
 // - syncBundledSkills 首次安装 / 幂等跳过 / 内置更新覆盖 / 用户本地修改不覆盖
-// - installDshSkillsPlugin 把 dsh-skills 插件装进 profile（node_modules + bundles）
-// - ensureBundledContent 组合执行技能同步 + 插件安装
-// - 打包配置（package.json extraResources）携带 dsh-skills
+// - installDshSkillsPlugin：纯技能集形态——在线 git clone 拉取到 pluginCache
+//   （远端有版本 tag → 检测比对已记录版本 → 判断是否拉取/更新；无 tag 已拉取即已装；
+//   24h 失败冷却；净迁移清理旧插件形态残留），技能由 syncBundledSkills 同步，无插件注册
+// - ensureBundledContent 组合执行（先拉取 dsh-skills / 装插件，再同步技能）
+// - 打包配置（package.json extraResources）不再携带 dsh-skills（已改安装时在线拉取）
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -41,6 +43,30 @@ function makeHome() {
   return {
     home,
     cleanup() { delete process.env.DSH_HOME; rmSync(home, { recursive: true, force: true }); },
+  };
+}
+
+/** 构造结构有效的克隆产物（skills/demo-skill/SKILL.md）——fake git 与断言共用 */
+function makeFakeCloneContents(dest) {
+  mkdirSync(join(dest, 'skills', 'demo-skill'), { recursive: true });
+  writeFileSync(join(dest, 'skills', 'demo-skill', 'SKILL.md'), '---\nname: demo-skill\ndescription: demo\n---\n', 'utf8');
+}
+
+/** 注入式 fake git：lsRemoteTags 可配置 tag 列表；clone 构造产物或由 cloneImpl 接管（可统计调用与收到的 tag） */
+function makeFakeGit(tags = [], opts = {}) {
+  let cloneCalls = 0;
+  let lastCloneOpts = null;
+  return {
+    get cloneCalls() { return cloneCalls; },
+    get lastCloneOpts() { return lastCloneOpts; },
+    async lsRemoteTags() { return tags; },
+    async headHash() { return opts.headHash || 'deadbeef1234'; },
+    async clone(dest, cloneOpts) {
+      cloneCalls++;
+      lastCloneOpts = cloneOpts || null;
+      if (opts.cloneImpl) return opts.cloneImpl(dest);
+      makeFakeCloneContents(dest);
+    },
   };
 }
 
@@ -148,29 +174,8 @@ describe('内置技能同步：syncBundledSkills', () => {
   });
 });
 
-// ====== dsh-skills 插件安装 ======
-describe('内置插件：installDshSkillsPlugin', () => {
-  it('把 dsh-skills 插件装进 profile（node_modules + bundles 登记）', async () => {
-    const h = makeHome();
-    try {
-      const r = await installDshSkillsPlugin('web');
-      assert.equal(r.success, true, '应安装成功: ' + (r.error || ''));
-      const nmIndex = join(h.home, 'profiles', 'web', 'node_modules', 'dsh-skills', 'index.js');
-      assert.ok(existsSync(nmIndex), 'node_modules 应有 index.js');
-      const pkg = JSON.parse(readFileSync(join(h.home, 'profiles', 'web', 'package.json'), 'utf8'));
-      assert.ok((pkg.dsh?.profile?.bundles || []).includes('dsh-skills'), 'bundles 应登记 dsh-skills');
-    } finally { h.cleanup(); }
-  });
-
-  it('幂等：第二次调用返回 already', async () => {
-    const h = makeHome();
-    try {
-      await installDshSkillsPlugin('web');
-      const r2 = await installDshSkillsPlugin('web');
-      assert.equal(r2.already, true, '第二次应识别为已安装');
-    } finally { h.cleanup(); }
-  });
-
+// ====== dsh-skills 技能集部署 ======
+describe('内置技能集：installDshSkillsPlugin（纯技能集形态）', () => {
   it('非法 profile 名拒绝', async () => {
     const h = makeHome();
     try {
@@ -179,62 +184,168 @@ describe('内置插件：installDshSkillsPlugin', () => {
     } finally { h.cleanup(); }
   });
 
-  it('已装副本内容变化时覆盖更新（不再"永不更新"）', async () => {
+  it('净迁移：清理旧插件形态残留（file: 依赖 + bundles 登记 + node_modules 副本）', async () => {
     const h = makeHome();
     try {
-      const r1 = await installDshSkillsPlugin('web');
-      assert.equal(r1.success, true, '首次应安装成功: ' + (r1.error || ''));
-      const nmIndex = join(h.home, 'profiles', 'web', 'node_modules', 'dsh-skills', 'index.js');
-      const original = readFileSync(nmIndex, 'utf8');
-      // 模拟旧版本副本/被篡改的副本
-      writeFileSync(nmIndex, original + '\n// tampered-by-test\n', 'utf8');
-      const r2 = await installDshSkillsPlugin('web');
-      assert.equal(r2.already, false, '内容变化后不应判定为 already');
-      assert.equal(readFileSync(nmIndex, 'utf8'), original, '应覆盖回内置源内容');
-    } finally { h.cleanup(); }
-  });
-
-  it('不再写入非标准 dependencies["dsh-skills"] = "file:<绝对路径>"，并清理历史遗留', async () => {
-    const h = makeHome();
-    try {
-      // 预置历史遗留的非法依赖记录
       const profileDir = join(h.home, 'profiles', 'web');
-      mkdirSync(profileDir, { recursive: true });
+      mkdirSync(join(profileDir, 'node_modules', 'dsh-skills'), { recursive: true });
+      writeFileSync(join(profileDir, 'node_modules', 'dsh-skills', 'package.json'), '{"name":"dsh-skills","version":"0.2.0"}', 'utf8');
+      writeFileSync(join(profileDir, 'node_modules', 'dsh-skills', 'index.js'), 'export default {}', 'utf8');
       writeFileSync(join(profileDir, 'package.json'), JSON.stringify({
         name: 'dsh-profile-web',
         private: true,
-        dependencies: { 'dsh-skills': 'file:C:/some/abs/node_modules/dsh-skills' },
-        dsh: { profile: { bundles: [] } },
+        dependencies: { 'dsh-skills': 'file:C:/old/node_modules/dsh-skills' },
+        dsh: { profile: { bundles: ['dsh-skills'] } },
       }, null, 2), 'utf8');
-      const r = await installDshSkillsPlugin('web');
-      assert.equal(r.success, true, '应安装成功: ' + (r.error || ''));
+      const r = await installDshSkillsPlugin('web', { git: makeFakeGit([]) });
+      assert.equal(r.success, true, '拉取应成功: ' + (r.error || ''));
       const pkg = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'));
-      assert.ok(!pkg.dependencies || !('dsh-skills' in pkg.dependencies), '应清理历史 file: 依赖');
-      assert.ok((pkg.dsh?.profile?.bundles || []).includes('dsh-skills'), 'bundles 应登记');
+      assert.ok(!pkg.dependencies || !('dsh-skills' in pkg.dependencies), '应清理 file: 依赖');
+      assert.ok(!(pkg.dsh?.profile?.bundles || []).includes('dsh-skills'), '应清理 bundles 登记');
+      assert.ok(!existsSync(join(profileDir, 'node_modules', 'dsh-skills')), '应删除旧插件副本');
     } finally { h.cleanup(); }
   });
 });
 
 // ====== 组合执行 ======
 describe('内置内容组合：ensureBundledContent', () => {
-  it('同时同步技能 + 安装插件', async () => {
+  it('一次调用：先拉取 dsh-skills（clone 落位）→ 再同步技能', async () => {
     const h = makeHome();
     try {
-      const r = await ensureBundledContent({ profile: 'web' });
-      assert.ok(r.skills.synced >= 9, '技能应同步');
-      assert.ok(r.plugins, '应返回插件结果');
-      assert.ok(r.plugins.dshSkills?.success || r.plugins.dshSkills?.already, 'dsh-skills 插件应安装');
+      let skillsBeforeClone = null;
+      const git = {
+        lsRemoteTags: async () => [],
+        headHash: async () => 'abc123',
+        clone: async (dest) => {
+          skillsBeforeClone = existsSync(join(h.home, 'skills'));
+          makeFakeCloneContents(dest);
+        },
+      };
+      const r = await ensureBundledContent({ profile: 'web', git });
+      assert.equal(skillsBeforeClone, false, '拉取时技能尚未同步（应先拉取后同步）');
+      assert.ok(r.plugins?.dshSkills?.success, 'dsh-skills 应拉取成功');
+      assert.ok(r.skills.synced >= 1, '拉取落地后应同轮同步技能，实际: ' + r.skills.synced);
+    } finally { h.cleanup(); }
+  });
+});
+
+// ====== 在线拉取路径（注入 fake git，不联网） ======
+describe('内置技能集在线拉取（默认 source=online，注入 fake git）', () => {
+  it('resolveBundledSkillsRoot 优先解析在线克隆落点（pluginCache/dsh-skills/skills）', () => {
+    const h = makeHome();
+    try {
+      makeFakeCloneContents(join(h.home, 'manager', 'plugin-cache', 'dsh-skills'));
+      const src = resolveBundledSkillsRoot();
+      assert.ok(src, '应解析到技能源');
+      assert.ok(src.replace(/\\/g, '/').endsWith('plugin-cache/dsh-skills/skills'), '应指向在线克隆落点，实际: ' + src);
+    } finally { h.cleanup(); }
+  });
+
+  it('首次拉取成功（远端无 tag）→ online-git-clone，记录 commit 版本，clone 不 pin tag', async () => {
+    const h = makeHome();
+    try {
+      const git = makeFakeGit([]);
+      const r = await installDshSkillsPlugin('web', { git });
+      assert.equal(r.success, true, '应拉取成功: ' + (r.error || ''));
+      assert.equal(r.method, 'online-git-clone');
+      assert.equal(r.version, 'deadbeef1234');
+      assert.ok(!git.lastCloneOpts || !git.lastCloneOpts.tag, '无 tag 时不应 pin 分支');
+      assert.ok(existsSync(join(h.home, 'manager', 'plugin-cache', 'dsh-skills', 'skills', 'demo-skill', 'SKILL.md')), '克隆产物应落地');
+    } finally { h.cleanup(); }
+  });
+
+  it('已拉取 + 远端无 tag（未发版）→ 无版本可比，判定已装', async () => {
+    const h = makeHome();
+    try {
+      makeFakeCloneContents(join(h.home, 'manager', 'plugin-cache', 'dsh-skills'));
+      const r = await installDshSkillsPlugin('web', { git: makeFakeGit([]) });
+      assert.equal(r.already, true, '应判定已装');
+      assert.equal(r.method, 'already-installed');
+    } finally { h.cleanup(); }
+  });
+
+  it('版本检测「有版本→检测→判断」：记录版本 >= 线上最新 tag → already-version-satisfied，不重复拉取', async () => {
+    const h = makeHome();
+    try {
+      const git1 = makeFakeGit(['v0.1.0', 'v0.2.1']);
+      const r1 = await installDshSkillsPlugin('web', { git: git1 });
+      assert.equal(r1.success, true, '首次应拉取成功: ' + (r1.error || ''));
+      assert.equal(r1.method, 'online-git-updated');
+      assert.equal(r1.version, 'v0.2.1');
+      const git2 = makeFakeGit(['v0.1.0', 'v0.2.1']);
+      const r2 = await installDshSkillsPlugin('web', { git: git2 });
+      assert.equal(r2.already, true, '版本满足应跳过');
+      assert.equal(r2.method, 'already-version-satisfied');
+      assert.equal(r2.version, 'v0.2.1');
+      assert.equal(git2.cloneCalls, 0, '不应再触发 clone');
+    } finally { h.cleanup(); }
+  });
+
+  it('版本检测：线上发布新 tag → 检测到落后 → 重新拉取更新（online-git-updated）', async () => {
+    const h = makeHome();
+    try {
+      const git1 = makeFakeGit(['v0.2.1']);
+      const r1 = await installDshSkillsPlugin('web', { git: git1 });
+      assert.equal(r1.success, true, '首次应拉取成功: ' + (r1.error || ''));
+      const git2 = makeFakeGit(['v0.2.2']);
+      const r2 = await installDshSkillsPlugin('web', { git: git2 });
+      assert.equal(r2.already, false, '版本落后不应判定已装');
+      assert.equal(r2.method, 'online-git-updated');
+      assert.equal(r2.version, 'v0.2.2');
+      assert.equal(git2.cloneCalls, 1, '应重新拉取一次更新');
+      assert.equal(git2.lastCloneOpts && git2.lastCloneOpts.tag, 'v0.2.2', '更新应 pin 到线上新 tag');
+    } finally { h.cleanup(); }
+  });
+
+  it('拉取产物结构无效（缺 skills）→ 拒绝并报错', async () => {
+    const h = makeHome();
+    try {
+      const git = makeFakeGit([], { cloneImpl: d => mkdirSync(d, { recursive: true }) });
+      const r = await installDshSkillsPlugin('web', { git });
+      assert.equal(r.success, false, '结构无效应拒绝');
+      assert.ok((r.error || '').includes('拉取产物缺少 skills'), '应说明结构校验失败: ' + r.error);
+    } finally { h.cleanup(); }
+  });
+
+  it('拉取失败：返回错误并记录状态；冷却期内自动跳过不重试', async () => {
+    const h = makeHome();
+    try {
+      const r1 = await installDshSkillsPlugin('web', { git: makeFakeGit([], { cloneImpl: () => { throw new Error('network unreachable'); } }) });
+      assert.equal(r1.success, false, '首次失败应返回错误');
+      assert.ok((r1.error || '').includes('在线获取 dsh-skills 失败'), '应携带失败原因');
+      const git2 = makeFakeGit([], { cloneImpl: () => { throw new Error('should not be called'); } });
+      const r2 = await installDshSkillsPlugin('web', { git: git2 });
+      assert.equal(r2.success, false, '冷却期内应跳过');
+      assert.equal(r2.skipped, true, '应标记 skipped');
+      assert.equal(git2.cloneCalls, 0, '冷却期内不应触发网络');
+    } finally { h.cleanup(); }
+  });
+
+  it('force 重装无视冷却，重新拉取', async () => {
+    const h = makeHome();
+    try {
+      await installDshSkillsPlugin('web', { git: makeFakeGit([], { cloneImpl: () => { throw new Error('first fail'); } }) });
+      const gitOk = makeFakeGit(['v0.2.1']);
+      const r = await installDshSkillsPlugin('web', { force: true, git: gitOk });
+      assert.equal(r.success, true, 'force 应重新拉取成功: ' + (r.error || ''));
+      assert.equal(gitOk.cloneCalls, 1, 'force 应触发拉取');
     } finally { h.cleanup(); }
   });
 });
 
 // ====== 打包配置 ======
-describe('打包配置：内置技能随包携带', () => {
-  it('package.json extraResources 包含 dsh-skills', () => {
+describe('打包配置：内置内容不再随包嵌入（改在线安装）', () => {
+  it('package.json extraResources 不再包含 dsh-skills（已改安装时在线拉取）', () => {
     const pkg = JSON.parse(read('package.json'));
     const er = pkg.build?.extraResources || [];
     const hit = er.find(e => e.from === 'dsh-skills' && e.to === 'dsh-skills');
-    assert.ok(hit, 'extraResources 应包含 dsh-skills 条目');
+    assert.ok(!hit, 'extraResources 不应再携带 dsh-skills（已改安装时在线拉取）');
+  });
+
+  it('bundled-content 声明 dsh-skills 在线源仓库地址', () => {
+    const src = read('packages/core/src/bundled-content.js');
+    assert.ok(src.includes('DSH_SKILLS_GIT_URL'), '应声明在线源常量');
+    assert.ok(src.includes('github.com/linhut/dsh-skills.git'), '在线源应为官方仓库');
   });
 
   it('main.js 启动时调用 ensureBundledContent', () => {

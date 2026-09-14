@@ -77,14 +77,6 @@
         "filter": [
           "**/*"
         ]
-      },
-      {
-        "from": "dsh-skills",
-        "to": "dsh-skills",
-        "filter": [
-          "**/*",
-          "!.git/**/*"
-        ]
       }
     ]
   },

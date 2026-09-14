@@ -2,10 +2,9 @@
 /**
  * 打包资源完整性校验的共享逻辑（供 scripts/assert-bundled-resources.mjs 与 scripts/verify.mjs 复用）
  *
- * 背景：dsh-skills 是 git 子模块，且通过 package.json 的 build.extraResources 声明
- * 打进 resources/。若构建机未执行 `git submodule update --init --recursive`，
- * electron-builder 会静默打包出**空的** resources/dsh-skills，构建全程无报错，
- * 只在用户机器运行到「未找到内置 dsh-skills 资源」时才暴露。
+ * 背景：dsh-skills 已改为「安装/首启时在线 git clone 拉取」（不随包嵌入），
+ * extraResources 当前仅携带 packages/plugins。本逻辑动态读取 package.json 的
+ * build.extraResources 生成检查项，并对旧构建残留的 resources/dsh-skills 做提示。
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -101,9 +100,14 @@ export function collectExtraResourceChecks(projectRoot, options = {}) {
           if (existsSync(target)) passes.push(`[${label}] resources/${to} 存在`);
           else failures.push(`[${label}] resources/${to} 缺失（${target}）`);
         }
-        const packagedCount = countSubDirs(join(resDir, 'dsh-skills', 'skills'));
-        if (packagedCount > 0) passes.push(`[${label}] resources/dsh-skills/skills 非空（${packagedCount} 个技能目录）`);
-        else failures.push(`[${label}] resources/dsh-skills/skills 缺失或为空（${join(resDir, 'dsh-skills', 'skills')}）`);
+        // dsh-skills 已改为「安装时在线拉取」：不应再随包嵌入。
+        // 旧构建残留的 resources/dsh-skills 仅提示不阻断（避免历史 dist 导致误报）。
+        const legacySkillsDir = join(resDir, 'dsh-skills');
+        if (!existsSync(legacySkillsDir)) {
+          passes.push(`[${label}] resources 不包含 dsh-skills（已改安装时在线拉取）`);
+        } else {
+          notes.push(`[${label}] 发现旧构建残留 resources/dsh-skills（新版本已改在线安装，可清理后重建）`);
+        }
       }
     }
   }

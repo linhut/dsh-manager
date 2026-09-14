@@ -2,15 +2,15 @@
 /**
  * 打包产物完整性断言（CI 后置兜底）
  *
- * 背景：dsh-skills 是 git 子模块，且通过 package.json 的 build.extraResources 声明
- * 打进 resources/。若构建机未执行 `git submodule update --init --recursive`，
- * electron-builder 会静默打包出**空的** resources/dsh-skills，构建全程无报错，
- * 只在用户机器运行到「未找到内置 dsh-skills 资源」时才暴露。
+ * 背景：dsh-skills 已改为「安装/首启时在线 git clone 拉取」（不随包嵌入），
+ * extraResources 当前仅携带 packages/plugins。若构建机未执行
+ * `git submodule update --init --recursive`，electron-builder 可能静默打包出空的
+ * resources/packages/plugins，构建全程无报错，只在用户机器运行时才暴露。
  *
  * 本脚本在 build 步骤之后执行，做两层校验（逻辑复用 scripts/lib/packaged-resources.mjs，
  * 与 npm run verify 第 9 项检查同源，避免两处实现漂移）：
- *   1) 源码侧：extraResources.from 是否存在、dsh-skills/skills 是否有技能目录
- *   2) 产物侧：dist 下每个打包目录的 resources/<to> 是否真实存在（含 dsh-skills/skills 非空）
+ *   1) 源码侧：extraResources.from 是否存在、dsh-skills/skills 是否有技能目录（开发布局）
+ *   2) 产物侧：dist 下每个打包目录的 resources/<to> 是否真实存在（含旧构建残留提示）
  *
  * 退出码：0 = 全部通过；1 = 存在缺失（CI 直接 fail）
  */

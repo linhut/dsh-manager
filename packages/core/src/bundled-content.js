@@ -12,32 +12,46 @@
 // 开箱即用，无需再手动从市场安装或手动同步。
 //
 // 内置内容来源（按优先级）：
+//   0. 在线拉取缓存：pluginCache/dsh-skills（纯技能集，安装/首启时 git clone）
 //   1. 打包布局：process.resourcesPath/dsh-skills（extraResources 携带）
 //   2. asar 布局：app.getAppPath()/dsh-skills
 //   3. 开发布局：仓库根 dsh-skills（git submodule）
-//   4. 兜底：已安装到 profile 的 dsh-skills 插件（node_modules/dsh-skills）
+//   4. 兜底：历史安装到 profile node_modules 的 dsh-skills
 //
 // 自动同步策略（幂等，可重复调用）：
 //   - 技能：扫描内置技能源 skills/*（含 SKILL.md 的目录），同步到
 //     ~/.dsh/skills/<name>。目标不存在或内置版更新 → 复制覆盖。
-//   - 插件：能力路由（@dsh-manager/dsh-capability-router）复用
-//     capability-router 安装器；dsh-skills 插件本体复制到 profile
-//     node_modules 并登记 dsh.profile.bundles（其 index.js 在 DSH 运行
-//     时把 skills/* 注册为运行时技能）。
+//   - dsh-skills：纯技能集形态——不随包嵌入、不做插件注册；安装/首启时
+//     在线 git clone 到 pluginCache（远端有版本 tag → 检测比对已记录版本 →
+//     判断是否拉取/更新），技能文件由上面的技能同步落位 ~/.dsh/skills。
+//   - 插件：仅能力路由（@dsh-manager/dsh-capability-router）复用
+//     capability-router 安装器。
 //   - 状态记录：~/.dsh/manager/bundled-content.json 保存上次同步结果
-//     （时间戳 + 各技能指纹），供启动校验与 UI 展示。
+//     （时间戳 + 各技能指纹 + dsh-skills 在线拉取记录），供启动校验与 UI 展示。
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, cpSync, rmSync, renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { execFile as execFileCb } from 'node:child_process';
+import { promisify } from 'node:util';
 const require = createRequire(import.meta.url);
+const execFile = promisify(execFileCb);
 import { DSH_PATHS } from './dsh-utils.js';
 import { installCapabilityRouter, isCapabilityRouterInstalled, CAPABILITY_ROUTER_PACKAGE } from './capability-router.js';
 
 /** 内置技能源目录名（dsh-skills 仓库内） */
 const SKILLS_REL = ['skills'];
+
+/** dsh-skills 在线仓库（安装/首启时 git clone 拉取，不随安装包嵌入） */
+const DSH_SKILLS_GIT_URL = 'https://github.com/linhut/dsh-skills.git';
+
+/** dsh-skills 在线拉取的候选仓库地址（git ls-remote/clone 依次尝试） */
+const DSH_SKILLS_CLONE_CANDIDATES = [DSH_SKILLS_GIT_URL];
+
+/** dsh-skills 在线安装失败后的自动重试冷却（毫秒，默认 24h；设置页手动重试/force 无视冷却） */
+const DSH_SKILLS_RETRY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /** 同步状态文件 */
 const STATE_FILE = () => join(DSH_PATHS.managerDir, 'bundled-content.json');
@@ -51,6 +65,9 @@ const IGNORE_DIRS = new Set(['.git', 'node_modules', '.github', '.githooks', '.p
  */
 export function resolveBundledSkillsRoot() {
   const candidates = [];
+  // 在线拉取缓存优先：dsh-skills 在线安装的克隆落点（git clone 到 DSH_PATHS.pluginCache），
+  // 不在包内嵌入——无网/未拉取时回退后续候选（开发布局 submodule 等）
+  try { candidates.push(join(DSH_PATHS.pluginCache, 'dsh-skills')); } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
   // ① 打包：extraResources 携带到 resources/dsh-skills
   if (typeof process !== 'undefined' && process.resourcesPath) {
     candidates.push(join(process.resourcesPath, 'dsh-skills'));
@@ -278,6 +295,8 @@ export function syncBundledSkills(options = {}) {
  *     （其 index.js 在 DSH 运行时把 skills/* 注册为运行时技能）
  * @param {string} [profile='web']
  * @param {object} [options]
+ * @param {boolean} [options.force] - 强制重装 dsh-skills（忽略已装判定）
+ * @param {string} [options.source] - dsh-skills 安装源：'online'（默认，git clone）或本地源码目录
  * @param {function} [options.onProgress]
  * @returns {Promise<{capabilityRouter: object, dshSkills: object}>}
  */
@@ -299,9 +318,10 @@ export async function installBundledPlugins(profile = 'web', options = {}) {
     if (options.onProgress) options.onProgress({ plugin: CAPABILITY_ROUTER_PACKAGE, action: 'failed', detail: results.capabilityRouter });
   }
 
-  // ② dsh-skills 插件本体（作为 bundle 装进 profile）
+  // ② dsh-skills 技能集（纯技能集形态：git clone 拉取到 pluginCache/dsh-skills，
+  //    版本 tag 检测判断是否安装/更新；技能文件由 syncBundledSkills 同步，无插件注册）
   try {
-    results.dshSkills = await installDshSkillsPlugin(profile);
+    results.dshSkills = await installDshSkillsPlugin(profile, { force: options.force, onProgress: options.onProgress, git: options.git });
     if (options.onProgress) options.onProgress({ plugin: 'dsh-skills', action: results.dshSkills.success ? (results.dshSkills.already ? 'skipped' : 'installed') : 'failed', detail: results.dshSkills });
   } catch (e) {
     results.dshSkills = { success: false, error: e.message || String(e) };
@@ -312,125 +332,200 @@ export async function installBundledPlugins(profile = 'web', options = {}) {
 }
 
 /**
- * 把 dsh-skills 插件本体安装进 profile（node_modules + dsh.profile.bundles 登记）。
- * 插件来源 = resolveBundledSkillsRoot() 的父目录（含 package.json/index.js 的 dsh-skills 根）。
+ * 确保内置 dsh-skills 技能集就位（纯技能集形态）：
+ * 不随安装包嵌入，安装/首启时在线 git clone 到 pluginCache/dsh-skills；
+ * 远端有版本 tag → 检测比对已记录版本 → 判断是否拉取/更新（有版本→检测→判断是否安装）；
+ * 技能文件由随后的 syncBundledSkills（resolveBundledSkillsRoot 候选①）同步到 ~/.dsh/skills。
  * @param {string} profile
- * @returns {Promise<{success: boolean, already?: boolean, method?: string, error?: string}>}
+ * @param {object} [options]
+ * @param {boolean} [options.force] - 强制重新拉取（忽略已装判定与冷却）
+ * @param {object} [options.git] - 注入 git 操作对象（测试用：{ lsRemoteTags, clone, headHash }）
+ * @returns {Promise<{success: boolean, already?: boolean, skipped?: boolean, method?: string, version?: string, error?: string}>}
  */
-export async function installDshSkillsPlugin(profile) {
+export async function installDshSkillsPlugin(profile, options = {}) {
   if (!profile || !/^[a-zA-Z0-9_-]+$/.test(profile)) {
     return { success: false, error: '非法的 profile 名称' };
   }
-  // 定位 dsh-skills 插件根（含 package.json 的目录）
-  const skillsDir = resolveBundledSkillsRoot();
-  if (!skillsDir) return { success: false, error: '未找到内置 dsh-skills 资源' };
-  const pluginRoot = dirname(skillsDir); // <root>/dsh-skills
-  if (!existsSync(join(pluginRoot, 'package.json')) || !existsSync(join(pluginRoot, 'index.js'))) {
-    return { success: false, error: '内置 dsh-skills 缺少插件入口（package.json/index.js）' };
-  }
-
-  const profileDir = join(DSH_PATHS.profiles, profile);
-  const pkgFile = join(profileDir, 'package.json');
-  const nmDir = join(profileDir, 'node_modules');
-  const nmTarget = join(nmDir, 'dsh-skills');
-
-  // 内置源的内容指纹（与文件 mtime 无关）
-  const sourceFp = treeFingerprint(pluginRoot);
-  const state = readState();
-
-  // 已安装判定 ①：node_modules 有包 且 bundles 已登记
-  const installedOk = existsSync(join(nmTarget, 'package.json')) && existsSync(join(nmTarget, 'index.js'));
-  let bundlesOk = false;
-  if (installedOk && existsSync(pkgFile)) {
-    try {
-      const manifest = JSON.parse(readFileSync(pkgFile, 'utf-8'));
-      const bundles = manifest && manifest.dsh && manifest.dsh.profile && Array.isArray(manifest.dsh.profile.bundles) ? manifest.dsh.profile.bundles : [];
-      bundlesOk = bundles.includes('dsh-skills');
-    } catch { bundlesOk = false; }
-  }
-
-  // 已安装判定 ②：内容指纹比对 —— 内置源与已装副本内容一致才视为已安装。
-  // 必须实算「已装副本」的树指纹再与内置源比对：副本被改动/损坏、或内置源升级（内容变化）
-  // 都会判定为需要覆盖更新；不可只依据 state 记录的上次源指纹，否则副本被改也会被误判为 already。
-  let contentSame = false;
-  if (installedOk && bundlesOk && sourceFp) {
-    contentSame = treeFingerprint(nmTarget) === sourceFp;
-  }
-  if (installedOk && bundlesOk && contentSame) {
-    return { success: true, already: true, method: 'already-installed' };
-  }
-
-  // 复制插件本体（排除 .git）：先复制到暂存目录，再整体切换（tmp → rename），
-  // 避免中途失败/进程被杀留下半成品副本；失败时回滚旧副本。
-  if (!installedOk || !contentSame) {
-    const stamp = Date.now();
-    const staging = join(nmDir, '.dsh-skills.staging-' + stamp);
-    const backup = join(nmDir, '.dsh-skills.backup-' + stamp);
-    try {
-      mkdirSync(nmDir, { recursive: true });
-      if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });
-      copyTree(pluginRoot, staging);
-      if (existsSync(nmTarget)) renameSync(nmTarget, backup);
-      try {
-        renameSync(staging, nmTarget);
-      } catch (swapErr) {
-        // 切换失败：回滚旧副本，保证不出现「新没装上、旧也没了」
-        try { if (existsSync(backup) && !existsSync(nmTarget)) renameSync(backup, nmTarget); } catch { /* 忽略 */ }
-        throw swapErr;
-      }
-      if (existsSync(backup)) rmSync(backup, { recursive: true, force: true });
-    } catch (e) {
-      try { if (existsSync(staging)) rmSync(staging, { recursive: true, force: true }); } catch { /* 忽略 */ }
-      return { success: false, error: '复制 dsh-skills 插件失败: ' + (e.message || e) };
-    }
-  }
-
-  // 登记 bundles（读改写 profile package.json，带备份 + 原子替换）
-  try {
-    if (!existsSync(pkgFile)) {
-      mkdirSync(profileDir, { recursive: true });
-      writeFileSync(pkgFile, JSON.stringify({ name: 'dsh-profile-' + profile, private: true, dependencies: {}, dsh: { profile: { bundles: [] } } }, null, 2) + '\n', 'utf-8');
-    }
-    const manifest = JSON.parse(readFileSync(pkgFile, 'utf-8'));
-    if (!manifest.dsh) manifest.dsh = {};
-    if (!manifest.dsh.profile) manifest.dsh.profile = {};
-    if (!Array.isArray(manifest.dsh.profile.bundles)) manifest.dsh.profile.bundles = [];
-    if (!manifest.dsh.profile.bundles.includes('dsh-skills')) {
-      manifest.dsh.profile.bundles.push('dsh-skills');
-    }
-    // 清理历史遗留的非标准依赖记录：早期版本写入 dependencies['dsh-skills'] = 'file:<绝对路径>'，
-    // 绝对路径不可移植（换机/换目录即失效），且非 npm 规范写法，属于错误来源。
-    // 插件由 node_modules 副本 + dsh.profile.bundles 登记共同生效，无需该条依赖。
-    if (manifest.dependencies && typeof manifest.dependencies['dsh-skills'] === 'string') {
-      const dep = manifest.dependencies['dsh-skills'];
-      if (dep.startsWith('file:') || dep.includes('node_modules/dsh-skills')) {
-        delete manifest.dependencies['dsh-skills'];
-      }
-    }
-    // 备份后原子写（tmp → rename，避免写一半导致 profile manifest 损坏）
-    const bk = pkgFile + '.bak-' + Date.now();
-    try { cpSync(pkgFile, bk); } catch { /* 备份失败不阻断 */ }
-    const tmp = pkgFile + '.tmp-' + Date.now();
-    writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
-    try {
-      renameSync(tmp, pkgFile);
-    } catch (renameErr) {
-      // rename 失败（如目标被其他进程占用）→ 退回直接写入，保证登记不丢
-      console.warn('[dsh-manager] profile manifest 原子替换失败，退回直接写入:', renameErr?.message || renameErr);
-      writeFileSync(pkgFile, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
-      try { if (existsSync(tmp)) rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
-    }
-  } catch (e) {
-    return { success: false, error: '登记 dsh-skills bundle 失败: ' + (e.message || e) };
-  }
-
-  // 记录本次安装的内容指纹（下次启动走快速路径，内容未变即跳过）
-  if (!state.plugins) state.plugins = {};
-  state.plugins['dsh-skills'] = { fingerprint: sourceFp, syncedAt: new Date().toISOString() };
-  writeState(state);
-
-  return { success: true, already: false, method: (installedOk ? 'updated' : 'copied') + '+bundles' };
+  return installDshSkillsOnline(profile, options);
 }
+
+/**
+ * 在线获取 dsh-skills 技能集：git clone 到 pluginCache/dsh-skills（不随安装包嵌入）。
+ * 版本检测——远端有版本 tag 时：已拉取且记录版本 >= 线上最新 tag → 跳过（不重装）；
+ * 已拉取但落后 → 拉对应 tag 更新；远端无 tag（未发版）→ 无版本可比，已拉取即视为已装。
+ * 无网/仓库不可达 → 记录失败并入 24h 冷却（离线环境不蹭网），设置页手动「安装内置插件」/force 无视冷却。
+ * 技能文件由紧随其后的 syncBundledSkills（resolveBundledSkillsRoot 候选① pluginCache/dsh-skills）
+ * 同步到 ~/.dsh/skills——本函数只保证 skills 源（克隆）就位，不注册任何插件。
+ */
+async function installDshSkillsOnline(profile, options = {}) {
+  const force = !!options.force;
+  const cacheDir = join(DSH_PATHS.pluginCache, 'dsh-skills');
+  const git = options.git || defaultGitOps;
+  try {
+    let targetTag = null;
+    let needFetch = false;
+    if (force) {
+      // 强制：探测线上最新版本 tag 作为目标；探测失败按默认分支拉取
+      try { targetTag = pickLatestTag(await git.lsRemoteTags()); } catch { /* 忽略 */ }
+      needFetch = true;
+    } else {
+      const installed = isValidDshSkillsClone(cacheDir);
+      needFetch = !installed;
+      // 版本检测：远端有 tag（版本）→ 比对已记录版本 → 判断是否安装/更新
+      let remoteTags = null;
+      try { remoteTags = await git.lsRemoteTags(); } catch { /* 网络异常按无版本处理 */ }
+      targetTag = pickLatestTag(remoteTags);
+      if (installed && !targetTag) {
+        // 远端无版本（未发 tag）→ 无版本可比，已拉取即视为已装
+        return { success: true, already: true, method: 'already-installed', version: readRecordedSkillsVersion() };
+      }
+      if (installed && targetTag) {
+        const recorded = readRecordedSkillsVersion();
+        if (recorded && compareVersions(recorded, targetTag) >= 0) {
+          return { success: true, already: true, method: 'already-version-satisfied', version: recorded };
+        }
+        // 已拉取但落后于线上版本 → 标记需要按 tag 重新拉取更新
+        needFetch = true;
+      }
+      // 冷却：上次拉取失败后（默认 24h 内）不再重复网络尝试
+      const lastAttempt = readState().dshSkillsOnline;
+      if (lastAttempt && !lastAttempt.ok && lastAttempt.lastAttemptAt && (Date.now() - Date.parse(lastAttempt.lastAttemptAt)) < DSH_SKILLS_RETRY_COOLDOWN_MS) {
+        return { success: false, skipped: true, error: `上次在线获取 dsh-skills 失败（${lastAttempt.lastError || '未知原因'}），冷却期内自动跳过，可在设置页手动重试` };
+      }
+    }
+    // 净迁移：清理旧「插件形态」残留（bundles 登记 / link:/file: 依赖 / node_modules 副本）
+    cleanupLegacyDshSkillsPlugin(profile);
+    // 拉取：needFetch = 未拉取 / 版本检测落后（需更新到线上 tag）/ force 强拉。
+    // 浅克隆到 pluginCache；更新 / force 场景 defaultGitOps.clone 会先清旧缓存
+    if (needFetch) {
+      await git.clone(cacheDir, { tag: targetTag });
+    }
+    if (!isValidDshSkillsClone(cacheDir)) {
+      throw new Error('拉取产物缺少 skills/*/SKILL.md，仓库结构可能已变更（' + DSH_SKILLS_GIT_URL + '）');
+    }
+    const version = targetTag || (await git.headHash(cacheDir));
+    markDshSkillsOnlineAttempt(true, { version });
+    return { success: true, already: false, method: targetTag ? 'online-git-updated' : 'online-git-clone', version };
+  } catch (e) {
+    markDshSkillsOnlineAttempt(false, { error: e?.message });
+    return { success: false, error: '在线获取 dsh-skills 失败: ' + (e?.message || e) };
+  }
+}
+
+/** 简单语义化版本比较（'v' 前缀容错，数字段逐段比较；缺段按 0 计），a<b 返回 -1，相等 0，a>b 1 */
+function compareVersions(a, b) {
+  if (a === b) return 0;
+  const pa = String(a || '').replace(/^v/i, '').split('.');
+  const pb = String(b || '').replace(/^v/i, '').split('.');
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = parseInt(pa[i], 10) || 0;
+    const y = parseInt(pb[i], 10) || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+/** 从 tag 列表挑最新语义化版本 tag（'v' 前缀容错；无版本 tag 返回 null） */
+function pickLatestTag(tags) {
+  if (!Array.isArray(tags) || tags.length === 0) return null;
+  const semverTags = tags.filter(t => /^v?\d+(\.\d+){1,2}([-+].*)?$/.test(String(t).trim()));
+  if (semverTags.length === 0) return null;
+  semverTags.sort((a, b) => compareVersions(a, b));
+  return semverTags[semverTags.length - 1];
+}
+
+/** 校验拉取产物是否为有效 dsh-skills（纯技能集：skills/ 下至少一个含 SKILL.md 的技能目录） */
+function isValidDshSkillsClone(dir) {
+  try {
+    const skillsDir = join(dir, 'skills');
+    if (!existsSync(skillsDir)) return false;
+    return readdirSync(skillsDir, { withFileTypes: true }).some(e => e.isDirectory() && existsSync(join(skillsDir, e.name, 'SKILL.md')));
+  } catch { return false; }
+}
+
+/** 读取最近一次成功拉取记录的版本（线上 tag 或 commit 前 12 位），无记录返回 null */
+function readRecordedSkillsVersion() {
+  try {
+    const rec = readState().dshSkillsOnline;
+    return (rec && rec.ok && rec.version) || null;
+  } catch { return null; }
+}
+
+/** 记录在线拉取尝试结果（成功记录版本/清除失败标记；失败写入时间与原因） */
+function markDshSkillsOnlineAttempt(ok, extra = {}) {
+  try {
+    const state = readState();
+    state.dshSkillsOnline = {
+      ok: !!ok,
+      lastAttemptAt: new Date().toISOString(),
+      version: ok ? (extra.version || state.dshSkillsOnline?.version) : undefined,
+      lastError: ok ? undefined : (extra.error || ''),
+    };
+    writeState(state);
+  } catch { /* 状态记录失败不影响主流程 */ }
+}
+
+/**
+ * 净迁移：清理 dsh-skills 旧「插件形态」残留——dsh.profile.bundles 登记、
+ * dependencies 里的 link:/file: 依赖、profile node_modules/dsh-skills 副本。
+ * 纯技能集形态下这些条目指向已不存在的插件（插件 index.js 已移除），
+ * 不清除会导致升级用户加载失效插件（技能注册 without inject 故障复现）。
+ */
+function cleanupLegacyDshSkillsPlugin(profile) {
+  try {
+    const pkgFile = join(DSH_PATHS.profiles, profile, 'package.json');
+    if (existsSync(pkgFile)) {
+      const manifest = JSON.parse(readFileSync(pkgFile, 'utf-8'));
+      let changed = false;
+      if (manifest.dependencies && typeof manifest.dependencies['dsh-skills'] === 'string') {
+        delete manifest.dependencies['dsh-skills'];
+        changed = true;
+      }
+      if (Array.isArray(manifest?.dsh?.profile?.bundles) && manifest.dsh.profile.bundles.includes('dsh-skills')) {
+        manifest.dsh.profile.bundles = manifest.dsh.profile.bundles.filter(b => b !== 'dsh-skills');
+        changed = true;
+      }
+      if (changed) writeFileSync(pkgFile, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
+    }
+    const nmTarget = join(DSH_PATHS.profiles, profile, 'node_modules', 'dsh-skills');
+    if (existsSync(nmTarget)) rmSync(nmTarget, { recursive: true, force: true });
+  } catch { /* 清理失败不阻断拉取 */ }
+}
+
+/** 默认 git 操作实现（生产链路）：ls-remote 探测版本 tag → 浅克隆 → HEAD 哈希 */
+const defaultGitOps = {
+  async lsRemoteTags() {
+    let lastErr;
+    for (const url of DSH_SKILLS_CLONE_CANDIDATES) {
+      try {
+        const { stdout } = await execFile('git', ['ls-remote', '--tags', '--refs', url], { timeout: 20000 });
+        return stdout.split(/\r?\n/).map(l => l.split('refs/tags/')[1]).filter(Boolean);
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('git ls-remote 全部候选失败');
+  },
+  async clone(dest, { tag } = {}) {
+    let lastErr;
+    for (const url of DSH_SKILLS_CLONE_CANDIDATES) {
+      try {
+        if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+        const args = ['clone', '--depth', '1', '--single-branch'];
+        if (tag) args.push('--branch', tag);
+        args.push(url, dest);
+        await execFile('git', args, { timeout: 120000 });
+        return;
+      } catch (e) { lastErr = e; }
+    }
+    throw lastErr || new Error('git clone 全部候选失败');
+  },
+  async headHash(dest) {
+    try {
+      const { stdout } = await execFile('git', ['-C', dest, 'rev-parse', 'HEAD'], { timeout: 10000 });
+      return stdout.trim().slice(0, 12);
+    } catch { return null; }
+  },
+};
 
 /**
  * 一键执行内置内容自动安装（技能同步 + 插件安装），幂等。
@@ -444,11 +539,13 @@ export async function installDshSkillsPlugin(profile) {
  */
 export async function ensureBundledContent(options = {}) {
   const profile = options.profile || 'web';
-  const skills = syncBundledSkills({ force: options.forceSkills, onProgress: options.onProgress });
   let plugins = null;
   if (options.installPlugins !== false) {
-    plugins = await installBundledPlugins(profile, { onProgress: options.onProgress });
+    plugins = await installBundledPlugins(profile, { onProgress: options.onProgress, force: options.force, git: options.git });
   }
+  // 技能同步在插件安装之后：在线模式下技能源来自插件线的克隆落点（pluginCache/dsh-skills），
+  // 先装插件再同步技能，首启即可同轮落地技能；离线/无源时同步失败静默、下次启动自动重试
+  const skills = syncBundledSkills({ force: options.forceSkills, onProgress: options.onProgress });
   return { skills, plugins };
 }
 
@@ -459,6 +556,7 @@ export function getBundledContentState() {
     lastSyncAt: state.lastSyncAt || null,
     source: state.source || null,
     skills: state.skills || {},
+    dshSkillsOnline: state.dshSkillsOnline || null,
   };
 }
 
