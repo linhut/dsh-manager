@@ -111,18 +111,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # 必须递归拉取子模块：dsh-skills 是 extraResources 声明的子模块，
-          # 未拉取时 electron-builder 会静默打包出空的 resources/dsh-skills，
-          # 运行时才会在「内置 dsh-skills 资源缺失」处失败（构建阶段无报错）。
+          # 必须递归拉取子模块：dsh-skills 为纯技能集（含 skills/），用作开发形态
+          # 技能源回退；安装包运行时技能走在线拉取（不再嵌入 extraResources）。
+          # 未拉取时仅影响仓库根技能源，构建可继续。
           submodules: recursive
 
       # 子模块资源非空断言（前置快速失败）：CI 未拉起子模块时立即中断，
-      # 避免 electron-builder 静默打包出空的 resources/dsh-skills。
+      # 避免开发形态技能源缺失时排查困难。
       - name: Verify dsh-skills submodule is populated
         shell: bash
         run: |
-          if [ ! -f dsh-skills/package.json ] || [ ! -d dsh-skills/skills ]; then
-            echo "::error::dsh-skills 子模块未拉取或为空，请确认 checkout 已使用 submodules: recursive"
+          if [ ! -d dsh-skills/skills ]; then
+            echo "::error::dsh-skills 子模块未拉取或为空（纯技能集形态，须含 skills/），请确认 checkout 已使用 submodules: recursive"
             ls -la dsh-skills || true
             exit 1
           fi
