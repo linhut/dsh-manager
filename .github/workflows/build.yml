@@ -64,7 +64,9 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 测试与工具链依赖 Node 22：execa@10 使用 Set.prototype.union（V8 12.4+），
+          # Node 20 会在 import 阶段直接抛 TypeError。Electron 33 的 V8 已含该特性，运行时不受影响。
+          node-version: 22
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -158,7 +160,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 测试与工具链依赖 Node 22：execa@10 使用 Set.prototype.union（V8 12.4+），
+          # Node 20 会在 import 阶段直接抛 TypeError。Electron 33 的 V8 已含该特性，运行时不受影响。
+          node-version: 22
           cache: npm
 
       # 依赖一次装齐（generate-icons 仅复制 logo 文件，无需 sharp；不写入 package.json）
