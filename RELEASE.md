@@ -173,11 +173,13 @@ git push atomgit vx.y.z
 | Windows ARM64（信创 ARM） | `DSH-Manager-{version}-arm64.exe` | `DSH-Manager-1.3.4-arm64.exe` |
 | macOS Intel | `DSH-Manager-{version}-x64.dmg` | `DSH-Manager-1.3.4-x64.dmg` |
 | macOS Apple Silicon | `DSH-Manager-{version}-arm64.dmg` | `DSH-Manager-1.3.4-arm64.dmg` |
-| Linux x64 | `DSH-Manager-{version}-x64.AppImage` / `-x64.deb` | `DSH-Manager-1.4.0-x64.AppImage` |
-| Linux ARM64（飞腾/鲲鹏） | `DSH-Manager-{version}-arm64.AppImage` / `-arm64.deb` | `DSH-Manager-1.4.0-arm64.AppImage` |
+| Linux x64 | `DSH-Manager-{version}-x86_64.AppImage` / `-amd64.deb` | `DSH-Manager-2.0.7-x86_64.AppImage` |
+| Linux ARM64（飞腾/鲲鹏） | `DSH-Manager-{version}-arm64.AppImage` / `-arm64.deb` | `DSH-Manager-2.0.7-arm64.AppImage` |
 
-> 命名统一由 `package.json` 的 `build.{win,mac,linux}.artifactName = DSH-Manager-${version}-${arch}.${ext}` 生成，`${arch}` 取 electron-builder 的 `x64` / `arm64`。
-> 因此 Linux 产物为 `-x64.*` / `-arm64.*`，与官网与 Release 文案完全一致；历史上的 `-x86_64` / `-amd64` 写法已废弃。
+> **Linux x64 的 `${arch}` 是目标相关展开**：electron-builder 内建 arch 名按打包目标取值，
+> AppImage 得 `x86_64`、deb 得 `amd64`（Debian 官方架构名），**不是** `x64`。
+> 因此 Windows/macOS 用 `-x64.*`，Linux 用 `-x86_64.*` / `-amd64.*`；
+> 这与 `README.md`、`docs/信创部署指南.md` 中的写法一致，改名前须同步这三处。
 
 > 信创环境安装指引见 [docs/信创部署指南.md](docs/信创部署指南.md)；龙芯/申威无 Electron 包，用浏览器访问 DSH 网页（纯 Web 模式）。
 
