@@ -24,6 +24,29 @@ import { tmpdir } from 'node:os';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 
+/**
+ * junction 能力探测：Windows 网络盘（UNC 映射盘）与部分受限文件系统
+ * 不支持创建 junction，会抛 UNKNOWN。此时整组用例跳过并说明原因，
+ * 而不是伪装成代码失败——被验证的行为本身没有变化。
+ */
+function supportsJunction() {
+  const base = mkdtempSync(join(tmpdir(), 'dshm-link-probe-'));
+  try {
+    const target = join(base, 'target');
+    mkdirSync(target);
+    symlinkSync(target, join(base, 'link'), 'junction');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { rmSync(base, { recursive: true, force: true }); } catch { /* 临时目录清理失败不影响结论 */ }
+  }
+}
+
+const SKIP_NO_JUNCTION = supportsJunction()
+  ? false
+  : '当前文件系统不支持 junction（网络盘或权限受限）';
+
 /** 构造一个 pnpm 严格布局的临时 DSH_HOME，返回清理函数 */
 function setupPnpmLayout() {
   const home = mkdtempSync(join(tmpdir(), 'dshm-link-')).replace(/\\/g, '/');
@@ -88,7 +111,7 @@ function setupPnpmLayout() {
   return { home, profiles, nmRoot, pluginCache };
 }
 
-describe('link 插件宿主依赖修复（pnpm 严格布局）', () => {
+describe('link 插件宿主依赖修复（pnpm 严格布局）', { skip: SKIP_NO_JUNCTION }, () => {
   let env;
   before(() => {
     env = setupPnpmLayout();
@@ -125,7 +148,7 @@ describe('link 插件宿主依赖修复（pnpm 严格布局）', () => {
   });
 });
 
-describe('link 插件宿主依赖修复（npm hoisted 布局兼容）', () => {
+describe('link 插件宿主依赖修复（npm hoisted 布局兼容）', { skip: SKIP_NO_JUNCTION }, () => {
   it('顶层 node_modules 有宿主包时仍能注入', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dshm-link2-')).replace(/\\/g, '/');
     const profiles = join(home, 'profiles', 'web');

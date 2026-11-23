@@ -64,7 +64,7 @@ describe('IPC Consistency', () => {
     const ipc = read('electron/ipc-handlers.js');
     const preload = read('electron/preload.cjs');
     const handlers = [...new Set([...ipc.matchAll(/ipcMain\.handle\s*\(\s*'([^']+)'/g)].map(m => m[1]))].sort();
-    const invokes = [...new Set([...preload.matchAll(/ipcRenderer\.invoke\s*\(\s*'([^']+)'/g)].map(m => m[1]))].sort();
+    const invokes = [...new Set([...preload.matchAll(/(?:ipcRenderer\.invoke|invokeIpc)\s*\(\s*'([^']+)'/g)].map(m => m[1]))].sort();
     assert.equal(handlers.length, invokes.length, 'Handler count mismatch');
     const missing = handlers.filter(h => !invokes.includes(h));
     const extra = invokes.filter(h => !handlers.includes(h));

@@ -1198,9 +1198,11 @@ export class DSHConfig {
       if (!clean.apiKeyEnv) delete clean.apiKeyEnv;   // credentialRef("") 抛错 → 整段拒绝
       delete clean.provider;                            // pi-ai rejectRemovedFields 拒 provider 字段
       delete clean.apiKey;                              // 明文密钥不进 settings（应存凭据文件）
-      const b = String(clean.baseURL || '').trim();
+      // 大小写兼容：旧配置写 baseUrl，pi-ai 读 baseURL；只认一种会把条目误判为空地址丢弃
+      const b = String(clean.baseURL || clean.baseUrl || '').trim();
       if (!b) return null;                              // 空 baseURL → 该条不可服务，直接丢弃
       clean.baseURL = b;
+      delete clean.baseUrl;
       clean.api = clean.api || 'openai-completions';
       if (Array.isArray(clean.models)) {
         clean.models = clean.models.map(m => {

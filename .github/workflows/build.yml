@@ -50,10 +50,32 @@ jobs:
           fi
           echo "✅ tag v$TAG 与 package.json 版本 $PKG 一致"
 
+  # ===== 发布前质量门禁：契约 + 审计 + 测试，任一失败即终止发布 =====
+  # 与 ci.yml 共用同一组命令；放在构建之前，避免把回归带上 Release。
+  quality:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: IPC contract consistency
+        run: npm run check:contract
+      - name: Audit
+        run: npm run verify
+      - name: Tests
+        run: npm test
+
   # ===== 三平台构建（矩阵） =====
   build:
     name: Build ${{ matrix.platform }}
-    needs: check-version
+    needs: [check-version, quality]
     if: ${{ !cancelled() }}
     strategy:
       fail-fast: false

@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH Manager 优化设计 — 对齐 DSH 0.2.x 官方开发规范</title>
+<style>
+  :root{
+    --ink:#0f172a; --ink-2:#334155; --ink-3:#64748b; --line:#e2e8f0;
+    --bg:#f8fafc; --card:#ffffff; --brand:#4f46e5; --brand-soft:#eef2ff;
+    --p0:#b91c1c; --p0-soft:#fef2f2; --p1:#b45309; --p1-soft:#fffbeb;
+    --p2:#0f766e; --p2-soft:#f0fdfa;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei",-apple-system,sans-serif;
+    font-size:14px; line-height:1.75;
+  }
+  .page{max-width:960px;margin:0 auto;padding:48px 40px 80px}
+  header{border-bottom:3px solid var(--brand);padding-bottom:24px;margin-bottom:8px}
+  .kicker{color:var(--brand);font-size:12px;letter-spacing:.14em;font-weight:700;text-transform:uppercase}
+  h1{font-size:30px;line-height:1.3;margin:10px 0 8px;letter-spacing:-.02em}
+  .sub{color:var(--ink-3);font-size:14px}
+  .meta{display:flex;gap:24px;flex-wrap:wrap;margin-top:16px;font-size:12.5px;color:var(--ink-3)}
+  .meta b{color:var(--ink-2);font-weight:600}
+
+  h2{font-size:19px;margin:44px 0 6px;padding-left:12px;border-left:4px solid var(--brand)}
+  h3{font-size:15px;margin:26px 0 8px}
+  p{margin:8px 0}
+  .lead{background:var(--brand-soft);border:1px solid #c7d2fe;border-radius:10px;padding:16px 18px;margin:20px 0 0}
+  .lead strong{color:var(--brand)}
+  .statusbar{display:flex;align-items:center;gap:10px;margin-top:14px;padding:10px 14px;border:1px solid #bbf7d0;background:#f0fdf4;border-radius:8px;font-size:12.5px;color:#166534}
+  .statusbar .dot{width:8px;height:8px;border-radius:50%;background:#16a34a;flex:none}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;background:var(--card)}
+  th{background:#f1f5f9;text-align:left;font-weight:700;color:var(--ink-2);border:1px solid var(--line);padding:9px 11px}
+  td{border:1px solid var(--line);padding:9px 11px;vertical-align:top}
+  tr:nth-child(even) td{background:#fcfdff}
+  code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;font-family:Consolas,monospace}
+
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .stat .n{font-size:24px;font-weight:800;letter-spacing:-.02em}
+  .stat .l{font-size:12px;color:var(--ink-3);margin-top:2px}
+
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;letter-spacing:.04em}
+  .t0{color:var(--p0);background:var(--p0-soft);border:1px solid #fecaca}
+  .t1{color:var(--p1);background:var(--p1-soft);border:1px solid #fde68a}
+  .t2{color:var(--p2);background:var(--p2-soft);border:1px solid #99f6e4}
+
+  .arch{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  .layer{border:1px solid var(--line);border-radius:8px;padding:11px 14px;margin:0 0 0;background:#fff}
+  .layer + .arrow{margin:0}
+  .layer h4{margin:0 0 3px;font-size:13px;color:var(--ink)}
+  .layer p{margin:0;font-size:12px;color:var(--ink-3)}
+  .arrow{text-align:center;color:var(--ink-3);font-size:11px;padding:5px 0}
+  .layer.host{border-color:#c7d2fe;background:#f5f7ff}
+  .layer.client{border-color:#bbf7d0;background:#f6fef9}
+
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:12px 0}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .box h4{margin:0 0 6px;font-size:13px}
+  .box ul{margin:0;padding-left:18px}
+  .box li{margin:3px 0;font-size:12.5px;color:var(--ink-2)}
+
+  ul.clean{padding-left:18px}
+  ul.clean li{margin:4px 0}
+
+  .check{list-style:none;padding-left:0}
+  .check li{padding-left:22px;position:relative;margin:5px 0;font-size:13px}
+  .check li::before{content:"";position:absolute;left:0;top:6px;width:12px;height:12px;border:1.5px solid #94a3b8;border-radius:3px}
+
+  footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-3);display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+  @media print{
+    body{background:#fff;font-size:11.5pt}
+    .page{max-width:none;padding:0}
+    h2{page-break-after:avoid}
+    table,.arch,.box,.stat{page-break-inside:avoid}
+  }
+  @media (max-width:760px){
+    .grid{grid-template-columns:repeat(2,1fr)}
+    .two{grid-template-columns:1fr}
+    .page{padding:28px 18px}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="kicker">Architecture Review · Host-side Compliance</div>
+  <h1>DSH Manager 优化设计</h1>
+  <div class="sub">对齐 DSH 0.2.x 官方开发规范（基线 0.2.1-rc.5）· 全栈审计与分阶段实施方案</div>
+  <div class="meta">
+    <span><b>项目</b> linhut/dsh-manager v2.0.7</span>
+    <span><b>规范基线</b> deepseek-harness docs b830ec950</span>
+    <span><b>体检日期</b> 2026-11-23</span>
+    <span><b>范围</b> 架构 / 安全 / 生命周期 / 前端 / 门禁</span>
+  </div>
+</header>
+
+<div class="lead">
+  <strong>核心判断：</strong>功能完整度不是问题，问题在三条 Host 纪律尚未落地——<b>契约单一来源、跨端物理隔离、副作用 100% 可逆</b>。
+  147 个 IPC 通道、140+ 个手写 preload 方法、共享 session 的 webview，让每一次迭代都在为隐性耦合付利息。
+  本方案不改功能，只把这三点补成结构性约束。
+</div>
+
+<div class="statusbar">
+  <span class="dot"></span>
+  <span><b>实施进度</b>：P0-1 隔离（13/13）· P0-2 契约（159 条）· P0-3 信封灰度（12/12）· P1-1 作用域（9/9）· P1-2 状态机（21/21）· P1-3a 页面契约（18/18）· P2-1 CI · P2-2 卫生 · 全量 397/397</span>
+</div>
+
+<h2>一、规范适用性判定</h2>
+<p>DSH Manager 不是 DSH 插件包：不上架 <code>dsh plugin add</code>，不声明 <code>dsh.bundle</code>，也不进 profile。它是 DSH 的<b>桌面宿主</b>。因此官方规范需分三类处理，不能整篇照搬。</p>
+
+<table>
+  <thead><tr><th style="width:26%">官方条款</th><th style="width:30%">原文要求</th><th style="width:34%">本项目映射</th><th style="width:10%">适用性</th></tr></thead>
+  <tbody>
+    <tr><td>显式依赖 <code>inject</code></td><td>服务名与消费名完全匹配，缺失依赖不上线</td><td>IPC 通道即服务契约：名字、入参、返回必须单一来源</td><td>直接适用</td></tr>
+    <tr><td>生命周期可逆</td><td>副作用登记 disposer，卸载后行为完全还原</td><td>handler 模块、页面、webview 均需可完整卸载</td><td>直接适用</td></tr>
+    <tr><td>跨端物理隔离</td><td>Browser 端不调 Node 原语，Host Context 不外泄</td><td>主进程 / preload / 渲染进程 / webview 四层边界</td><td>直接适用</td></tr>
+    <tr><td>配置 schema 校验</td><td>非法输入明确报错，不静默兜底</td><td>IPC 入参校验 + settings.yaml 结构校验</td><td>直接适用</td></tr>
+    <tr><td>一切皆插件</td><td>能力解耦，独立装卸</td><td>147 个通道按域拆分，注册即副作用</td><td>转译适用</td></tr>
+    <tr><td>Bundle / Profile 层序</td><td>patch 层按序组合，后层胜出</td><td>本项目是这些对象的操作方，需正确呈现层序</td><td>转译适用</td></tr>
+    <tr><td><code>defineTool</code> / UI 卡片</td><td>工具契约、卡片纯函数</td><td>不注册模型工具，不涉及</td><td>不适用</td></tr>
+  </tbody>
+</table>
+
+<h2>二、现状体检</h2>
+<div class="grid">
+  <div class="stat"><div class="n">147</div><div class="l">IPC 通道，集中于单文件 2856 行</div></div>
+  <div class="stat"><div class="n">5,733</div><div class="l">app.js 行数，186 个函数 / 10 页面</div></div>
+  <div class="stat"><div class="n">100</div><div class="l">app.js 中 innerHTML 调用点</div></div>
+  <div class="stat"><div class="n">0</div><div class="l">lint / typecheck / 覆盖率门槛</div></div>
+</div>
+
+<table>
+  <thead><tr><th style="width:18%">维度</th><th style="width:42%">现状</th><th style="width:28%">规范要求</th><th style="width:12%">差距</th></tr></thead>
+  <tbody>
+    <tr><td>IPC 契约</td><td>通道、preload 方法、渲染端字符串三处各写一遍</td><td>单一来源、可校验</td><td><span class="tag t0">P0</span></td></tr>
+    <tr><td>入参校验</td><td>无统一校验，渲染进程可传任意对象/任意路径进主进程</td><td>非法输入必须拒绝</td><td><span class="tag t0">P0</span></td></tr>
+    <tr><td>webview 隔离</td><td>无 <code>partition</code>，与主窗共享 default session；无 <code>will-attach-webview</code></td><td>跨端物理隔离</td><td><span class="tag t0">P0</span></td></tr>
+    <tr><td>权限策略</td><td>无 <code>setPermissionRequestHandler</code>，走 Electron 默认</td><td>默认拒绝、按需放行</td><td><span class="tag t0">P0</span></td></tr>
+    <tr><td>错误语义</td><td>全文件仅 3 处 <code>throw new</code>，错误以字符串穿透 IPC</td><td>异常与领域状态分离</td><td><span class="tag t1">P1</span></td></tr>
+    <tr><td>前端结构</td><td>全局脚本按序加载，模块无 export，页面无 unmount</td><td>单一职责、可卸载</td><td><span class="tag t1">P1</span></td></tr>
+    <tr><td>资源生命周期</td><td>3 处 setInterval；autoUpdater 定时器无 disposer</td><td>副作用必须可逆</td><td><span class="tag t1">P1</span></td></tr>
+    <tr><td>仓库卫生</td><td><code>*.js.new</code> 残留、<code>dist-check/</code>、<code>_trash/</code>、<code>_probe.txt</code></td><td>交付物与工作区分离</td><td><span class="tag t2">P2</span></td></tr>
+  </tbody>
+</table>
+
+<h2>三、目标架构</h2>
+<div class="arch">
+  <div class="layer client">
+    <h4>Client · 渲染进程（src/）</h4>
+    <p>pages/*.js 页面契约 { mount, unmount } · core/ipc-client.js 唯一出口 · core/dom.js 替代 innerHTML</p>
+  </div>
+  <div class="arrow">▼ window.dshManager（生成物，非手写）</div>
+  <div class="layer">
+    <h4>Transport · preload.cjs</h4>
+    <p>只做转发与白名单：由 contract/channels.js 生成方法，入参校验失败即 reject，不进入主进程</p>
+  </div>
+  <div class="arrow">▼ 统一信封 { ok, code, message, data }</div>
+  <div class="layer host">
+    <h4>Host · 主进程（electron/）</h4>
+    <p>contract/channels.js 单一清单 · host/scope.js 作用域与 disposer · handlers/&lt;domain&gt;.js 按域注册 · host/security.js 集中策略</p>
+  </div>
+  <div class="arrow">▼ 子进程 / 文件 / 配置</div>
+  <div class="layer">
+    <h4>Services · packages/core · packages/marketplace</h4>
+    <p>纯 Node 逻辑，无 Electron 依赖，可被单测直接调用</p>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="layer">
+    <h4>DSH Runtime</h4>
+    <p>npx dsh web / 本地安装 · 状态机 IDLE → CHECKING → STARTING → READY → STOPPING</p>
+  </div>
+</div>
+
+<h2>四、六项专项设计</h2>
+
+<h3>1. 契约单一来源</h3>
+<p><code>electron/contract/channels.js</code> 作为唯一清单，每条声明 <code>domain / args / result / mutating / longRunning</code>；preload 方法启动时生成，不再手写。新增通道必须同时改清单、实现、契约测试三处，CI 双向校验数量与名称一致。</p>
+<div class="two">
+  <div class="box"><h4>消除的重复</h4><ul><li>preload.cjs 约 230 行平铺方法</li><li>通道改名需全局搜索的隐患</li><li>渲染端字符串直调 invoke</li></ul></div>
+  <div class="box"><h4>新增的约束</h4><ul><li>入参越界在 Transport 层即被拒</li><li>事件通道同样入清单，返回取消订阅函数</li><li>清单 ↔ 注册 ↔ 方法三方一致脚本</li></ul></div>
+</div>
+
+<h3>2. 统一响应信封与错误码</h3>
+<p>主进程统一包装：成功 <code>{ ok:true, data }</code>，失败 <code>{ ok:false, code, message, detail }</code>。错误码固定 10 类（<code>INVALID_ARGS / NOT_INSTALLED / PORT_IN_USE / PERMISSION_DENIED / TIMEOUT / CANCELLED / DEPENDENCY_MISSING / UPSTREAM_ERROR / INTERNAL / OK</code>），UI 文案在渲染端一处映射，不再解析 Electron 的报错字符串。</p>
+<p>这是<b>破坏性变更</b>：先用 <code>legacy:true</code> 兼容层保持原样返回，按域逐个切换，全部切换后删除兼容层。</p>
+
+<h3>3. 安全边界（P0）</h3>
+<table>
+  <thead><tr><th style="width:24%">措施</th><th style="width:76%">要点</th></tr></thead>
+  <tbody>
+    <tr><td>webview 独立会话</td><td><code>&lt;webview partition="persist:dsh-web"&gt;</code>，与主窗隔离；代价是用户需重新登录 DSH，更新说明明示</td></tr>
+    <tr><td>挂载前强校验</td><td><code>will-attach-webview</code> 中剥离 <code>prefs.preload</code>、强制 <code>nodeIntegration=false</code>、src 必须命中本地白名单</td></tr>
+    <tr><td>权限默认拒绝</td><td><code>setPermissionRequestHandler</code> 对摄像头/麦克风/定位/通知一律 false，按 origin 白名单将来放行</td></tr>
+    <tr><td>路径沙箱</td><td>所有接受路径的通道 <code>realpath</code> 后校验允许根，拒绝 <code>..</code> 与符号链接逃逸</td></tr>
+    <tr><td>命令执行</td><td>禁止字符串拼接，统一 <code>execa(file, args[])</code>；版本号、registry 走白名单/正则</td></tr>
+    <tr><td>CSP</td><td>meta + <code>onHeadersReceived</code> 双保险；内联样式需评估后再收紧 <code>style-src</code></td></tr>
+  </tbody>
+</table>
+
+<h3>4. 生命周期与资源所有权</h3>
+<p>引入 <code>HostScope</code>：<code>effect(fn)</code> 收集 disposer，<code>dispose()</code> 逆序逐个 await、重复调用幂等、子作用域递归释放。所有资源登记在案——<code>ipcMain.handle</code>、webContents 事件、webview 实例、定时器、子进程、fs.watch、autoUpdater。</p>
+<p><b>验收方式：</b>启动应用 → 逐页打开再关闭 → 释放全部 scope → 断言通道 0、活跃定时器 0、子进程 0、全局监听器不增长。这条断言就是规范里"提前卸载后确认资源没有留下"的等价物。</p>
+
+<h3>5. DSH 运行时状态机</h3>
+<div class="two">
+  <div class="box"><h4>状态转换</h4><ul><li>IDLE → CHECKING → STARTING → READY</li><li>READY → STOPPING → IDLE</li><li>任一环节失败 → FAILED（可重试，不无限重试）</li></ul></div>
+  <div class="box"><h4>硬规则</h4><ul><li>start 在 STARTING/READY 时幂等返回</li><li>重启必须等 stop 完成且健康检查通过才算 READY</li><li>崩溃最多自动重启一次，第二次只提示</li></ul></div>
+</div>
+<p>同时把 DSH 的错误分类（<code>CONTENT_REFUSED / AUTH / QUOTA / RATE_LIMIT / TRANSPORT / TIMEOUT</code>）映射为界面处置建议，而不是统一显示"启动失败"。</p>
+
+<h3>6. 前端可维护性与工程门禁</h3>
+<p>三步走，不做大爆炸重写：① 模块改 ESM，全局类挂 window 过渡；② 页面统一 <code>{ mount, unmount }</code> 契约，切页即资源回收；③ 去 innerHTML 分三批——先做拼接了外部数据的 XSS 面，再静态模板，最后复杂列表。</p>
+<table>
+  <thead><tr><th style="width:18%">门禁</th><th style="width:36%">工具</th><th style="width:46%">门槛</th></tr></thead>
+  <tbody>
+    <tr><td>格式</td><td>Prettier</td><td>全仓一次性格式化，此后 <code>--check</code></td></tr>
+    <tr><td>静态检查</td><td>ESLint flat config</td><td>禁 innerHTML、禁字符串 execa、no-floating-promises</td></tr>
+    <tr><td>类型</td><td>jsconfig + checkJs</td><td>先覆盖 contract 与 core，再逐步扩大；不全面重写 TS</td></tr>
+    <tr><td>契约一致性</td><td>自研脚本</td><td>清单 ↔ 注册 ↔ 方法三方一致，缺一即失败</td></tr>
+    <tr><td>测试</td><td>node --test</td><td>保留现有 25 个，新增契约/校验/隔离/生命周期四类</td></tr>
+    <tr><td>发布</td><td>CI 权限分离</td><td>contents:write 只给发布 job，构建 job 只读</td></tr>
+  </tbody>
+</table>
+<p>测试纪律对齐规范禁止项：不 mock 被测模块内部函数，不写"源码里必须出现某符号"的正则守卫，不测私有字段与调用次数。</p>
+
+<h2>五、实施路线</h2>
+<table>
+  <thead><tr><th style="width:9%">阶段</th><th style="width:24%">项目</th><th style="width:34%">主要改动</th><th style="width:33%">验收标准</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag t0">P0-1</span></td><td>webview 隔离与权限 <b style="color:#15803d">已完成</b></td><td>index.html、main.js、host/security.js</td><td>非法 src 被拒、preload 剥离、权限默认拒绝</td></tr>
+    <tr><td><span class="tag t0">P0-2</span></td><td>IPC 契约清单 <b style="color:#15803d">护栏已上线</b></td><td>contract/channels.cjs、check-contract.mjs、verify.mjs</td><td>三方一致脚本通过；负例可拦截改名</td></tr>
+    <tr><td><span class="tag t0">P0-3</span></td><td>统一信封 <b style="color:#15803d">app 域灰度完成</b></td><td>envelope.cjs、main.js 白名单包装、preload 解包</td><td>渲染端零改动；失败可分类，扩域只需加前缀</td></tr>
+    <tr><td><span class="tag t1">P1-1</span></td><td>作用域与 disposer <b style="color:#15803d">基线已上线</b></td><td>host/scope.js、窗口/应用作用域接入</td><td>卸载验收：通道 0、定时器 0、子进程 0</td></tr>
+    <tr><td><span class="tag t1">P1-2</span></td><td>DSH 状态机 <b style="color:#15803d">已完成</b></td><td>single-flight.js、dsh-state-machine.js、四入口接入</td><td>连点启动只拉起 1 个进程；健康检查通过才 READY</td></tr>
+    <tr><td><span class="tag t1">P1-3a</span></td><td>页面生命周期契约 <b style="color:#15803d">已完成</b></td><td>page-manager.js 重写、ctx 受管资源、18 项单测</td><td>10 页面独立 mount/unmount，切换回收定时器与监听</td></tr>
+    <tr><td><span class="tag t1">P1-3b</span></td><td>渲染层 ESM 化 <b style="color:#b45309">推迟</b></td><td>10 模块 + app.js 5733 行 + 16 处内联 onclick</td><td>无前端自动化测试，须先去 onclick 再迁 ESM</td></tr>
+    <tr><td><span class="tag t1">P1-4</span></td><td>去 innerHTML <b style="color:#b45309">评估完成，暂缓</b></td><td>现有转义覆盖良好；剩余风险需运行时验证</td><td>注入测试通过后再动，避免盲目批量改</td></tr>
+    <tr><td><span class="tag t2">P2-1</span></td><td>门禁链 <b style="color:#15803d">CI 已上线</b></td><td>ci.yml + build.yml quality job</td><td>tag 触发：版本一致 → 契约 → verify → test → 构建</td></tr>
+    <tr><td><span class="tag t2">P2-2</span></td><td>仓库卫生 <b style="color:#15803d">已完成</b></td><td>.gitignore、残留副本归档</td><td>无 *.new / *.probe / dist-check 残留</td></tr>
+  </tbody>
+</table>
+<p style="font-size:13px;color:#64748b">依赖关系：P0-2 必须先于 P0-3 与 P1-1；P1-4 独立，可随时插入。</p>
+
+<h2>六、取舍与风险</h2>
+<table>
+  <thead><tr><th style="width:28%">决策</th><th style="width:30%">代价</th><th style="width:42%">缓解</th></tr></thead>
+  <tbody>
+    <tr><td>不全面重写 TypeScript</td><td>类型收益延后</td><td>jsconfig + JSDoc 先在契约层拿到保护，成本最低、收益最高</td></tr>
+    <tr><td>不引入前端框架</td><td>复杂列表仍手写渲染</td><td>h() + DocumentFragment 足够；页面稳定在 10 个，无框架刚需</td></tr>
+    <tr><td>信封改造属破坏性变更</td><td>147 个通道返回形状变化</td><td>legacy 兼容层 + 按域切换，每域切换后跑该域测试</td></tr>
+    <tr><td>webview 改独立 partition</td><td>用户需重新登录 DSH</td><td>更新说明明示；提供"沿用旧会话"过渡设置</td></tr>
+    <tr><td>开启 sandbox</td><td>需实测 preload 依赖</td><td>单独分支验证，失败则保持 false 但补齐其余隔离</td></tr>
+  </tbody>
+</table>
+
+<h2>七、验收清单</h2>
+<div class="two">
+  <div class="box">
+    <h4>契约与隔离</h4>
+    <ul class="check">
+      <li>清单条目数 = 注册数 = preload 方法数</li>
+      <li>非法入参不进入业务实现</li>
+      <li>渲染端无字符串直调 invoke</li>
+      <li>webview 独立 partition 且 preload 被剥离</li>
+      <li>越界路径（含符号链接）被拒</li>
+    </ul>
+  </div>
+  <div class="box">
+    <h4>可逆与运行时</h4>
+    <ul class="check">
+      <li>释放 scope 后无残留通道/定时器/进程</li>
+      <li>反复 dispose 幂等</li>
+      <li>切页 10 次内存无单调增长</li>
+      <li>连点启动只产生 1 个进程</li>
+      <li>重启后健康检查通过才 READY</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  <span>DSH Manager 优化设计 · 2026-11-23 · MIT License</span>
+  <span>规范基线：deepseek-ai/deepseek-harness docs b830ec950（0.2.1-rc.5）</span>
+</footer>
+
+</div>
+</body>
+</html>

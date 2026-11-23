@@ -1,0 +1,48 @@
+# ============================================================
+# DSH Manager 官网 Nginx 配置示例（云服务器部署）
+# 用法：替换 <your-domain> 与证书路径后放入 sites-available
+# 官网为纯静态站（website/），服务器不存储安装包：
+# 下载与自动更新保持 GitHub Releases（linhut/dsh-manager）
+# ============================================================
+
+# HTTP → HTTPS 强制跳转
+server {
+    listen 80;
+    server_name <your-domain>;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name <your-domain>;
+
+    # Let's Encrypt 证书（certbot --nginx 生成后的默认路径）
+    ssl_certificate     /etc/letsencrypt/live/<your-domain>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<your-domain>/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # 官网静态站点根目录（deploy-website.mjs 同步目标）
+    root  /var/www/dsh-manager/website;
+    index index.html;
+
+    # 静态资源：带 hash 的构建产物可长缓存；入口页短缓存保证每次发布立即可见
+    location ~* \.(css|js|png|jpe?g|svg|webp|ico|woff2?)$ {
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+    }
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # gzip 压缩
+    gzip            on;
+    gzip_min_length 1024;
+    gzip_types      text/css application/javascript application/json image/svg+xml;
+
+    # 安全响应头
+    add_header X-Content-Type-Options    nosniff;
+    add_header X-Frame-Options           SAMEORIGIN;
+    add_header Referrer-Policy           strict-origin-when-cross-origin;
+    add_header Permissions-Policy        "camera=(), microphone=(), geolocation=()";
+}

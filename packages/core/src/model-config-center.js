@@ -24,6 +24,7 @@ import {
   readdirSync, rmSync, statSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { DSHConfig } from './config.js';
 
 /** 受支持的工具适配器元信息（file 可用 toolPaths 覆盖，便于测试） */
 export const SUPPORTED_TOOLS = {
@@ -544,13 +545,17 @@ export class ModelConfigCenter {
     let data = safeReadJson(file, {});
     if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
     if (!Array.isArray(data.models)) data.models = [];
+    // 容量三级回退：档案显式值 → 知名规格表 → 通用默认。
+    // 缺少规格表这一级会让 deepseek-v4-flash 这类 1M 上下文的模型被写成 200K，
+    // 长上下文档位被无谓截断。
+    const spec = DSHConfig.lookupModelSpec(profile.model) || {};
     const entry = {
       id: profile.model,
       name: profile.name,
       vendor: profile.vendor || '',
       ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
-      maxInputTokens: profile.contextWindow || 200000,
-      maxOutputTokens: profile.maxTokens || 8192,
+      maxInputTokens: profile.contextWindow || spec.contextWindow || 200000,
+      maxOutputTokens: profile.maxTokens || spec.maxTokens || 8192,
       url: ensureChatCompletionsUrl(profile.baseUrl),
       ...(profile.temperature ? { temperature: profile.temperature } : {}),
       supportsToolCall: profile.supportsToolCall !== false,

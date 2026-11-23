@@ -29,6 +29,7 @@ export { isSystemComponent, isExternalPlugin, classifyPackage, checkProfileInteg
 export { MasterPromptManager } from './master-prompt-manager.js';
 export { installCapabilityRouter, uninstallCapabilityRouter, isCapabilityRouterInstalled, resolveBundledPluginDir, detectNodeRuntime, CAPABILITY_ROUTER_PACKAGE, CAPABILITY_ROUTER_MIN_NODE_MAJOR } from './capability-router.js';
 export { resolveBundledSkillsRoot, syncBundledSkills, installBundledPlugins, installDshSkillsPlugin, ensureBundledContent, getBundledContentState } from './bundled-content.js';
+export { getComputerUseState, installComputerUse, setComputerUseEnabled, uninstallComputerUse, COMPUTER_USE_SERVICE, COMPUTER_USE_PROVIDER, COMPUTER_USE_PROVIDER_ID, COMPUTER_USE_TAG, COMPUTER_USE_PACKAGES } from './computer-use.js';
 export { setReplyLanguage, getReplyLanguage, clearReplyLanguage } from './reply-language.js';
 export { generateImage, findProviderConfig, resolveApiKey, getImageSaveDir } from './imagegen.js';
 export {
@@ -52,6 +53,7 @@ export {
   clearQuarantineEvents,
   appendQuarantineEvent,
 } from './plugin-quarantine.js';
+export { DSH_STATE, createDSHStateMachine } from './dsh-state-machine.js';
 
 /**
  * 获取 DSH Manager 版本信息（从 package.json 读取，避免硬编码漂移）

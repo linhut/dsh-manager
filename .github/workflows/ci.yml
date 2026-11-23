@@ -1,0 +1,43 @@
+name: Quality Gate
+
+# PR 与主分支的质量门禁：契约一致性 → 审计 → 测试。
+# 发布链路上的同等检查在 build.yml 的 quality job 中执行，二者共用同一组命令。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # --ignore-scripts：跳过 electron 二进制下载与 postinstall，测试本身不需要 GUI 运行时
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: IPC contract consistency
+        run: npm run check:contract
+
+      - name: Audit (structure / syntax / resources)
+        run: npm run verify
+
+      - name: Tests
+        run: npm test

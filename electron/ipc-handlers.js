@@ -10,6 +10,9 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync, r
 import { join, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeLog } from './debug-logger.js';
+import { createSingleFlight } from './host/single-flight.js';
+// 状态机是纯模块（无 Electron / 无 I/O），静态导入即可，便于主进程在每次状态变化时同步落日志
+import { createDSHStateMachine, DSH_STATE } from '../packages/core/src/dsh-state-machine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -434,7 +437,19 @@ function startQuarantineWatcher(getMainWindow) {
  * @param {() => import('electron').BrowserWindow} getMainWindow - 主窗口获取函数（由 registerIpcHandlers 注入）
  * @returns {Promise<{error?: string, child?: import('execa').ResultPromise, actualPort?: number, preferredPort?: number, portResult?: object}>}
  */
+// 启动单飞：restart / fix-and-restart 也直接调用本函数，锁放在这一层，
+// 任何调用点都不会在端口尚未占用时并发 spawn 出第二个实例。
+let spawnInFlight = null;
 async function spawnDSHWeb(getMainWindow) {
+  if (spawnInFlight) {
+    writeLog('info', 'spawnDSHWeb 并发请求已合并，复用进行中的启动');
+    return spawnInFlight;
+  }
+  spawnInFlight = spawnDSHWebImpl(getMainWindow).finally(() => { spawnInFlight = null; });
+  return spawnInFlight;
+}
+
+async function spawnDSHWebImpl(getMainWindow) {
   const { execa } = await import('execa');
   const { DSHConfig, DSHUtils, buildRuntimeEnv, getRuntimeConfig, findAvailablePort } = await loadCore();
   // 预检并迁移旧版扁平布局的凭据文件 → 新版版本化布局
@@ -581,6 +596,40 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   // 跟踪最后一次启动的实际端口（用于 stop 和诊断）
   let lastActivePort = 3080;
 
+  // ====== DSH 运行时状态机（单一事实来源）======
+  // IDLE → CHECKING → STARTING → READY ⇄ STOPPING → IDLE，FAILED 兜底。
+  // 此前"是否在启动 / 是否可用 / 上次为什么失败"分散在多个布尔值和前端推断里，
+  // 出现过「进程起来了但界面仍显示未启动」「停止后仍停在启动中」这类矛盾状态。
+  // 收敛后，非法转换在这里被显式拒绝，调用方不必各自维护顺序。
+  const runtime = createDSHStateMachine({
+    onChange: ({ previous, state: next, event }) => {
+      writeLog('info', '[runtime] ' + previous + ' --' + event + '--> ' + next);
+    },
+  });
+
+  /** 推进状态：非法转换只记录不抛错（同一入口被重复调用属于正常情况，如连点停止） */
+  function transition(event, payload) {
+    const r = runtime.send(event, payload);
+    if (!r.ok) writeLog('debug', '[runtime] 忽略事件 ' + event + '：' + r.reason);
+    return r;
+  }
+
+  /** STOP 之后统一收口回 IDLE，避免停在永远结束不了的中间态 */
+  function settleStopped() {
+    if (runtime.state === DSH_STATE.STOPPING) transition('STOPPED');
+  }
+
+  /** 进入停止流程；已是 IDLE 时跳过（STOP 在 IDLE 上是自环，推它只会污染历史） */
+  function beginStop() {
+    if (runtime.state !== DSH_STATE.IDLE) transition('STOP');
+  }
+
+  /** 启动结果 → 终态：可达才算 READY，进程在但健康检查不过仍属失败 */
+  function settleStarted(result, fallbackMessage) {
+    if (result && result.reachable) transition('READY');
+    else transition('FAIL', { message: (result && (result.error || result.message)) || fallbackMessage });
+  }
+
   // Manager 重启后 DSH 仍运行时：从磁盘恢复带 token 的 web URL 与端口，
   // 使 webview 能连接已运行实例（否则裸 URL 401 白屏，只能网页访问）。
   // 存为模块级 Promise：dsh:get-web-url 等 handler 会 await，避免渲染进程先于恢复完成就取到裸 URL。
@@ -618,6 +667,8 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('dsh:get-info', async () => {
     const { getDSHInfo, testDSHHealth, getDSHProcessInfo } = await loadCore();
     const info = await getDSHInfo();
+    // 附带宿主侧运行时快照（ADDITIVE，旧消费方忽略即可）：渲染端不必再靠布尔值猜测“是否正在启动”
+    const runtimeSnapshot = runtime.snapshot();
     // 运行时探测兜底：安装路径未识别（profile/自定义位置安装）时，
     // 只要端口上有 DSH 服务特征（HTTP 200/401，0.1.2+ 无 token 访问根路径返回 401），
     // 就识别为"已安装且正在运行"，避免"DSH 在跑但管理器显示未安装、控制台空白"
@@ -639,13 +690,14 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
             path: info.path,
             runtimeHealth: health,
             runtimeProcess: proc,
+            runtime: runtimeSnapshot,
           };
         }
       } catch (e) {
         writeLog('warn', 'DSH 运行时探测失败: ' + (e?.message || e));
       }
     }
-    return info;
+    return { ...info, runtime: runtimeSnapshot };
   });
 
   ipcMain.handle('dsh:get-detection-detail', async () => {
@@ -704,7 +756,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   // ====== DSH 重启（组合 stop + start） ======
   ipcMain.handle('dsh:restart', async () => {
+    // 重启 = 一次显式 STOP → START，状态机据此拒绝并发重启造成的错序
+    beginStop();
     try {
+      writeLog('info', '[dsh-manager] 重启 DSH：开始停止旧进程');
       // 先停止
       const { stopProcessByPort, testDSHHealth } = await loadCore();
       try {
@@ -733,12 +788,19 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
 
       // 再启动
+      settleStopped();
+      transition('START');
+      writeLog('info', '[dsh-manager] 重启 DSH：旧进程已停止，开始启动新进程');
       const sp = await spawnDSHWeb(getMainWindow);
       if (sp.error) {
+        writeLog('error', '[dsh-manager] 重启 DSH：启动失败 ' + sp.error);
+        transition('FAIL', { message: sp.error });
         return { success: false, error: sp.error };
       }
       const { child, actualPort, portResult, preferredPort } = sp;
       lastActivePort = actualPort;
+      transition('PROCEED');
+      writeLog('info', '[dsh-manager] 重启 DSH：进程已启动，等待服务就绪 (port=' + actualPort + ')');
 
       // 等待服务就绪
       for (let i = 0; i < 30; i++) {
@@ -746,13 +808,18 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         try {
           const health = await testDSHHealth(actualPort);
           if (health.reachable) {
+            writeLog('info', '[dsh-manager] 重启 DSH：服务就绪 (port=' + actualPort + ')');
+            transition('READY');
             return { success: true, port: actualPort, reachable: true, webUrl: resolveWebUrl(actualPort) };
           }
         } catch (e) { console.warn('[dsh-manager] ignored error:', e?.message || e); }
       }
 
+      writeLog('warn', '[dsh-manager] 重启 DSH：30 秒内服务未就绪，进程可能启动失败');
+      transition('FAIL', { message: '重启后 30 秒内服务未就绪' });
       return { success: true, port: actualPort, reachable: false, message: 'DSH 已重启，等待服务就绪中...' };
     } catch (error) {
+      transition('FAIL', { message: error.message });
       return { success: false, error: error.message };
     }
   });
@@ -820,11 +887,13 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
     return await new DSHProfileManager().backup(name);
   });
 
-  ipcMain.handle('dsh:start', async () => {
+  const startDSHImpl = async () => {
+    transition('START'); // IDLE/FAILED → CHECKING
     try {
       const { testDSHHealth } = await loadCore();
       const sp = await spawnDSHWeb(getMainWindow);
       if (sp.error) {
+        transition('FAIL', { message: sp.error });
         return { success: false, error: sp.error };
       }
       // 端口占用且检测到已有 DSH 健康运行 → 直接复用，不启动新实例
@@ -832,6 +901,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         lastActivePort = sp.actualPort;
         const webUrl = sp.webUrl || resolveWebUrl(sp.actualPort);
         writeLog('info', 'dsh:start 复用已运行 DSH（端口 ' + sp.actualPort + '）');
+        transition('READY'); // 已在跑且健康 → 直接终态，不经过 STARTING
         return {
           success: true,
           reachable: true,
@@ -843,6 +913,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       }
       const { child, actualPort, portResult, preferredPort } = sp;
       lastActivePort = actualPort; // 记录本次实际端口，供 stop/diagnose 使用
+      transition('PROCEED'); // CHECKING → STARTING：进程已拉起，等待健康检查
 
       child.then(async result => {
         // 进程已退出（成功启动后退出或启动即失败）。短暂存活期内的非零退出视为启动失败
@@ -1006,12 +1077,15 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
             if (repaired.length > 0) {
               writeLog('info', '自愈修复完成，自动重启 DSH...');
               try {
+                transition('START'); // 失败态 → CHECKING：自愈重启是一条新的启动尝试
                 const sp2 = await spawnDSHWeb(getMainWindow);
                 if (sp2.error) {
+                  transition('FAIL', { message: sp2.error });
                   sendError({ afterFix: true, repaired, failed, restartError: sp2.error });
                   return;
                 }
                 lastActivePort = sp2.actualPort;
+                transition('PROCEED');
                 // 监控重启结果
                 sp2.child.then(async r2 => {
                   if (r2.exitCode !== 0 && r2.failed) {
@@ -1059,11 +1133,14 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
                     });
                   }
                   writeLog('info', '✅ 自愈成功，DSH 已就绪: http://127.0.0.1:' + sp2.actualPort);
+                  transition('READY');
                 } else {
+                  transition('FAIL', { message: '自愈重启后仍未通过健康检查' });
                   sendError({ afterFix: true, repaired, failed, reachable: false });
                 }
               } catch (restartErr) {
                 writeLog('error', '自愈重启异常: ' + (restartErr?.message || restartErr));
+                transition('FAIL', { message: restartErr?.message || String(restartErr) });
                 sendError({ afterFix: true, repaired, failed });
               }
             } else {
@@ -1108,7 +1185,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           if (/token=/.test(resolveWebUrl(actualPort))) break;
         }
       }
-      return {
+      const result = {
         success: true,
         message: 'DSH 启动命令已发送',
         port: actualPort,
@@ -1117,12 +1194,22 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         reachable: health?.reachable || false,
         webUrl: resolveWebUrl(actualPort),
       };
+      // 只有健康检查通过才进入 READY；进程活着但不可达按失败留痕（lastError 供界面解释原因）
+      settleStarted(result, '启动后 10 秒内健康检查未通过');
+      return result;
     } catch (error) {
+      transition('FAIL', { message: error.message });
       return { success: false, error: error.message };
     }
-  });
+  };
+
+  // 单飞锁：并发点「启动」只拉起一个 DSH 进程，后续请求复用同一结果。
+  // 缺少这层时，两次点击会在端口尚未被占用前各自 spawn，导致双开并随机换端口。
+  const startDSHOnce = createSingleFlight(startDSHImpl, () => writeLog('info', 'dsh:start 并发请求已合并'));
+  ipcMain.handle('dsh:start', startDSHOnce);
 
   ipcMain.handle('dsh:stop', async () => {
+    beginStop();
     try {
       const { execa } = await import('execa');
       const { DSHUtils } = await loadCore();
@@ -1147,6 +1234,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
           if (result.exitCode === 0) {
             // 停止成功：清理持久化的 token URL（DSH 重启后 token 会变，残留会导致复用失效）
             clearWebUrlState();
+            settleStopped();
             return { success: true, message: result.stdout || '已停止' };
           }
         }
@@ -1154,15 +1242,19 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       // dsh stop 命令不可用时，降级为按端口结束进程（Windows taskkill / Unix kill）
       const { stopProcessByPort } = await loadCore();
       const fallback = await stopProcessByPort(lastActivePort);
-      if (fallback.success) clearWebUrlState();
+      if (fallback.success) { clearWebUrlState(); settleStopped(); }
+      else transition('FAIL', { message: '停止失败: ' + (fallback.message || '未知原因') });
       return { success: fallback.success, message: fallback.message, fallback: true, port: lastActivePort };
     } catch (error) {
       // CLI 异常也尝试端口降级
       try {
         const { stopProcessByPort } = await loadCore();
         const fallback = await stopProcessByPort(lastActivePort);
+        if (fallback.success) settleStopped();
+        else transition('FAIL', { message: '停止失败: ' + (fallback.message || error.message) });
         return { success: fallback.success, message: fallback.message, fallback: true, port: lastActivePort };
       } catch {
+        transition('FAIL', { message: '停止失败: ' + error.message });
         return { success: false, error: error.message };
       }
     }
@@ -1206,6 +1298,8 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
 
   // 一键修复无效插件/缺失依赖并重启 DSH（解决 gongwen-skill "invalid plugin"、shiki/js-yaml 缺失等启动失败）
   ipcMain.handle('dsh:fix-and-restart', async (_, moduleIds) => {
+    // 自愈重启同样走 STOP → START，期间界面读到的是 STOPPING/STARTING 而不是"什么都没有"
+    beginStop();
     try {
       // ① 修复无效插件（注册表中指向缺失包的条目）
       const { PluginRegistry } = await loadMarketplace();
@@ -1282,6 +1376,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const { DSHUtils, findAvailablePort, testDSHHealth, buildRuntimeEnv, getRuntimeConfig } = await loadCore();
       const dshPkgPath = await DSHUtils.getDSHPath();
       if (!dshPkgPath) {
+        transition('FAIL', { message: 'DSH 未安装' });
         return { success: false, error: 'DSH 未安装，请先安装 DSH' };
       }
       const pkgJson = JSON.parse(readFileSync(join(dshPkgPath, 'package.json'), 'utf-8'));
@@ -1293,6 +1388,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         cliPath = join(dshPkgPath, binEntry.dsh || Object.values(binEntry)[0]);
       }
       if (!cliPath || !existsSync(cliPath)) {
+        transition('FAIL', { message: '无法定位 DSH CLI 入口文件' });
         return { success: false, error: '无法定位 DSH CLI 入口文件: ' + (cliPath || '未找到') };
       }
       const [{ env }, rt] = await Promise.all([buildRuntimeEnv(), getRuntimeConfig()]);
@@ -1300,6 +1396,9 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
       const portResult = await findAvailablePort(preferredPort);
       const actualPort = portResult.port;
       lastActivePort = actualPort;
+      settleStopped();
+      transition('START');
+      transition('PROCEED');
 
       const startArgs = ['web'];
       if (actualPort !== 3080) startArgs.push('--port', String(actualPort));
@@ -1348,7 +1447,7 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         health = await testDSHHealth(actualPort);
         if (health.reachable) break;
       }
-      return {
+      const finalResult = {
         success: true,
         message: '无效插件/缺失依赖已修复，DSH 重新启动',
         fixResult,
@@ -1361,7 +1460,10 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
         webUrl: resolveWebUrl(actualPort),
         reachable: health?.reachable || false,
       };
+      settleStarted(finalResult, '修复后 10 秒内健康检查未通过');
+      return finalResult;
     } catch (error) {
+      transition('FAIL', { message: error.message });
       return { success: false, error: error.message };
     }
   });
@@ -1929,6 +2031,46 @@ export function registerIpcHandlers(ipcMain, getMainWindow) {
   ipcMain.handle('llm-routing:plugin-uninstall', async (_, profile = 'web') => {
     const { uninstallCapabilityRouter } = await loadCore();
     const result = await uninstallCapabilityRouter(profile);
+    return result;
+  });
+
+  // ====== 电脑控制（Computer Use，DSH 官方 experimental 能力） ======
+  // 安装/卸载走 `dsh plugin` 官方链路（pin 版本），启用/禁用改为 cordis.patch.yml 挂载块（官方挂载方式），均需重启 DSH 生效
+  ipcMain.handle('computer-use:get-state', async (_, profile = 'web') => {
+    const { getComputerUseState } = await loadCore();
+    return getComputerUseState(profile);
+  });
+
+  ipcMain.handle('computer-use:install', async (_, profile = 'web') => {
+    const { installComputerUse } = await loadCore();
+    const win = getMainWindow();
+    const result = await installComputerUse(profile, {
+      onProgress: (stage, pkg) => {
+        writeLog('info', '[computer-use] ' + (pkg ? stage + ' ' + pkg : stage));
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('computer-use:progress', { stage, pkg, profile });
+        }
+      },
+    });
+    return result;
+  });
+
+  ipcMain.handle('computer-use:set-enabled', async (_, profile = 'web', enabled) => {
+    const { setComputerUseEnabled } = await loadCore();
+    return setComputerUseEnabled(profile, !!enabled);
+  });
+
+  ipcMain.handle('computer-use:uninstall', async (_, profile = 'web') => {
+    const { uninstallComputerUse } = await loadCore();
+    const win = getMainWindow();
+    const result = await uninstallComputerUse(profile, {
+      onProgress: (stage, pkg) => {
+        writeLog('info', '[computer-use] ' + (pkg ? stage + ' ' + pkg : stage));
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('computer-use:progress', { stage, pkg, profile });
+        }
+      },
+    });
     return result;
   });
 

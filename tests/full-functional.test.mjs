@@ -124,7 +124,7 @@ describe('T3: IPC 全链路一致性', () => {
     const ipc = read('electron/ipc-handlers.js');
     const preload = read('electron/preload.cjs');
     const handlers = [...ipc.matchAll(/ipcMain\.handle\s*\(\s*'([^']+)'/g)].map(m => m[1]).sort();
-    const invokes = [...preload.matchAll(/ipcRenderer\.invoke\s*\(\s*'([^']+)'/g)].map(m => m[1]).sort();
+    const invokes = [...preload.matchAll(/(?:ipcRenderer\.invoke|invokeIpc)\s*\(\s*'([^']+)'/g)].map(m => m[1]).sort();
     const missing = handlers.filter(h => !invokes.includes(h));
     const extra = invokes.filter(h => !handlers.includes(h));
     assert.equal(missing.length, 0, 'Handlers not in preload: ' + missing.join(', '));

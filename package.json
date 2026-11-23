@@ -1,6 +1,6 @@
 {
   "name": "dsh-manager",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "🐳 DeepSeek Harness 安装与管理工具 — 一键安装、插件市场、版本管理",
   "author": {
     "name": "linhut",
@@ -108,6 +108,7 @@
     "generate-icons": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));process.exit(h.runNode('scripts/generate-icons.js'))\"",
     "postinstall": "echo 'Skipping electron-builder install-app-deps'",
     "verify": "node -e \"const{dirname,join}=require('node:path');const h=require(join(dirname(process.env.npm_package_json||'./package.json'),'scripts','run-helper.cjs'));process.exit(h.runNode('scripts/verify.mjs'))\"",
+    "check:contract": "node scripts/check-contract.mjs",
     "assert:resources": "node scripts/assert-bundled-resources.mjs",
     "settings:backup": "node scripts/settings-tool.mjs backup",
     "settings:list": "node scripts/settings-tool.mjs list",

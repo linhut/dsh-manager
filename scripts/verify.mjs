@@ -124,7 +124,7 @@ const preloadContent = readFile('electron/preload.cjs');
 if (ipcContent.ok && preloadContent.ok) {
   const ipcHandles = [...new Set([...ipcContent.content.matchAll(/ipcMain\.handle\s*\(\s*'([^']+)'/g)]
     .map(m => m[1]))].sort();
-  const preloadInvokes = [...new Set([...preloadContent.content.matchAll(/ipcRenderer\.invoke\s*\(\s*'([^']+)'/g)]
+  const preloadInvokes = [...new Set([...preloadContent.content.matchAll(/(?:ipcRenderer\.invoke|invokeIpc)\s*\(\s*'([^']+)'/g)]
     .map(m => m[1]))].sort();
   
   check(`IPC handlers count`, ipcHandles.length === preloadInvokes.length,
@@ -140,6 +140,13 @@ if (ipcContent.ok && preloadContent.ok) {
   check('All preload invokes have handlers', extra.length === 0,
     extra.length > 0 ? 'Extra: ' + extra.join(', ') : '');
 }
+
+// 4b) 契约清单一致性：channels.cjs 是单一事实来源，三方（清单/preload/主进程）必须一致
+const contractRun = spawnSync(process.execPath, [req('scripts/check-contract.mjs')], { cwd: root, encoding: 'utf8' });
+const contractOk = contractRun.status === 0;
+const contractDetail = contractOk ? ''
+  : (contractRun.stdout || '').split('\n').filter(l => l.includes('[')).slice(0, 3).join(' | ');
+check('IPC contract manifest (channels.cjs <-> preload <-> handlers)', contractOk, contractDetail);
 
 // 5) Version Consistency
 console.log('\n--- 5. Version Consistency ---');

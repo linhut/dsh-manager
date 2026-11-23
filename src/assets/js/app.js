@@ -252,7 +252,8 @@ function restoreSidebarCollapseState() {
 // ====== 页面切换 ======
 function switchPage(page) {
   if (window.pageManager) {
-    pageManager.navigate(page);
+    // navigate 是异步的（离开页的 unmount/资源回收要 await），失败不能静默吞掉
+    pageManager.navigate(page).catch((e) => console.error('[page-manager] 页面切换失败:', e));
     return;
   }
   // Fallback to old implementation
@@ -2770,6 +2771,7 @@ async function renderSettingsPage() {
       <button class="btn btn-secondary" onclick="openSettingsTab('yaml')">📝 YAML 编辑器</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('presets')">🧠 Agent Presets</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('bundled')">📦 内置内容</button>
+      <button class="btn btn-secondary" onclick="openSettingsTab('computeruse')">🖥️ 电脑控制</button>
       <button class="btn btn-secondary" onclick="openSettingsTab('system')">🔧 系统管理</button>
     </div>
     <div id="settingsTabs">
@@ -3838,6 +3840,9 @@ function openSettingsTab(tab) {
     case 'bundled':
       renderBundledContentTab().then(html => { tabEl.innerHTML = html; });
       break;
+    case 'computeruse':
+      renderComputerUseTab().then(html => { tabEl.innerHTML = html; });
+      break;
     case 'system':
       tabEl.innerHTML = renderSystemManagementTab();
       break;
@@ -3968,6 +3973,221 @@ function renderSettingsManagerTab(autoStart, checkUpdates, replyLang = 'default'
       </div>
     </div>
   `;
+}
+
+// ====== 电脑控制（Computer Use，DSH 官方 experimental 能力） ======
+let computerUseProgressBound = false;
+
+async function renderComputerUseTab() {
+  let state = null;
+  let loadError = null;
+  try { state = await window.dshManager.computerUseGetState('web'); } catch (e) { loadError = e; }
+  if (loadError) {
+    return '<div class="card"><div class="card-header"><span class="card-title">🖥️ 电脑控制</span></div><div class="card-body" style="padding:16px;font-size:13px;color:var(--error);">⚠️ 状态读取失败：' + escapeHtml(loadError.message || '未知错误') + '</div></div>';
+  }
+  bindComputerUseProgress();
+  const status = state.status || 'not-installed';
+  const enabled = !!state.enabled;
+  const tag = state.tag || '0.1.6-alpha.1';
+  const badgeMap = {
+    'enabled': '<span style="color:var(--success);font-weight:600;">✅ 已启用</span>',
+    'disabled': '<span style="color:var(--warning);font-weight:600;">⏸️ 已禁用</span>',
+    'not-installed': '<span style="color:var(--text-dim);">— 未安装</span>',
+    'partial': '<span style="color:var(--error);font-weight:600;">⚠️ 状态不完整</span>',
+  };
+  const pkgRows = (state.packages || []).map(p =>
+    '<tr><td style="padding:4px 8px;font-size:12px;">' + escapeHtml(p.name) + '</td>' +
+    '<td style="padding:4px 8px;font-size:12px;">' + (p.installed ? '<code>' + escapeHtml(p.version || '?') + '</code>' : '<span style="color:var(--text-dim);">未落盘</span>') + '</td>' +
+    '<td style="padding:4px 8px;font-size:12px;">' + (p.mounted ? '✅ 已挂载' : (p.inBundles ? '<span style="color:var(--warning);">旧登记残留</span>' : '<span style="color:var(--text-dim);">未挂载</span>')) + '</td></tr>'
+  ).join('');
+  const controls = status === 'not-installed' ? `
+    <div class="setting-item">
+      <div class="setting-icon">🖥️</div>
+      <div class="setting-info">
+        <strong>一键安装电脑控制</strong>
+        <p class="setting-desc">安装 DSH 官方 computer use 组件（pin ${escapeHtml(tag)}），安装后默认启用</p>
+      </div>
+      <button class="btn btn-primary" id="computerUseInstallBtn" onclick="computerUseInstall()">⬇️ 一键安装</button>
+    </div>` : `
+    <div class="setting-item">
+      <div class="setting-icon">🔘</div>
+      <div class="setting-info">
+        <strong>启用电脑控制</strong>
+        <p class="setting-desc">切换只改 profile 清单（bundles），不卸载依赖；重启 DSH 后生效</p>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" ${enabled ? 'checked' : ''} onchange="computerUseSetEnabled(this.checked)">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="setting-item">
+      <div class="setting-icon">🗑️</div>
+      <div class="setting-info">
+        <strong>卸载电脑控制</strong>
+        <p class="setting-desc">移除官方组件与依赖（node_modules 残留保留，避免误伤）</p>
+      </div>
+      <button class="btn btn-danger" onclick="computerUseUninstall()">🗑️ 卸载</button>
+    </div>`;
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🖥️ 电脑控制（Computer Use）</span>
+        <span style="font-size:12px;">${badgeMap[status] || ''}</span>
+      </div>
+      <div class="card-body settings-body">
+        <div class="setting-section">组件状态</div>
+        <div class="setting-item">
+          <div class="setting-icon">🧩</div>
+          <div class="setting-info">
+            <strong>桌面驱动提供方</strong>
+            <p class="setting-desc">cua-driver native（进程内驱动，平台二进制经 npm 自动分发）</p>
+          </div>
+          <code style="font-size:12px;">${escapeHtml(state.provider || 'cua-driver-native')}</code>
+        </div>
+        <div class="setting-item">
+          <div class="setting-icon">📌</div>
+          <div class="setting-info">
+            <strong>固定版本（pin）</strong>
+            <p class="setting-desc">experimental 包禁止静默漂移，升级由后续「更新」动作显式执行</p>
+          </div>
+          <code style="font-size:12px;">${escapeHtml(tag)}</code>
+        </div>
+        ${state.packages && state.packages.length ? `<table style="width:100%;border-collapse:collapse;margin-top:8px;">
+          <tr style="text-align:left;"><th style="padding:4px 8px;font-size:12px;">组件包</th><th style="padding:4px 8px;font-size:12px;">磁盘版本</th><th style="padding:4px 8px;font-size:12px;">挂载状态</th></tr>
+          ${pkgRows}
+        </table>` : ''}
+        ${state.warning ? '<p style="font-size:12px;color:var(--warning);margin-top:8px;">⚠️ ' + escapeHtml(state.warning) + '</p>' : ''}
+        <div id="computerUseStatus" style="display:none;font-size:12px;color:var(--text-muted);margin-top:8px;font-weight:600;"></div>
+        <div id="computerUseProgress" style="display:none;font-size:12px;color:var(--text-dim);margin-top:6px;max-height:140px;overflow-y:auto;line-height:1.7;font-family:Consolas,Menlo,monospace;white-space:pre-wrap;word-break:break-all;"></div>
+        <div class="setting-section">操作</div>
+        ${controls}
+        <div class="setting-item">
+          <div class="setting-icon">🔄</div>
+          <div class="setting-info">
+            <strong>重启 DSH</strong>
+            <p class="setting-desc">安装/卸载/切换启用状态后，需重启 DSH 才会加载新组件层</p>
+          </div>
+          <button class="btn btn-secondary" onclick="computerUseRestartDSH()">🔄 重启 DSH</button>
+        </div>
+        <div class="setting-section">风险提示</div>
+        <div style="background:var(--warning-bg);border:1px solid rgba(245,158,11,.3);border-radius:8px;padding:12px;font-size:12px;line-height:1.8;color:var(--text-muted);">
+          <strong>⚠️ 实验性功能（experimental）</strong><br>
+          启用后模型可<b>观察桌面截图并模拟鼠标/键盘操作</b>，仅授予可信模型使用<br>
+          需要<b>支持图片输入的模型</b>路由（如 glm-5v-turbo / kimi-k3）才能收到截图<br>
+          原生驱动在 DSH host 进程内运行，异常可能影响 DSH 会话（崩溃自愈机制会自动兜底）<br>
+          多会话共享桌面时操作相互可见，请勿在敏感窗口启用
+        </div>
+      </div>
+    </div>`;
+}
+
+/** 绑定安装/卸载进度事件（只绑一次），逐条追加明细，不覆盖历史 */
+function bindComputerUseProgress() {
+  if (computerUseProgressBound || !window.dshManager.onComputerUseProgress) return;
+  computerUseProgressBound = true;
+  window.dshManager.onComputerUseProgress((data) => {
+    const el = document.getElementById('computerUseProgress');
+    if (!el) return;
+    el.style.display = 'block';
+    const stageText = { install: '安装', verify: '校验', remove: '卸载', 'patch-mount': '挂载' }[data.stage] || data.stage;
+    const line = '[' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '] ' +
+      (data.pkg ? stageText + ' ' + data.pkg : stageText);
+    el.textContent = (el.textContent ? el.textContent + '\n' : '') + line;
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
+/** 在电脑控制明细区追加一行（与进度事件同容器） */
+function appendComputerUseLog(text, color) {
+  const el = document.getElementById('computerUseProgress');
+  if (!el) return;
+  el.style.display = 'block';
+  const line = '[' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + '] ' + text;
+  const node = document.createElement('div');
+  node.textContent = line;
+  if (color) node.style.color = color;
+  el.appendChild(node);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function computerUseInstall() {
+  const btn = document.getElementById('computerUseInstallBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ 安装中…'; }
+  const statusEl = () => document.getElementById('computerUseStatus');
+  const setStatus = (text, color) => {
+    const el = statusEl();
+    if (el) { el.style.display = 'block'; el.textContent = text; if (color) el.style.color = color; }
+  };
+  try {
+    setStatus('正在安装官方组件（pnpm 拉取中，可能需要 1-2 分钟）…');
+    appendComputerUseLog('开始安装：dsh plugin add（pin ' + '0.1.6-alpha.1' + '）');
+    const result = await window.dshManager.computerUseInstall('web');
+    if (result && result.success) {
+      setStatus('安装完成，重启 DSH 后生效 ✅', 'var(--success)');
+      appendComputerUseLog('安装完成（两包已装，已挂载 Cordis 补丁层），重启 DSH 后生效', 'var(--success)');
+      showToast('电脑控制安装完成，重启 DSH 后生效', 'success', 5000);
+    } else {
+      setStatus('安装失败 ❌', 'var(--danger, #e74c3c)');
+      appendComputerUseLog('安装失败：' + ((result && result.error) || '未知错误'), 'var(--danger, #e74c3c)');
+      showToast('安装失败：' + ((result && result.error) || '未知错误'), 'error', 7000);
+    }
+  } catch (e) {
+    setStatus('安装失败 ❌', 'var(--danger, #e74c3c)');
+    appendComputerUseLog('安装异常：' + e.message, 'var(--danger, #e74c3c)');
+    showToast('安装失败：' + e.message, 'error', 7000);
+  }
+  openSettingsTab('computeruse');
+}
+
+async function computerUseSetEnabled(enabled) {
+  try {
+    appendComputerUseLog((enabled ? '启用' : '禁用') + '：修改 cordis.patch.yml 挂载块');
+    const result = await window.dshManager.computerUseSetEnabled('web', enabled);
+    if (result && result.success) {
+      appendComputerUseLog((enabled ? '已启用' : '已禁用') + '（' + (result.method || 'no-change') + '），重启 DSH 后生效', 'var(--success)');
+      showToast((enabled ? '电脑控制已启用' : '电脑控制已禁用') + '，重启 DSH 后生效', 'success', 5000);
+    } else {
+      appendComputerUseLog('操作失败：' + ((result && result.error) || '未知错误'), 'var(--danger, #e74c3c)');
+      showToast('操作失败：' + ((result && result.error) || '未知错误'), 'error', 6000);
+    }
+  } catch (e) { appendComputerUseLog('操作异常：' + e.message, 'var(--danger, #e74c3c)'); showToast('操作失败：' + e.message, 'error', 6000); }
+  openSettingsTab('computeruse');
+}
+
+async function computerUseUninstall() {
+  const ok = await showConfirm('卸载电脑控制', '将移除 DSH 官方 computer use 组件（含依赖清理）。卸载后需重启 DSH 生效。确定卸载？', { confirmText: '卸载', confirmVariant: 'danger' });
+  if (!ok) return;
+  try {
+    appendComputerUseLog('开始卸载：dsh plugin remove 两包');
+    const result = await window.dshManager.computerUseUninstall('web');
+    if (result && result.success) {
+      appendComputerUseLog('卸载完成，已移除挂载与 bundles 残留，重启 DSH 后生效', 'var(--success)');
+      showToast('已卸载电脑控制，重启 DSH 后生效', 'success', 5000);
+    } else {
+      appendComputerUseLog('卸载失败：' + ((result && result.error) || '未知错误'), 'var(--danger, #e74c3c)');
+      showToast('卸载失败：' + ((result && result.error) || '未知错误'), 'error', 7000);
+    }
+  } catch (e) { appendComputerUseLog('卸载异常：' + e.message, 'var(--danger, #e74c3c)'); showToast('卸载失败：' + e.message, 'error', 7000); }
+  openSettingsTab('computeruse');
+}
+
+async function computerUseRestartDSH() {
+  try {
+    appendComputerUseLog('重启 DSH：停止旧进程 → 启动新进程 → 等待服务就绪');
+    const result = await window.dshManager.restartDSH();
+    if (result && result.success) {
+      if (result.reachable) {
+        appendComputerUseLog('重启完成：服务已就绪（port ' + result.port + '）' + (result.webUrl ? ' ' + result.webUrl : ''), 'var(--success)');
+        showToast('DSH 已重启，服务就绪', 'success', 4000);
+      } else {
+        appendComputerUseLog('重启完成：进程已启动，等待服务就绪中…（若持续未就绪，请查看日志或检查挂载配置）', 'var(--warning, #f59e0b)');
+        showToast((result.message || 'DSH 已重启，等待服务就绪中…'), 'warning', 6000);
+      }
+    } else {
+      appendComputerUseLog('重启失败：' + ((result && result.error) || '未知错误'), 'var(--danger, #e74c3c)');
+      showToast('重启失败：' + ((result && result.error) || '未知错误'), 'error', 6000);
+    }
+  } catch (e) { appendComputerUseLog('重启异常：' + e.message, 'var(--danger, #e74c3c)'); showToast('重启失败：' + e.message, 'error', 6000); }
 }
 
 // ====== 运行配置（低配置优化） ======

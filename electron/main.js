@@ -10,6 +10,10 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { registerIpcHandlers } from './ipc-handlers.js';
+import { WEBVIEW_PARTITION, installSessionGuards, guardWebviewAttach, isSafeExternalUrl } from './host/security.js';
+import envelope from './contract/envelope.cjs';
+const { ok, fromError, usesEnvelope } = envelope;
+import { createScope } from './host/scope.js';
 import { initDebugLog, writeLog, isDebugEnabled } from './debug-logger.js';
 import electronUpdaterPkg from 'electron-updater';
 const { autoUpdater } = electronUpdaterPkg;
@@ -31,6 +35,11 @@ initDebugLog(isDebug);
 
 let mainWindow = null;
 let dshWebView = null;
+
+// 应用级作用域：托管跨窗口资源（自动更新定时器等），退出时统一释放。
+// 窗口级资源用其子作用域，窗口关闭即回收，避免反复开关窗口累积监听器。
+const appScope = createScope('app');
+let windowScope = null;
 
 // 单实例锁：防止多开实例互相占用 userData/GPUCache（"Unable to move the cache 0x5" 的诱因之一），
 // 重复启动时聚焦已有窗口而非新建实例
@@ -77,14 +86,20 @@ function createMainWindow() {
   });
 
   // 系统主题变化时同步窗口背景色（避免白/黑闪烁）
-  const nativeThemeHandler = () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setBackgroundColor(getWindowBackground());
-    }
-  };
-  nativeTheme.on('updated', nativeThemeHandler);
-  // 在窗口关闭时移除监听器，避免泄漏
-  mainWindow.on('closed', () => nativeTheme.removeListener('updated', nativeThemeHandler));
+  // 归属窗口作用域：窗口关闭时自动摘除监听，重建窗口不会累积。
+  if (windowScope) {
+    windowScope.dispose().catch((err) => writeLog('warn', '旧窗口作用域释放异常: ' + (err?.message || err)));
+  }
+  windowScope = appScope.child('window');
+  windowScope.effect(() => {
+    const nativeThemeHandler = () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBackgroundColor(getWindowBackground());
+      }
+    };
+    nativeTheme.on('updated', nativeThemeHandler);
+    return () => nativeTheme.removeListener('updated', nativeThemeHandler);
+  });
 
   // 加载管理界面
   mainWindow.loadFile(join(__dirname, '../src/index.html'));
@@ -120,6 +135,10 @@ function createMainWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
     dshWebView = null;
+    if (windowScope) {
+      windowScope.dispose().catch((err) => writeLog('warn', '窗口作用域释放异常: ' + (err?.message || err)));
+      windowScope = null;
+    }
   });
 
   // 监听窗口最大化变化
@@ -231,6 +250,23 @@ app.on('web-contents-created', (event, contents) => {
     navEvent.preventDefault();
     writeLog('warn', '[导航防护] 已阻止导航到非白名单地址: ' + url);
   });
+
+  // webview 挂载防护：剥离 preload、禁止 Node 集成、锁定本机 src 与独立分区。
+  // 没有这一层，任何能触发 <webview> 挂载的路径都会继承默认 preload，等于把 IPC 桥交给页面。
+  contents.on('will-attach-webview', (attachEvent, webPreferences, params) => {
+    const result = guardWebviewAttach(attachEvent, webPreferences, params);
+    if (!result.allowed) {
+      writeLog('warn', '[webview 防护] 已阻止挂载: ' + (result.src || '(空 src)'));
+    }
+  });
+
+  // guest 内部的 window.open 不在应用内开新窗：安全协议外跳浏览器，其余直接拒绝
+  if (contents.getType() === 'webview') {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isSafeExternalUrl(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    });
+  }
 });
 
 // ====== 自动更新（打包运行时启用：静默下载 + 完成后提示重启安装） ======
@@ -258,10 +294,16 @@ function initAutoUpdater() {
     });
     // 检查失败静默：无网络 / 无 app-update.yml（dev 构建）等场景不打扰用户
     autoUpdater.on('error', () => {});
-    // 启动 10s 后首次检查，此后每 4 小时检查一次
+    // 启动 10s 后首次检查，此后每 4 小时检查一次（归属应用作用域，退出时清理）
     const check = () => autoUpdater.checkForUpdates().catch(() => {});
-    setTimeout(check, 10_000);
-    setInterval(check, 4 * 60 * 60 * 1000);
+    appScope.effect(() => {
+      const initial = setTimeout(check, 10_000);
+      const periodic = setInterval(check, 4 * 60 * 60 * 1000);
+      return () => {
+        clearTimeout(initial);
+        clearInterval(periodic);
+      };
+    });
   } catch {
     // 非打包 / 未配置自动更新时静默跳过
   }
@@ -270,6 +312,17 @@ function initAutoUpdater() {
 // ====== 应用生命周期 ======
 
 app.whenReady().then(async () => {
+  // 会话隔离：主窗口拿到零权限；DSH guest 独立分区、仅放行剪贴板写入。
+  // 必须在 createMainWindow 之前完成，否则 webview 可能先于策略挂载。
+  try {
+    const mainGuard = installSessionGuards(session.defaultSession, { allowedPermissions: [] });
+    const guestGuard = installSessionGuards(session.fromPartition(WEBVIEW_PARTITION));
+    writeLog('info', '会话权限策略已安装: main=' + mainGuard.installed + ' guest=' + guestGuard.installed
+      + ' 分区=' + WEBVIEW_PARTITION + ' 放行=[' + guestGuard.allowed.join(',') + ']');
+  } catch (err) {
+    writeLog('warn', '会话权限策略安装失败: ' + (err?.message || err));
+  }
+
   createAppMenu();
   initAutoUpdater();
   // 全局 IPC 日志：拦截 ipcMain.handle 包装所有处理器
@@ -277,14 +330,18 @@ app.whenReady().then(async () => {
   ipcMain.handle = (channel, handler) => {
     return origHandle(channel, async (event, ...args) => {
       const start = Date.now();
+      // 按域灰度：仅 app:* 接入统一信封，其余通道保持原返回形状。
+      // preload 会解包，因此渲染进程看到的仍是 data 或抛出的 Error（带 code）。
+      const enveloped = usesEnvelope(channel);
       try {
         const result = await handler(event, ...args);
         const elapsed = Date.now() - start;
         writeLog('debug', `[IPC] ${channel} (${elapsed}ms) OK`);
-        return result;
+        return enveloped ? ok(result) : result;
       } catch (error) {
         const elapsed = Date.now() - start;
         writeLog('error', `[IPC] ${channel} (${elapsed}ms) ERROR: ${error?.message || error}`);
+        if (enveloped) return fromError(error);
         throw error;
       }
     });
@@ -347,6 +404,11 @@ async function ensureBundledContentOnStartup() {
     writeLog('warn', '内置内容自动安装失败: ' + (e?.message || e));
   }
 }
+
+app.on('before-quit', () => {
+  // 退出前释放应用级资源（更新定时器等）；失败只记录，不阻断退出
+  appScope.dispose().catch((err) => writeLog('warn', '应用作用域释放异常: ' + (err?.message || err)));
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

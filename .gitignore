@@ -78,6 +78,12 @@ scripts/sim/
 *.bak
 *.bak-*
 
+# 工作区残留副本与探测文件（重构期间的 .new 副本、探针输出）
+*.new
+*.probe*
+.probe-replace
+_trash/
+
 # Debug and test artifacts
 _fix-*.mjs
 _recovered-*.js
@@ -102,3 +108,17 @@ secrets/
 *.pfx
 *.key
 *.pem
+
+# 探针与临时补丁（排查期产物，不入库）
+_probe*
+*-probe*.txt
+_overwrite-probe*
+*.patch
+scripts/_*
+
+# 契约校验脚本是 CI 门禁的一部分，不能被上面的 check-*.mjs 规则吞掉
+!scripts/check-contract.mjs
+
+# WorkBuddy 项目数据（会话记忆、任务状态，不入库）
+.workbuddy/
+_release-update/
