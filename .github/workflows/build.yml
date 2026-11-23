@@ -58,6 +58,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # verify 会断言 dsh-skills/skills 非空，必须递归拉取子模块
+          submodules: recursive
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -76,7 +79,9 @@ jobs:
   build:
     name: Build ${{ matrix.platform }}
     needs: [check-version, quality]
-    if: ${{ !cancelled() }}
+    # 门禁失败必须阻断构建：!cancelled() 会让 quality 失败后照常构建，
+    # 与"任一失败即终止发布"的初衷相反。平台间互不影响由 fail-fast: false 负责。
+    if: ${{ success() }}
     strategy:
       fail-fast: false
       matrix:
@@ -234,7 +239,9 @@ jobs:
   create-release:
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # success() 不能省：只写 startsWith(...) 会覆盖默认的“上游全部成功”判断，
+    # 导致构建失败也照常建 Release（产物残缺且不可恢复）。
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
 
     steps:
       - name: Download all artifacts
